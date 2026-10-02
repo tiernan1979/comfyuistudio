@@ -1,0 +1,30 @@
+{
+  "serverUrl": "http://127.0.0.1:8188",
+  "useProxy": true,
+  "autoUnload": true,
+  "style": "photoreal",
+  "searchUrl": "",
+  "llmProvider": "lmstudio",
+  "llmConfigs": {
+    "lmstudio": { "url": "http://host.docker.internal:1234", "model": "" },
+    "openai": { "model": "gpt-4o-mini" },
+    "anthropic": { "model": "claude-haiku-4-5" },
+    "custom": { "url": "", "model": "" }
+  },
+  "models": {
+    "image": {
+      "unet": "qwen_image_fp8_e4m3fn.safetensors",
+      "clip": "qwen_2.5_vl_7b_fp8_scaled.safetensors",
+      "vae": "qwen_image_vae.safetensors",
+      "lora": ""
+    },
+    "video": {
+      "unet": "wan2.1_t2v_1.3B_bf16.safetensors",
+      "clip": "umt5_xxl_fp8_e4m3fn_scaled.safetensors",
+      "vae": "wan_2.1_vae.safetensors"
+    },
+    "edit": {
+      "unet": "qwen_image_edit_fp8_e4m3fn.safetensors"
+    }
+  }
+}
