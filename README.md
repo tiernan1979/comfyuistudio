@@ -36,8 +36,6 @@ docker run -d --name comfyui-studio \
 
 Open http://localhost:5555
 
-> The package is private until you change it: on GitHub open **Packages → comfyuistudio → Package settings → Change visibility → Public**.
-
 ### Option B — docker compose
 
 ```bash
