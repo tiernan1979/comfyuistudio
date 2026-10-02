@@ -43,6 +43,32 @@ Open http://localhost:5555
 ```bash
 git clone https://github.com/tiernan1979/comfyuistudio.git
 cd comfyuistudio
+mkdir comfyuistudio
+cd comfyuistudio
+mkdir public
+nano docker-compose.yml
+
+services:
+  comfyui-studio:
+    # Prebuilt image published by GitHub Actions (.github/workflows/docker.yml),
+    # or build locally with:  docker compose up -d --build
+    image: ghcr.io/tiernan1979/comfyuistudio:latest
+    build: .
+    ports:
+      - "5555:80"
+    volumes:
+      # Deployment config: edit public/config.json on the host, then
+      #   docker compose restart
+      # Seeds browsers that have no saved settings yet.
+      - ./public/config.json:/usr/share/nginx/html/config.json:ro
+    environment:
+      - NODE_ENV=production
+    extra_hosts:
+      # Lets the container reach services on the Docker host by name,
+      # e.g. LM Studio at http://host.docker.internal:1234
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
 
 # use the prebuilt image
 docker compose pull && docker compose up -d
