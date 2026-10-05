@@ -39,13 +39,32 @@ docker run -d --name comfyui-studio \
 
 Open http://localhost:5555
 
-> The package is private until you change it: on GitHub open **Packages → comfyuistudio → Package settings → Change visibility → Public**.
-
 ### Option B — docker compose
 
 ```bash
-git clone https://github.com/tiernan1979/comfyuistudio.git
+mkdir comfyuistudio
 cd comfyuistudio
+mkdir public
+
+cat << 'EOF' > docker-compose.yml
+services:
+  comfyui-studio:
+    # Prebuilt image published by GitHub Actions (.github/workflows/docker.yml),
+    # or build locally with:  docker compose up -d --build
+    image: ghcr.io/tiernan1979/comfyuistudio:latest
+    build: .
+    ports:
+      - "5555:80"
+    volumes:
+      # Deployment config: edit public/config.json on the host, then
+      #    docker compose restart
+      # Seeds browsers that have no saved settings yet.
+      - ./public/config.json:/usr/share/nginx/html/config.json:ro
+    environment:
+      - NODE_ENV=production
+    restart: unless-stopped
+EOF
+
 
 # use the prebuilt image
 docker compose pull && docker compose up -d
