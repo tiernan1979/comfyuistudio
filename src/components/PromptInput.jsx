@@ -17,7 +17,10 @@ const PLACEHOLDERS = {
   image: 'Describe what you want to create...',
   edit: "Describe the change... e.g. 'change the background to a beach at sunset, keep the person the same'",
   video: 'Describe the video... e.g. a fox running through snowy woods at sunset',
-  music: 'Describe the song... e.g. dreamy lo-fi hip hop beat with soft electric piano, warm bass and vinyl crackle',
+  music:
+    'Describe the song, e.g.\n' +
+    'Global Metadata: melodic trance, 126 BPM, F# minor, euphoric, clean club mix.\n' +
+    'Arrangement: atmospheric intro → rising build → soaring breakdown → big drop → stripped outro',
 }
 
 export default function PromptInput() {
@@ -125,17 +128,22 @@ export default function PromptInput() {
         )}
         {mode !== 'edit' && (
           <div className="flex items-center gap-1.5 shrink-0">
-              <motion.button
-                whileHover={{ scale: 1.05 }}
-                whileTap={{ scale: 0.95 }}
-                onClick={handleEnhance}
-                disabled={generating || rewriting || !prompt.trim()}
-                className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium bg-accent/15 text-accent hover:bg-accent/25 transition-colors disabled:opacity-40 shrink-0"
-                title="Expand plain words into a detailed prompt (offline)"
-              >
-                <Wand2 size={12} />
-                Enhance
-              </motion.button>
+              {/* Enhance appends image-style quality tags — meaningless for
+                  music captions, so the offline button stays hidden there
+                  (the AI button below writes proper music captions instead). */}
+              {mode !== 'music' && (
+                <motion.button
+                  whileHover={{ scale: 1.05 }}
+                  whileTap={{ scale: 0.95 }}
+                  onClick={handleEnhance}
+                  disabled={generating || rewriting || !prompt.trim()}
+                  className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium bg-accent/15 text-accent hover:bg-accent/25 transition-colors disabled:opacity-40 shrink-0"
+                  title="Expand plain words into a detailed prompt (offline)"
+                >
+                  <Wand2 size={12} />
+                  Enhance
+                </motion.button>
+              )}
               <motion.button
                 whileHover={{ scale: 1.05 }}
                 whileTap={{ scale: 0.95 }}
@@ -205,7 +213,15 @@ export default function PromptInput() {
         </div>
       </div>
 
-      {/* MiniMax Music has no negative conditioning — hide the field in music mode */}
+      {/* MiniMax Music has no negative conditioning — hide the field, explain why */}
+      {mode === 'music' && (
+        <p className="text-[11px] text-text-muted leading-snug">
+          MiniMax Music 3 has no negative prompt — put exclusions in the caption itself
+          (e.g. “no vocals, no choir”). A “Negative Prompt: …” section is converted
+          into the caption automatically. The AI button writes the structured
+          Global Metadata + Arrangement caption for you.
+        </p>
+      )}
       {mode !== 'music' && (
         <motion.button
           onClick={() => setShowNegative(!showNegative)}

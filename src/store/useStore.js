@@ -141,14 +141,15 @@ const useStore = create(
       musicSettings: {
         duration: 30, // seconds (10–300)
         seed: -1,
-        steps: 20,
-        cfgScale: 1.5, // guidance inside MiniMaxMusic3TextEncode
+        steps: 30, // official template default
+        cfgScale: 1.7, // AR-planner CFG inside MiniMaxMusic3TextEncode
         quality: '320k', // 'wav' | '320k' | 'V0' | '128k'
       },
 
-      // Sung lyrics for music mode ('' = instrumental). Working text —
-      // kept per history entry but not persisted across reloads.
-      lyrics: '',
+      // Sung lyrics for music mode. Default = the section-tag map (also the
+      // visible example in the box); tag-only = instrumental at generate
+      // time. Not persisted across reloads, so the default always resurfaces.
+      lyrics: '[Intro]\n\n[Instrumental]\n\n[Bridge]\n\n[Outro]\n',
 
       // 3D Generation (optional feature — Settings → 3D Generation).
       // local  = Pixal3D (image→GLB) + MIA auto-rig on your own ComfyUI

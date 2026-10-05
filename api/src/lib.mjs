@@ -40,7 +40,7 @@ export const DEFAULT_SETTINGS = {
   image: { aspectRatio: '1:1', turboMode: false, seed: -1, steps: 20, cfg: 4 },
   edit: { seed: -1, steps: 20, cfg: 2.5 },
   video: { resolution: '480p', frames: 33, fps: 16, seed: -1, steps: 30, cfg: 6 },
-  music: { duration: 30, seed: -1, steps: 20, cfgScale: 1.5, quality: '320k' },
+  music: { duration: 30, seed: -1, steps: 30, cfgScale: 1.7, quality: '320k' },
 }
 
 // Preference order when the exact default file isn't on the server —
@@ -48,18 +48,20 @@ export const DEFAULT_SETTINGS = {
 export const MODEL_PREFS = {
   image: {
     unet: [/qwen.*image/i, /flux/i],
-    clip: [/qwen_2\.5_vl/i, /qwen/i],
+    // Never a MiniMax hybrid TE — plain Qwen-VL only (the 32b_minimax_h3
+    // file belongs to the H3 video pipeline and breaks image KSampler).
+    clip: [/qwen_2\.5_vl/i, /qwen3vl_8b/i, /qwen3vl(?!.*minimax)/i, /qwen(?!.*minimax)/i],
     vae: [/qwen.*image.*vae/i, /qwen.*vae/i],
   },
   edit: {
     unet: [/qwen.*edit/i, /qwen.*2.*int8/i, /qwen/i],
-    clip: [/qwen_2\.5_vl/i, /qwen/i],
+    clip: [/qwen_2\.5_vl/i, /qwen3vl_8b/i, /qwen3vl(?!.*minimax)/i, /qwen(?!.*minimax)/i],
     vae: [/qwen.*image.*vae/i, /qwen.*vae/i],
   },
   video: {
-    unet: [/wan/i, /ltx/i, /hunyuan[-_ ]?video/i, /cogvideo/i],
-    clip: [/umt5/i],
-    vae: [/wan/i],
+    unet: [/wan/i, /ltx/i, /hunyuan[-_ ]?video/i, /cogvideo/i, /minimax[-_ ]?h3/i],
+    clip: [/umt5/i, /minimax[-_ ]?h3/i, /qwen3vl.*minimax/i],
+    vae: [/wan.*vae/i, /video.*vae/i, /minimax.*video/i],
   },
   music: {
     unet: [/minimax[-_ ]?music3[-_ ]?dit/i, /minimax.*dit/i, /music/i],
@@ -82,11 +84,14 @@ export function pickModel(list, want, prefs) {
     const fuzzy = arr.find((m) => stem(m) === w)
     if (fuzzy) return fuzzy
   }
+  // Preference regexes only — NO blind first-entry fallback: picking a
+  // music/audio model for image/video mode fails deep inside KSampler
+  // with an unreadable shape error. Misses surface as null → throw.
   for (const re of prefs || []) {
     const hit = arr.find((m) => re.test(String(m)))
     if (hit) return hit
   }
-  return arr.length > 0 ? arr[0] : null
+  return null
 }
 
 // Resolve the { unet, clip, vae, lora } set for a mode against the files
@@ -110,9 +115,16 @@ export function resolveModels(lists, mode, overrides = {}) {
       out[group] = hit
       continue
     }
-    const picked = pickModel(lists?.[group], base[group], prefs[group])
+    const arr = Array.isArray(lists?.[group]) ? lists[group] : []
+    const picked = pickModel(arr, base[group], prefs[group])
     if (!picked) {
-      throw new Error(`No ${group} models found on the ComfyUI server — is it reachable?`)
+      if (arr.length === 0) {
+        throw new Error(`No ${group} models found on the ComfyUI server — is it reachable?`)
+      }
+      throw new Error(
+        `No suitable ${group} model for ${mode} on the ComfyUI server ` +
+          `(have: ${arr.slice(0, 5).join(', ')}${arr.length > 5 ? ', …' : ''})`,
+      )
     }
     out[group] = picked
   }
@@ -183,6 +195,7 @@ export function workflowFor(mode, { prompt, negativePrompt = '', lyrics = '', se
   if (mode === 'music') {
     return buildMusicWorkflow({
       caption: prompt,
+      negativePrompt,
       lyrics,
       duration: s.duration,
       seed: s.seed,

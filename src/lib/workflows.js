@@ -718,13 +718,66 @@ export function buildPartCaption(text) {
   )
 }
 
+// MiniMax Music3 has NO text negative prompt — the text encoder only takes
+// caption + lyrics. (The graph's negative is a zeroed conditioning sampled
+// at the official cfg 1.7: guidance amplification, not a text negative.) Users coming from other tools paste "Negative Prompt: ..." blocks
+// into the caption; the model would read that list as POSITIVE description
+// (literally conditioning on "vocals, singing, ..." — the opposite of the
+// intent). Split that section out and re-phrase it as an in-caption ban,
+// which is the phrasing that works for this model.
+export function splitNegativeSection(text) {
+  const s = (text || '').trim()
+  const m = s.match(/(?:^|\n|[.!?][ \t]+)(?:negative\s*prompt|avoid)\s*:[ \t]*([\s\S]+)$/i)
+  if (!m) return { caption: text || '', banned: [] }
+  const banned = m[1]
+    .split(/[,;\n]+/)
+    .map((x) => x.trim().replace(/[.\s]+$/, ''))
+    .filter(Boolean)
+  return { caption: s.slice(0, m.index).trim(), banned }
+}
+
+function bannedClause(items, existing) {
+  const hay = (existing || '').toLowerCase()
+  const fresh = []
+  for (const raw of items || []) {
+    const word = raw.replace(/^no\s+/i, '').trim()
+    if (!word || hay.includes(word.toLowerCase())) continue
+    fresh.push(word)
+  }
+  if (!fresh.length) return ''
+  const words = fresh.map((w) => 'no ' + w)
+  const clause = words.join(', ')
+  return ' ' + clause.charAt(0).toUpperCase() + clause.slice(1) + '.'
+}
+
+// Default section map used when the lyrics box is empty (and shown as the
+// box's default text). MiniMax Music3 treats [Tag] lines as executable song
+// structure; a section map is what makes the AR planner actually USE the
+// requested duration instead of ending after 15-40s.
+export const STRUCTURE_TAGS = '[Intro]\n\n[Instrumental]\n\n[Bridge]\n\n[Outro]'
+
+function stripStructureTags(text) {
+  return (text || '').replace(/\[[^\]]*\]/g, '').replace(/\s+/g, ' ').trim()
+}
+
+// Lyrics semantics: empty → inject the default section map; tag-only input
+// counts as INSTRUMENTAL (the vocal ban still applies — tags describe
+// structure, not vocals); real words → sung lyrics, caption left alone.
+export function normalizeLyrics(lyrics, structure = true) {
+  const t = (lyrics || '').trim()
+  const text = t || (structure ? STRUCTURE_TAGS : '')
+  return { text, instrumental: stripStructureTags(text) === '' }
+}
+
 export function buildMusicWorkflow({
   caption, // style / instrumentation description (the main prompt)
-  lyrics = '', // sung lyrics; '' = instrumental
+  negativePrompt = '', // merged into an in-caption "no X, no Y" ban clause
+  lyrics = '', // sung lyrics; '' = default section map (instrumental)
+  structure = true, // inject STRUCTURE_TAGS when lyrics are empty
   duration = 30, // seconds
   seed = -1,
-  steps = 20,
-  cfgScale = 1.5, // MiniMaxMusic3TextEncode.cfg_scale
+  steps = 30, // official template default
+  cfgScale = 1.7, // MiniMaxMusic3TextEncode.cfg_scale (official template)
   quality = '320k', // 'wav' | '320k' | 'V0' | '128k'
   models,
 }) {
@@ -733,13 +786,20 @@ export function buildMusicWorkflow({
   // Empty lyrics = instrumental. The model still hallucinates vocals from
   // bare prompts, so pin the intent down in the caption itself (skipped
   // when the caller already bans vocals, e.g. buildPartCaption).
-  const trimmedCaption = (caption || '').trim()
+  const { text: lyricText, instrumental } = normalizeLyrics(lyrics, structure)
+  const { caption: rawCaption, banned: sectionBanned } = splitNegativeSection(caption)
+  const trimmedCaption = (rawCaption || '').trim()
   const hasBan = /no vocals|no singing|strictly instrumental/i.test(trimmedCaption)
-  const fullCaption = lyrics?.trim()
+  const baseCaption = !instrumental
     ? trimmedCaption
     : hasBan || !trimmedCaption
       ? trimmedCaption || `${PART_INSTRUMENTAL_BAN}`
       : `${trimmedCaption.replace(/[.\s]+$/, '')}. ${PART_INSTRUMENTAL_BAN}`
+  const negItems = [
+    ...sectionBanned,
+    ...(negativePrompt || '').split(/[,;\n]+/).map((x) => x.trim().replace(/[.\s]+$/, '')).filter(Boolean),
+  ]
+  const fullCaption = baseCaption + bannedClause(negItems, baseCaption)
 
   const wf = {
     '37': {
@@ -768,7 +828,7 @@ export function buildMusicWorkflow({
       inputs: {
         clip: ['38', 0],
         caption: fullCaption,
-        lyrics,
+        lyrics: lyricText,
         seed: actualSeed,
         max_duration: duration,
         cfg_scale: cfgScale,
@@ -778,7 +838,15 @@ export function buildMusicWorkflow({
     '41': {
       class_type: 'EmptyMiniMaxMusic3LatentAudio',
       inputs: {
-        seconds: duration,
+        // Linked to the text encoder's `seconds` output: the AR structure
+        // planner inside MiniMaxMusic3TextEncode can end the song BEFORE
+        // max_duration (`<|audio_end|>`). If the latent is sized to the
+        // REQUESTED duration instead of the PLANNED one, the DiT samples
+        // tens of seconds with no structure plan behind them — the weird,
+        // drifting tail users hear in the last 30-60s of a 2-minute mp3.
+        // The encode runs first (it feeds the KSampler anyway), so comfy
+        // resolves this as a plain float at execution time.
+        seconds: ['40', 1],
         batch_size: 1,
       },
     },
@@ -798,9 +866,12 @@ export function buildMusicWorkflow({
         seed: actualSeed,
         control_after_generate: 'randomize',
         steps,
-        cfg: 1.0,
+        // Official ComfyUI template: euler + simple scheduler, cfg 1.7
+        // against the zeroed negative (flow-matching model — the old
+        // cfg 1.0/normal pairing suppressed CFG entirely).
+        cfg: 1.7,
         sampler_name: 'euler',
-        scheduler: 'normal',
+        scheduler: 'simple',
         denoise: 1,
       },
     },
@@ -814,7 +885,10 @@ export function buildMusicWorkflow({
       inputs: {
         samples: ['3', 0],
         vae: ['39', 0],
-        tile_size: 512,
+        // Official template value: fewer, longer tiles than the old 512;
+        // still far below a full-track decode, which OOMs on 16 GB with
+        // the TE + DIT resident.
+        tile_size: 1536,
         overlap: 64,
       },
     },

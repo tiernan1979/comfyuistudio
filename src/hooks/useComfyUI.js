@@ -337,6 +337,7 @@ export function useComfyUI() {
         await freeLoadedModels(base)
         workflow = buildMusicWorkflow({
           caption: state.prompt,
+          negativePrompt: state.negativePrompt,
           lyrics: state.lyrics,
           duration: state.musicSettings.duration,
           seed: state.musicSettings.seed,

@@ -104,14 +104,14 @@ export default function SettingsPanel() {
       <div className="space-y-4">
         <div>
           <label className="text-xs text-text-muted mb-1.5 block">
-            Lyrics <span className="text-text-muted/60">(optional — empty = instrumental)</span>
+            Lyrics <span className="text-text-muted/60">(tags = structure, no sung words = instrumental — leave the tags for a full-length track)</span>
           </label>
           <textarea
             value={lyrics}
             onChange={(e) => setLyrics(e.target.value)}
             disabled={generating}
             rows={4}
-            placeholder={'Verse 1:\nYour words here…\n\nChorus:\n…'}
+            placeholder={'[Intro]\n\n[Instrumental]\n\n[Bridge]\n\n[Outro]\n\nor your words:\nVerse 1:\n…\nChorus:\n…'}
             className="w-full px-3 py-2 rounded-xl bg-bg-card border border-border text-text-primary placeholder:text-text-muted resize-y min-h-20 text-xs leading-relaxed focus:outline-none focus:ring-2 focus:ring-accent disabled:opacity-50"
           />
         </div>

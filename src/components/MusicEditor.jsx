@@ -963,6 +963,7 @@ export default function MusicEditor() {
       const wf = buildMusicWorkflow({
         caption,
         lyrics: '',
+        structure: false, // short stem loops don't need the full section map
         duration: partDuration,
         seed: -1,
         steps: st.musicSettings?.steps ?? 20,

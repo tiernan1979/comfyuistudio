@@ -89,18 +89,45 @@ export async function fetchLlmModels(rawUrl) {
   return (data.data || []).map((m) => m.id).filter(Boolean)
 }
 
-function buildRewriteSystem(styleLabel, mode) {
-  const motion =
-    mode === 'video'
-      ? ' Describe visible motion, atmosphere changes, and camera movement.'
-      : ''
+// Per-mode system prompts. The old shared prompt assumed images ("subject,
+// environment, lighting…") — in music/video mode it wrote picture prompts.
+export function buildRewriteSystem(styleLabel, mode) {
+  if (mode === 'music') {
+    return (
+      'You are an expert prompt writer for MiniMax Music 3 (text-to-music in ComfyUI).\n' +
+      "Rewrite the user's idea into ONE structured music caption with two sections:\n" +
+      'Global Metadata: genre, BPM, key/mode, mood, listening scenario, production profile.\n' +
+      'Arrangement: a section-by-section map (intro → build → breakdown/drop → outro) saying what evolves in each part.\n' +
+      'Rules:\n' +
+      '- 40 to 100 words total, plain text, no markdown, no lyrics, no "Negative Prompt:" labels.\n' +
+      '- MiniMax Music 3 has no negative prompt: if the user wants to exclude something, fold it in as a short positive ban like "no vocals, no choir".\n' +
+      '- Specific instruments, groove and texture beat adjectives — vague captions make short songs.\n' +
+      'Reply with ONLY a JSON object, no markdown, no explanations:\n' +
+      '{"prompt": "<the full caption>", "search_query": ""}'
+    )
+  }
+  if (mode === 'edit') {
+    return (
+      'You are an expert prompt writer for AI image editing (instruction-based edit models in ComfyUI).\n' +
+      "Rewrite the user's change request into ONE concise edit instruction (15 to 45 words):\n" +
+      'what to change, how to change it, and what must stay untouched.\n' +
+      `- Match this style: ${styleLabel}.\n` +
+      '- Also pick a web image search query: 3-8 lowercase keywords for a reference photo of the subject (subject words only, no style words, no punctuation).\n' +
+      'Reply with ONLY a JSON object, no markdown, no explanations:\n' +
+      '{"prompt": "<the edit instruction>", "search_query": "<3-8 keywords>"}'
+    )
+  }
+  const video = mode === 'video'
   return (
-    'You are an expert prompt writer for AI image and video generation ' +
-    `(ComfyUI, Qwen-Image, Wan). Rewrite the user's simple idea into ONE rich, ` +
-    'detailed paragraph prompt.\n' +
+    (video
+      ? 'You are an expert prompt writer for AI VIDEO generation (ComfyUI, Wan). '
+      : 'You are an expert prompt writer for AI image generation (ComfyUI, Qwen-Image). ') +
+    `Rewrite the user's simple idea into ONE rich, detailed paragraph prompt.\n` +
     'Rules:\n' +
-    '- The prompt must be 40 to 90 words covering subject, environment, lighting, colors, composition.\n' +
-    `- Match this style: ${styleLabel}.${motion}\n` +
+    `- The prompt must be 40 to 90 words covering subject, environment, lighting, colors, composition${
+      video ? ', and explicit visible motion with camera movement over time' : ''
+    }.\n` +
+    `- Match this style: ${styleLabel}.\n` +
     '- Also pick a web image search query: 3-8 lowercase keywords that would find good reference photos of the subject (subject words only, no style words, no punctuation).\n' +
     'Reply with ONLY a JSON object, no markdown, no explanations:\n' +
     '{"prompt": "<the full prompt>", "search_query": "<3-8 keywords>"}'
