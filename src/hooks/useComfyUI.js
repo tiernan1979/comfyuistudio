@@ -6,19 +6,57 @@ import {
   disconnectWebSocket,
   queuePrompt,
   getHistory,
+  getServerHistory,
   getViewUrl,
   uploadImage,
   setProgressCallback,
+  setPhaseCallback,
   setCompletionCallback,
   resolveApiBase,
+  extractHistoryError,
+  assertModelsAvailable,
+  freeLoadedModels,
+  getModelLists,
 } from '../lib/comfyui'
-import { buildImageWorkflow, buildVideoWorkflow, buildEditWorkflow } from '../lib/workflows'
+import { buildImageWorkflow, buildVideoWorkflow, buildEditWorkflow, buildMusicWorkflow } from '../lib/workflows'
+
+// Pull ComfyUI's own /history into the store. Outputs live on the
+// server, so every machine pointed at the same ComfyUI sees the same
+// generations — localStorage only holds this browser's own entries.
+// Local entries win on id conflict; deleted ones stay hidden.
+export async function syncServerHistory() {
+  const st = useStore.getState()
+  try {
+    const entries = await getServerHistory(resolveApiBase(st.serverUrl, st.useProxy), 60)
+    st.mergeServerHistory(entries)
+    return { ok: true, count: entries.length }
+  } catch (err) {
+    return { ok: false, error: err.message }
+  }
+}
 
 export function useComfyUI() {
   const serverUrl = useStore((s) => s.serverUrl)
   const useProxy = useStore((s) => s.useProxy)
   const apiBase = resolveApiBase(serverUrl, useProxy)
   const timerRef = useRef(null)
+  const wasConnectedRef = useRef(false)
+  const lastSyncRef = useRef(0)
+
+  // Drop models from VRAM as soon as a run reaches a terminal state
+  // (success or error). ComfyUI otherwise keeps the previous pipeline's
+  // weights resident (WanVAE + image CLIP still loaded when a music job
+  // starts), and long jobs — e.g. a 300s track's VAE decode — then OOM
+  // the GPU and crash the server. Respect the autoUnload setting; on
+  // failure modelsUnloaded stays false so the idle timer / the next
+  // pre-queue check retries.
+  const freeModelsAfterRun = useCallback(async () => {
+    const st = useStore.getState()
+    if (!st.autoUnload) return false
+    const freed = await freeLoadedModels(resolveApiBase(st.serverUrl, st.useProxy))
+    if (freed) st.setModelsUnloaded(true)
+    return freed
+  }, [])
 
   // Check connection on mount and periodically
   useEffect(() => {
@@ -29,6 +67,17 @@ export function useComfyUI() {
       useStore.getState().setConnected(ok)
       if (ok) {
         connectWebSocket(apiBase)
+        // Load/refresh the shared server-side history: on first contact
+        // and then every ~45s while connected, so generations made from
+        // other machines show up without a reload.
+        const now = Date.now()
+        if (!wasConnectedRef.current || now - lastSyncRef.current > 45000) {
+          lastSyncRef.current = now
+          syncServerHistory()
+        }
+        wasConnectedRef.current = true
+      } else {
+        wasConnectedRef.current = false
       }
     }
     check()
@@ -42,25 +91,46 @@ export function useComfyUI() {
 
   // Set up progress callback
   useEffect(() => {
+    // The websocket is shared across flows — the 3D panel runs its own
+    // prompts too. Only act on messages for the prompt WE queued; a
+    // message with an id but no matching currentPromptId belongs to
+    // another flow (or a pre-reload job) and is ignored.
+    const isOurs = (id) => id == null || id === useStore.getState().currentPromptId
+
     setProgressCallback((progress) => {
+      if (!isOurs(progress.promptId)) return
       useStore.getState().setProgress(progress)
     })
-    setCompletionCallback((promptId, error) => {
+    // Friendly phase of the running node ("Decoding audio", "Sampling") —
+    // keeps the UI alive when sampling hits 20/20 but the job still has
+    // minutes of VAE decoding left.
+    setPhaseCallback((label, promptId) => {
+      if (!isOurs(promptId)) return
+      useStore.getState().setProgressLabel(label)
+    })
+    setCompletionCallback(async (promptId, error) => {
       const st = useStore.getState()
       if (error) {
-        const msg =
-          error.exception_message ||
-          error.message ||
-          `Execution failed on node ${error.node_id || '?'} (${error.node_type || 'unknown'})`
-        st.setError(`ComfyUI execution error: ${msg}`)
+        if (!isOurs(error.prompt_id)) return
+        const base_msg = String(error.exception_message || error.message || '').trim()
+        const fallback = `Execution failed on node ${error.node_id ?? '?'} (${error.node_type || 'unknown'})`
+        const where = error.node_type ? ` (node ${error.node_id ?? '?'}: ${error.node_type})` : ''
+        const msg = base_msg || fallback
+        st.setError(`ComfyUI execution error: ${msg}${base_msg ? where : ''}`)
+        // A failed run's models are still resident — free them now.
+        await freeModelsAfterRun()
         st.setGenerating(false)
         st.setProgress(null)
+        st.setProgressLabel(null)
         return
       }
+      if (!isOurs(promptId)) return
       if (!promptId) {
         st.setError('ComfyUI finished without reporting a prompt_id.')
+        await freeModelsAfterRun()
         st.setGenerating(false)
         st.setProgress(null)
+        st.setProgressLabel(null)
         return
       }
       handleCompletion(promptId)
@@ -83,10 +153,8 @@ export function useComfyUI() {
         state.setError(`No history found for prompt ${promptId} — did ComfyUI restart or clear its queue?`)
         return
       }
-      if (entry.status?.completed === false) {
-        const errMsg =
-          entry.status?.messages?.map((m) => m?.[1]?.exception_message || m?.[1] || '').filter(Boolean).join(' | ') ||
-          'execution did not complete'
+      if (entry.status?.completed === false || entry.status?.status_str === 'error') {
+        const errMsg = extractHistoryError(entry) || 'execution did not complete'
         state.setError(`ComfyUI reported failure: ${errMsg}`)
         return
       }
@@ -133,16 +201,38 @@ export function useComfyUI() {
           found = true
           break
         }
+
+        // Music output (WAV / MP3 from SaveAudio / SaveAudioMP3)
+        if (output.audio?.length > 0) {
+          const au = output.audio[0]
+          const url = await getViewUrl(base, au.filename, au.subfolder || '', au.type || 'output')
+          state.setOutputAudio(url)
+          state.addToHistory({
+            id: promptId,
+            type: 'music',
+            prompt: state.prompt,
+            lyrics: state.lyrics,
+            data: url,
+            timestamp: Date.now(),
+            settings: { ...state.musicSettings },
+          })
+          found = true
+          break
+        }
       }
       if (!found) {
-        state.setError('ComfyUI finished but produced no image/video output. Check the model filenames in Settings.')
+        state.setError('ComfyUI finished but produced no image/video/music output. Check the model filenames in Settings.')
       }
     } catch (err) {
       console.error('Failed to fetch output:', err)
       state.setError(`Failed to process results: ${err.message}`)
     } finally {
+      // Run finished (any path) → drop models from VRAM immediately so
+      // the next run — often a different pipeline — starts clean.
+      await freeModelsAfterRun()
       state.setGenerating(false)
       state.setProgress(null)
+      state.setProgressLabel(null)
       if (timerRef.current) {
         clearInterval(timerRef.current)
         timerRef.current = null
@@ -156,8 +246,10 @@ export function useComfyUI() {
 
     state.setGenerating(true)
     state.setProgress({ value: 0, max: 1, step: 0, total: 1 })
+    state.setProgressLabel(null)
     state.setOutputImage(null)
     state.setOutputVideo(null)
+    state.setOutputAudio(null)
     state.clearError()
     // Activity for the idle-unload timer: models are (about to be) loaded
     state.setLastGenAt(Date.now())
@@ -171,6 +263,42 @@ export function useComfyUI() {
 
     try {
       const base = resolveApiBase(state.serverUrl, state.useProxy)
+      // Belt & braces: if the previous run (or an unknown state after a
+      // fresh page load) left models in VRAM and the post-run free didn't
+      // go through, free them NOW — before queueing. Cross-pipeline
+      // leftovers push long jobs into OOM; skipping when the last free
+      // succeeded keeps the happy path at one /free per run.
+      if (state.autoUnload && (!state.lastGenAt || !state.modelsUnloaded)) {
+        await freeLoadedModels(base)
+      }
+      // Preflight: configured models must actually exist on the server, and
+      // video mode must be pointed at a VIDEO model — otherwise the prompt
+      // dies server-side (e.g. an image model fed a 5D video latent crashes
+      // with "too many values to unpack (expected 4)").
+      // Edit mode: the configured unet may predate this server (e.g. the
+      // old qwen_image_edit_fp8 default) — resolve against what's actually
+      // installed instead of failing the run before it starts.
+      let models = state.models
+      if (state.mode === 'edit') {
+        try {
+          const lists = await getModelLists(base)
+          const cur = state.models.edit?.unet
+          if (lists?.unet?.length && cur && !lists.unet.includes(cur)) {
+            const pick =
+              lists.unet.find((m) => /qwen.*edit/i.test(m)) ||
+              lists.unet.find((m) => /qwen.*2/i.test(m)) ||
+              lists.unet.find((m) => /qwen/i.test(m)) ||
+              lists.unet[0]
+            if (pick && pick !== cur) {
+              models = { ...models, edit: { ...models.edit, unet: pick } }
+              state.setModels('edit', models.edit)
+            }
+          }
+        } catch {
+          /* unreachable server — assertModelsAvailable reports it below */
+        }
+      }
+      await assertModelsAvailable(base, state.mode, models)
       let workflow
       if (state.mode === 'edit') {
         if (!state.sourceImage?.file) {
@@ -185,9 +313,9 @@ export function useComfyUI() {
           steps: state.editSettings.steps,
           cfg: state.editSettings.cfg,
           models: {
-            unet: state.models.edit?.unet || 'qwen_image_edit_fp8_e4m3fn.safetensors',
-            clip: state.models.image.clip,
-            vae: state.models.image.vae,
+            unet: models.edit?.unet || 'qwen_image_edit_fp8_e4m3fn.safetensors',
+            clip: models.image.clip,
+            vae: models.image.vae,
           },
         })
       } else if (state.mode === 'image') {
@@ -200,6 +328,26 @@ export function useComfyUI() {
           cfg: state.imageSettings.cfg,
           turboMode: state.imageSettings.turboMode,
           models: state.models.image,
+        })
+      } else if (state.mode === 'music') {
+        // Music loads an 8.7 GB text encoder + DIT + audio VAE back-to-back;
+        // leftover image/video models push the final VAE decode into OOM
+        // (tiled-decode fallback + minutes of retries), so always start
+        // clean regardless of the auto-unload setting.
+        await freeLoadedModels(base)
+        workflow = buildMusicWorkflow({
+          caption: state.prompt,
+          lyrics: state.lyrics,
+          duration: state.musicSettings.duration,
+          seed: state.musicSettings.seed,
+          steps: state.musicSettings.steps,
+          cfgScale: state.musicSettings.cfgScale,
+          quality: state.musicSettings.quality,
+          models: {
+            unet: state.models.music?.unet || 'minimax_music3_dit_int8_convrot.safetensors',
+            clip: state.models.music?.clip || 'minimax_music3_text_encoder_pruned_int8_convrot.safetensors',
+            vae: state.models.music?.vae || 'minimax_music3_dav.safetensors',
+          },
         })
       } else {
         workflow = buildVideoWorkflow({
@@ -222,6 +370,7 @@ export function useComfyUI() {
       state.setError(err.message || 'Generation failed for an unknown reason.')
       state.setGenerating(false)
       state.setProgress(null)
+      state.setProgressLabel(null)
       if (timerRef.current) {
         clearInterval(timerRef.current)
         timerRef.current = null

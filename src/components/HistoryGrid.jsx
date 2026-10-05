@@ -1,5 +1,5 @@
 import { motion } from 'framer-motion'
-import { Image, Film, Trash2 } from 'lucide-react'
+import { Image, Film, Music, Trash2 } from 'lucide-react'
 import useStore from '../store/useStore'
 import clsx from 'clsx'
 
@@ -48,11 +48,18 @@ export default function HistoryGrid() {
           >
             <Trash2 size={10} />
           </span>
-          <img
-            src={entry.data}
-            alt={entry.prompt}
-            className="w-full h-full object-cover"
-          />
+          {/* Music entries are audio URLs — no thumbnail, show a tile instead */}
+          {entry.type === 'music' ? (
+            <span className="absolute inset-0 flex items-center justify-center bg-gradient-to-br from-purple-500/30 to-accent/20">
+              <Music size={22} className="text-white/80" />
+            </span>
+          ) : (
+            <img
+              src={entry.data}
+              alt={entry.prompt}
+              className="w-full h-full object-cover"
+            />
+          )}
           <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent opacity-0 hover:opacity-100 transition-opacity">
             <div className="absolute bottom-1 left-1 right-1">
               <p className="text-[9px] text-white/80 line-clamp-2 leading-tight">
@@ -63,6 +70,8 @@ export default function HistoryGrid() {
           <div className="absolute top-1 right-1">
             {entry.type === 'video' ? (
               <Film size={10} className="text-white/70" />
+            ) : entry.type === 'music' ? (
+              <Music size={10} className="text-white/70" />
             ) : (
               <Image size={10} className="text-white/70" />
             )}

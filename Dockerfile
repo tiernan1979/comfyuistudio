@@ -16,6 +16,10 @@ FROM nginx:alpine
 # Copy built assets
 COPY --from=build /app/dist /usr/share/nginx/html
 
+# WebDAV PUT of /config.json writes a temp file in this directory as the
+# unprivileged nginx worker — keep the directory writable
+RUN chmod 777 /usr/share/nginx/html
+
 # Nginx config with dynamic /proxy/<host>/<port>/... reverse proxy.
 # The ComfyUI backend is taken from the Server URL saved in the web UI.
 COPY nginx.conf /etc/nginx/conf.d/default.conf

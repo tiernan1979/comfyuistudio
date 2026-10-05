@@ -44,7 +44,7 @@ export default function GenerateButton() {
         ) : (
           <>
             <Zap size={16} />
-            Generate
+            {mode === 'music' ? 'Generate Music' : 'Generate'}
           </>
         )}
       </span>

@@ -55,9 +55,13 @@ export default function SettingsPanel() {
   const imageSettings = useStore((s) => s.imageSettings)
   const videoSettings = useStore((s) => s.videoSettings)
   const editSettings = useStore((s) => s.editSettings)
+  const musicSettings = useStore((s) => s.musicSettings)
   const setImageSettings = useStore((s) => s.setImageSettings)
   const setVideoSettings = useStore((s) => s.setVideoSettings)
   const setEditSettings = useStore((s) => s.setEditSettings)
+  const setMusicSettings = useStore((s) => s.setMusicSettings)
+  const lyrics = useStore((s) => s.lyrics)
+  const setLyrics = useStore((s) => s.setLyrics)
   const generating = useStore((s) => s.generating)
 
   if (mode === 'edit') {
@@ -90,6 +94,95 @@ export default function SettingsPanel() {
           max={2 ** 48}
           disabled={generating}
           suffix={editSettings.seed === -1 ? ' (random)' : ''}
+        />
+      </div>
+    )
+  }
+
+  if (mode === 'music') {
+    return (
+      <div className="space-y-4">
+        <div>
+          <label className="text-xs text-text-muted mb-1.5 block">
+            Lyrics <span className="text-text-muted/60">(optional — empty = instrumental)</span>
+          </label>
+          <textarea
+            value={lyrics}
+            onChange={(e) => setLyrics(e.target.value)}
+            disabled={generating}
+            rows={4}
+            placeholder={'Verse 1:\nYour words here…\n\nChorus:\n…'}
+            className="w-full px-3 py-2 rounded-xl bg-bg-card border border-border text-text-primary placeholder:text-text-muted resize-y min-h-20 text-xs leading-relaxed focus:outline-none focus:ring-2 focus:ring-accent disabled:opacity-50"
+          />
+        </div>
+
+        <Slider
+          label="Duration"
+          value={musicSettings.duration}
+          onChange={(v) => setMusicSettings({ duration: v })}
+          min={10}
+          max={300}
+          step={5}
+          disabled={generating}
+          suffix="s"
+        />
+
+        <Slider
+          label="Steps"
+          value={musicSettings.steps}
+          onChange={(v) => setMusicSettings({ steps: v })}
+          min={4}
+          max={40}
+          disabled={generating}
+        />
+
+        <Slider
+          label="Guidance (cfg)"
+          value={musicSettings.cfgScale}
+          onChange={(v) => setMusicSettings({ cfgScale: v })}
+          min={0}
+          max={4}
+          step={0.1}
+          disabled={generating}
+        />
+
+        <div>
+          <label className="text-xs text-text-muted mb-1.5 block">Output Quality</label>
+          <div className="grid grid-cols-2 gap-1.5">
+            {[
+              { v: 'wav', t: 'WAV (lossless)' },
+              { v: '320k', t: 'MP3 320k' },
+              { v: 'V0', t: 'MP3 V0' },
+              { v: '128k', t: 'MP3 128k' },
+            ].map((q) => (
+              <motion.button
+                key={q.v}
+                whileHover={{ scale: 1.05 }}
+                whileTap={{ scale: 0.95 }}
+                onClick={() => setMusicSettings({ quality: q.v })}
+                disabled={generating}
+                className={clsx(
+                  'px-2 py-1.5 rounded-lg text-xs transition-all',
+                  musicSettings.quality === q.v
+                    ? 'bg-accent text-white shadow-lg shadow-accent/25'
+                    : 'bg-bg-card text-text-secondary hover:bg-bg-hover',
+                  generating && 'opacity-50'
+                )}
+              >
+                {q.t}
+              </motion.button>
+            ))}
+          </div>
+        </div>
+
+        <Slider
+          label="Seed"
+          value={musicSettings.seed}
+          onChange={(v) => setMusicSettings({ seed: v })}
+          min={-1}
+          max={2 ** 48}
+          disabled={generating}
+          suffix={musicSettings.seed === -1 ? ' (random)' : ''}
         />
       </div>
     )

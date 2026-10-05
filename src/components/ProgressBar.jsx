@@ -3,12 +3,13 @@ import useStore from '../store/useStore'
 
 export default function ProgressBar() {
   const progress = useStore((s) => s.progress)
+  const progressLabel = useStore((s) => s.progressLabel)
   const generating = useStore((s) => s.generating)
   const elapsedTime = useStore((s) => s.elapsedTime)
 
-  if (!generating || !progress) return null
+  if (!generating || (!progress && !progressLabel)) return null
 
-  const pct = progress.max > 0 ? (progress.step / progress.max) * 100 : 0
+  const pct = progress && progress.max > 0 ? (progress.step / progress.max) * 100 : 0
 
   const formatTime = (s) => {
     const m = Math.floor(s / 60)
@@ -25,18 +26,27 @@ export default function ProgressBar() {
     >
       <div className="flex items-center justify-between mb-1.5 text-xs text-text-secondary">
         <span>
-          Step {progress.step} / {progress.total}
+          {progress ? (
+            <>
+              Step {progress.step} / {progress.total}
+              {progressLabel ? <span className="text-accent"> · {progressLabel}</span> : null}
+            </>
+          ) : (
+            <span className="text-accent">{progressLabel || 'Working…'}</span>
+          )}
         </span>
         <span>{formatTime(elapsedTime)}</span>
       </div>
-      <div className="w-full h-2 rounded-full bg-bg-card overflow-hidden">
-        <motion.div
-          className="h-full rounded-full bg-gradient-to-r from-accent to-purple-500 progress-active"
-          initial={{ width: 0 }}
-          animate={{ width: `${pct}%` }}
-          transition={{ duration: 0.3 }}
-        />
-      </div>
+      {progress && (
+        <div className="w-full h-2 rounded-full bg-bg-card overflow-hidden">
+          <motion.div
+            className="h-full rounded-full bg-gradient-to-r from-accent to-purple-500 progress-active"
+            initial={{ width: 0 }}
+            animate={{ width: `${pct}%` }}
+            transition={{ duration: 0.3 }}
+          />
+        </div>
+      )}
     </motion.div>
   )
 }

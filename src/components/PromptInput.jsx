@@ -1,9 +1,10 @@
 import { useState } from 'react'
 import { motion } from 'framer-motion'
-import { Sparkles, ChevronDown, ChevronUp, Wand2, Bot, Loader2, Globe } from 'lucide-react'
+import { Sparkles, ChevronDown, ChevronUp, Wand2, Bot, Loader2, Globe, BookmarkPlus } from 'lucide-react'
 import useStore from '../store/useStore'
 import { STYLES, enhancePrompt } from '../lib/enhance'
 import { rewritePrompt, resolveLlmConfig, PROVIDERS } from '../lib/llm'
+import Dropdown from './Dropdown'
 
 const EXAMPLES = [
   'A majestic dragon flying over a medieval castle at sunset, dramatic lighting, highly detailed',
@@ -16,6 +17,7 @@ const PLACEHOLDERS = {
   image: 'Describe what you want to create...',
   edit: "Describe the change... e.g. 'change the background to a beach at sunset, keep the person the same'",
   video: 'Describe the video... e.g. a fox running through snowy woods at sunset',
+  music: 'Describe the song... e.g. dreamy lo-fi hip hop beat with soft electric piano, warm bass and vinyl crackle',
 }
 
 export default function PromptInput() {
@@ -34,12 +36,20 @@ export default function PromptInput() {
   const setShowWebSearch = useStore((s) => s.setShowWebSearch)
   const searchQuery = useStore((s) => s.searchQuery)
   const setSearchQuery = useStore((s) => s.setSearchQuery)
+  const addSavedPrompt = useStore((s) => s.addSavedPrompt)
   const [showNegative, setShowNegative] = useState(false)
   const [rewriting, setRewriting] = useState(false)
+
+  const styleOptions = Object.entries(STYLES).map(([key, s]) => ({ value: key, label: s.label }))
 
   const insertExample = () => {
     const ex = EXAMPLES[Math.floor(Math.random() * EXAMPLES.length)]
     setPrompt(ex)
+  }
+
+  const saveCurrentPrompt = () => {
+    if (!prompt.trim()) return
+    addSavedPrompt({ prompt, negativePrompt, style })
   }
 
   const applyStyle = (styleKey) => {
@@ -98,59 +108,64 @@ export default function PromptInput() {
 
   return (
     <div className="space-y-2">
-      <div className="flex items-center gap-2">
-        {mode !== 'edit' && (
+      <div className="flex items-center gap-2 flex-wrap">
+        {mode !== 'edit' && mode !== 'music' && (
           <>
             <span className="text-xs text-text-muted shrink-0">Style</span>
-            <select
-              value={style}
-              onChange={(e) => applyStyle(e.target.value)}
-              disabled={generating}
-              className="flex-1 min-w-0 px-2 py-1.5 rounded-lg bg-bg-card border border-border text-xs text-text-primary focus:outline-none focus:ring-1 focus:ring-accent disabled:opacity-50 cursor-pointer"
-            >
-              {Object.entries(STYLES).map(([key, s]) => (
-                <option key={key} value={key}>
-                  {s.label}
-                </option>
-              ))}
-            </select>
-            <motion.button
-              whileHover={{ scale: 1.05 }}
-              whileTap={{ scale: 0.95 }}
-              onClick={handleEnhance}
-              disabled={generating || rewriting || !prompt.trim()}
-              className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium bg-accent/15 text-accent hover:bg-accent/25 transition-colors disabled:opacity-40 shrink-0"
-              title="Expand plain words into a detailed prompt (offline)"
-            >
-              <Wand2 size={12} />
-              Enhance
-            </motion.button>
-            <motion.button
-              whileHover={{ scale: 1.05 }}
-              whileTap={{ scale: 0.95 }}
-              onClick={handleAiRewrite}
-              disabled={generating || rewriting || !prompt.trim()}
-              className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium bg-purple-500/15 text-purple-300 hover:bg-purple-500/25 transition-colors disabled:opacity-40 shrink-0"
-              title={`Rewrite with ${PROVIDERS[llmProvider]?.short || 'AI'}${
-                llmConfigs[llmProvider]?.model ? ` (${llmConfigs[llmProvider].model})` : ' (not configured)'
-              } — configure in Settings`}
-            >
-              {rewriting ? <Loader2 size={12} className="animate-spin" /> : <Bot size={12} />}
-              {rewriting ? 'Writing...' : 'AI'}
-            </motion.button>
+            <div className="flex-1 min-w-36">
+              <Dropdown
+                value={style}
+                onChange={applyStyle}
+                options={styleOptions}
+                disabled={generating}
+                ariaLabel="Style"
+              />
+            </div>
           </>
         )}
-        <motion.button
-          whileHover={{ scale: 1.05 }}
-          whileTap={{ scale: 0.95 }}
-          onClick={() => setShowWebSearch(true)}
-          disabled={generating}
-          className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium bg-sky-500/15 text-sky-300 hover:bg-sky-500/25 transition-colors disabled:opacity-40 shrink-0 ${mode === 'edit' ? '' : 'ml-auto'}`}
-          title="Search the web for a reference image, then AI-update it (SearXNG)"
-        >
-          <Globe size={12} />
-          Web
-        </motion.button>
+        {mode !== 'edit' && (
+          <div className="flex items-center gap-1.5 shrink-0">
+              <motion.button
+                whileHover={{ scale: 1.05 }}
+                whileTap={{ scale: 0.95 }}
+                onClick={handleEnhance}
+                disabled={generating || rewriting || !prompt.trim()}
+                className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium bg-accent/15 text-accent hover:bg-accent/25 transition-colors disabled:opacity-40 shrink-0"
+                title="Expand plain words into a detailed prompt (offline)"
+              >
+                <Wand2 size={12} />
+                Enhance
+              </motion.button>
+              <motion.button
+                whileHover={{ scale: 1.05 }}
+                whileTap={{ scale: 0.95 }}
+                onClick={handleAiRewrite}
+                disabled={generating || rewriting || !prompt.trim()}
+                className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium bg-purple-500/15 text-purple-300 hover:bg-purple-500/25 transition-colors disabled:opacity-40 shrink-0"
+                title={`Rewrite with ${PROVIDERS[llmProvider]?.short || 'AI'}${
+                  llmConfigs[llmProvider]?.model ? ` (${llmConfigs[llmProvider].model})` : ' (not configured)'
+                } — configure in Settings`}
+              >
+                {rewriting ? <Loader2 size={12} className="animate-spin" /> : <Bot size={12} />}
+                {rewriting ? 'Writing...' : 'AI'}
+              </motion.button>
+            </div>
+        )}
+        {/* Reference-image web search only makes sense for image/edit —
+            hidden from Video, Music and 3D (their prompts take no source image). */}
+        {(mode === 'image' || mode === 'edit') && (
+          <motion.button
+            whileHover={{ scale: 1.05 }}
+            whileTap={{ scale: 0.95 }}
+            onClick={() => setShowWebSearch(true)}
+            disabled={generating}
+            className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium bg-sky-500/15 text-sky-300 hover:bg-sky-500/25 transition-colors disabled:opacity-40 shrink-0"
+            title="Search the web for a reference image, then AI-update it (SearXNG)"
+          >
+            <Globe size={12} />
+            Web
+          </motion.button>
+        )}
       </div>
       <div className="relative">
         <textarea
@@ -163,10 +178,20 @@ export default function PromptInput() {
           placeholder={PLACEHOLDERS[mode] || PLACEHOLDERS.image}
           disabled={generating}
           rows={4}
-          className="w-full px-4 py-3 rounded-xl bg-bg-card border border-border text-text-primary placeholder:text-text-muted resize-none focus:outline-none focus:ring-2 focus:ring-accent focus:border-transparent transition-all duration-200 text-sm leading-relaxed disabled:opacity-50"
+          className="w-full min-h-28 px-4 py-3 rounded-xl bg-bg-card border border-border text-text-primary placeholder:text-text-muted resize-y focus:outline-none focus:ring-2 focus:ring-accent focus:border-transparent transition-all duration-200 text-sm leading-relaxed disabled:opacity-50"
         />
         <div className="absolute bottom-2 right-3 flex items-center gap-2">
           <span className="text-[10px] text-text-muted">{prompt.length}</span>
+          <motion.button
+            whileHover={{ scale: 1.05 }}
+            whileTap={{ scale: 0.95 }}
+            onClick={saveCurrentPrompt}
+            disabled={generating || !prompt.trim()}
+            className="p-1 rounded-md bg-bg-hover hover:bg-accent/20 text-text-muted hover:text-accent transition-colors disabled:opacity-50"
+            title="Save this prompt to the sidebar"
+          >
+            <BookmarkPlus size={14} />
+          </motion.button>
           <motion.button
             whileHover={{ scale: 1.05 }}
             whileTap={{ scale: 0.95 }}
@@ -180,15 +205,18 @@ export default function PromptInput() {
         </div>
       </div>
 
-      <motion.button
-        onClick={() => setShowNegative(!showNegative)}
-        className="flex items-center gap-1 text-xs text-text-muted hover:text-text-secondary transition-colors"
-      >
-        {showNegative ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
-        Negative prompt
-      </motion.button>
+      {/* MiniMax Music has no negative conditioning — hide the field in music mode */}
+      {mode !== 'music' && (
+        <motion.button
+          onClick={() => setShowNegative(!showNegative)}
+          className="flex items-center gap-1 text-xs text-text-muted hover:text-text-secondary transition-colors"
+        >
+          {showNegative ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+          Negative prompt
+        </motion.button>
+      )}
 
-      {showNegative && (
+      {showNegative && mode !== 'music' && (
         <motion.textarea
           initial={{ opacity: 0, height: 0 }}
           animate={{ opacity: 1, height: 'auto' }}
@@ -198,7 +226,7 @@ export default function PromptInput() {
           placeholder="Things to avoid..."
           disabled={generating}
           rows={2}
-          className="w-full px-4 py-2.5 rounded-xl bg-bg-card border border-border text-text-primary placeholder:text-text-muted resize-none focus:outline-none focus:ring-2 focus:ring-danger focus:border-transparent transition-all duration-200 text-xs disabled:opacity-50"
+          className="w-full min-h-16 px-4 py-2.5 rounded-xl bg-bg-card border border-border text-text-primary placeholder:text-text-muted resize-y focus:outline-none focus:ring-2 focus:ring-danger focus:border-transparent transition-all duration-200 text-xs disabled:opacity-50"
         />
       )}
     </div>

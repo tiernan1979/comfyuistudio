@@ -2,9 +2,11 @@ import { useState, useRef } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Download, Maximize2, X, Play, Pause } from 'lucide-react'
 import useStore from '../store/useStore'
+import { looksLikeVideoModel } from '../lib/comfyui'
 
 export default function VideoPlayer() {
   const outputVideo = useStore((s) => s.outputVideo)
+  const videoUnet = useStore((s) => s.models?.video?.unet)
   const generating = useStore((s) => s.generating)
   const progress = useStore((s) => s.progress)
   const [playing, setPlaying] = useState(true)
@@ -123,8 +125,10 @@ export default function VideoPlayer() {
               <p className="text-sm text-text-muted">
                 Enter a prompt to generate a video
               </p>
-              <p className="text-xs text-text-muted/60">
-                Uses Wan 2.1 model via ComfyUI
+              <p className={`text-xs ${videoUnet && looksLikeVideoModel(videoUnet) ? 'text-text-muted/60' : 'text-warning'}`}>
+                {videoUnet && looksLikeVideoModel(videoUnet)
+                  ? `Uses ${videoUnet} via ComfyUI`
+                  : 'No video model configured — open Settings → Models'}
               </p>
             </motion.div>
           )}

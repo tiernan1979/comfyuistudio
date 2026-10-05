@@ -26,5 +26,35 @@
     "edit": {
       "unet": "qwen_image_edit_fp8_e4m3fn.safetensors"
     }
+  },
+  "threeD": {
+    "enabled": false,
+    "pipeline": "local",
+    "pixalModelRepo": "TencentARC/Pixal3D",
+    "pixalVramMode": "dynamic_vram",
+    "qualityPreset": "standard",
+    "pixalPipeline": "1536_cascade",
+    "pixalCameraRes": 1024,
+    "pixalTextureSize": 4096,
+    "pixalDecimation": 500000,
+    "pixalSteps": 50,
+    "pixalGuidance": 7.0,
+    "pixalTextureGuidance": 3.5,
+    "pixalMaxTokens": 49152,
+    "pixalRemesh": true,
+    "pixalEnhance": "sharpen",
+    "pixalUpscaleModel": "",
+    "miaPrecision": "fp32",
+    "localAnimationFile": "",
+    "tripoModelVersion": "v3.1-20260211",
+    "tripoRigVersion": "v1.0-20240301",
+    "tripoRigType": "auto",
+    "tripoSpec": "tripo",
+    "tripoOutFormat": "glb",
+    "tripoPreset": "preset:walk",
+    "tripoTextureQuality": "extreme",
+    "tripoGeometryQuality": "detailed",
+    "tripoTextureAlignment": "original_image",
+    "tripoPbr": true
   }
 }

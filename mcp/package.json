@@ -1,0 +1,17 @@
+{
+  "name": "comfyui-studio-mcp",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "MCP stdio server for ComfyUI Studio — generate image/edit/video/music and read models/history/queue via the Studio REST API.",
+  "bin": {
+    "comfyui-studio-mcp": "./index.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "zod": "^3.24.0"
+  }
+}

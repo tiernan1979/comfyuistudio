@@ -2,12 +2,15 @@ import { useEffect, useRef, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { X, Search, Loader2, Globe, ExternalLink, ImageOff, Bot } from 'lucide-react'
 import useStore from '../store/useStore'
-import { searchImages, downloadImage } from '../lib/search'
+import { searchImages, downloadImage, searchEngineInfo } from '../lib/search'
 
 export default function WebSearchPanel() {
   const show = useStore((s) => s.showWebSearch)
   const setShow = useStore((s) => s.setShowWebSearch)
   const searchUrl = useStore((s) => s.searchUrl)
+  const searchEngine = useStore((s) => s.searchEngine)
+  const searchApiKey = useStore((s) => s.searchApiKey)
+  const searchCseId = useStore((s) => s.searchCseId)
   const prompt = useStore((s) => s.prompt)
   const searchQuery = useStore((s) => s.searchQuery)
 
@@ -32,7 +35,11 @@ export default function WebSearchPanel() {
     setResults([])
     setSearched(false)
     try {
-      const r = await searchImages(searchUrl, term, ctrl.signal)
+      const r = await searchImages(
+        { engine: searchEngine, searchUrl, apiKey: searchApiKey, cseId: searchCseId },
+        term,
+        ctrl.signal
+      )
       setResults(r)
       setSearched(true)
     } catch (err) {
@@ -255,7 +262,8 @@ export default function WebSearchPanel() {
             )}
             <div className="flex items-center justify-between">
               <span className="text-[10px] text-text-muted truncate max-w-[60%]">
-                via {searchUrl || 'SearXNG — not configured'}
+                via {searchEngineInfo(searchEngine).label}
+                {searchEngine === 'searxng' && !searchUrl ? ' — not configured' : ''}
               </span>
               {results.length > 0 && results[0].page && (
                 <a

@@ -17,8 +17,11 @@ Static frontend (React + Vite) served by nginx; every external request (ComfyUI,
   - Anthropic (Claude)
   - any OpenAI-compatible endpoint (OpenRouter, Groq, Ollama, vLLM, …)
 - **Web image search → edit** — search your own [SearXNG](https://github.com/searxng/searxng), click a result, and use it as the edit source
+- **3D generation** (optional) — character image → 3D model → auto-rig → walk/run/jump animation:
+  - *Local pipeline*: [Pixal3D](https://github.com/TencentARC/Pixal3D) image → GLB, then MIA/UniRig auto-rig (+ Mixamo animations) on your own ComfyUI
+  - *Tripo pipeline*: one cloud job — image → model → rig → 116 preset animations (needs ComfyUI signed in to comfy.org)
 - **Idle model unloading** — tells ComfyUI to free VRAM after 5 minutes without generations (configurable)
-- **On-disk deployment config** — instance settings live in a `config.json` file, not in the code
+- **On-disk deployment config** — instance settings live in a `config.json` file, not in the code; Settings → Save writes it back so every browser shares it
 
 ## Quick start
 
@@ -48,7 +51,9 @@ cd comfyuistudio
 docker compose pull && docker compose up -d
 
 # ...or build locally instead
-docker compose up -d --build
+./deploy.sh               # = docker compose build && up -d, but keeps your
+                          #   saved Settings (plain `up -d --build` resets
+                          #   config.json to defaults)
 ```
 
 ### Option C — from source (development)
@@ -63,7 +68,9 @@ npm run build      # production build into dist/
 
 ## Configuration
 
-Instance configuration lives in **[`public/config.json`](public/config.json)** — a plain file on disk, mounted read-only into the container by `docker-compose.yml`. Edit it, run `docker compose restart`, done. No rebuild needed.
+Instance configuration lives in **[`public/config.json`](public/config.json)**, baked into the image. It is served read-only (`Cache-Control: no-store`) and the in-app **Settings → Save** writes an updated copy back into the container through nginx's WebDAV `PUT /config.json` — no rebuild, no shell access, and every browser picks the change up on its next load.
+
+> **Rebuilding the image resets `config.json`** to the baked defaults (it lives in the container, not a volume). Use **`./deploy.sh`** for local builds — it backs up the live config and restores it after the restart.
 
 ```jsonc
 {
@@ -76,11 +83,18 @@ Instance configuration lives in **[`public/config.json`](public/config.json)** �
     "anthropic": { "model": "claude-haiku-4-5" },
     "custom":    { "url": "", "model": "" }
   },
-  "models": { /* image / video / edit model filenames for your ComfyUI install */ }
+  "models": { /* image / video / edit model filenames for your ComfyUI install */ },
+  "threeD": {
+    "enabled": false,             // show the 3D tab
+    "pipeline": "local",          // local = Pixal3D + MIA (free), tripo = Tripo cloud (paid credits)
+    "pixalModelRepo": "TencentARC/Pixal3D",
+    "pixalEnhance": "sharpen",    // none | sharpen | esrgan (free, local) | magnific4x (paid)
+    "tripoPreset": "preset:walk"  // default animation (walk/run/jump/…)
+  }
 }
 ```
 
-**Precedence:** `config.json` only seeds browsers that have **no saved settings yet**. Anything you change in the in-app Settings screen is stored in that browser and wins from then on. To re-seed a browser from the config file, clear the site's local storage.
+**Precedence:** a fresh browser (no saved settings yet) always seeds from `config.json`. After any **Settings → Save** the file carries `synced: true`, and from then on every browser applies it on load — change a setting once, it shows up everywhere. Settings you made before that still win until the first Save. To re-seed one browser from scratch, clear the site's local storage.
 
 **API keys are never read from disk.** OpenAI / Anthropic keys are typed into the Settings screen and stay in that browser's local storage — `config.json` only carries non-secret values, and the loader strips any `key` fields defensively.
 
@@ -93,6 +107,8 @@ All other settings (ComfyUI URL, models, providers, SearXNG URL) can also be cha
 | Image generation | ComfyUI + Qwen-Image models (UNet, CLIP, VAE) |
 | Edit mode | ComfyUI + `qwen_image_edit_*.safetensors` in `models/diffusion_models/` |
 | Video generation | ComfyUI + Wan 2.1 models |
+| 3D (local pipeline) | ComfyUI + the **Pixal3D** and **MIA/UniRig** node packs; animation FBX files in `input/animation_templates/mixamo/` |
+| 3D (Tripo pipeline) | ComfyUI signed in to comfy.org (Menu → API keys) + Tripo credits |
 | AI prompt writer | LM Studio running, or an OpenAI/Anthropic API key |
 | Web image search | A SearXNG instance with JSON format enabled (`search.formats: [html, json]`) |
 
@@ -101,7 +117,7 @@ The ComfyUI URL is set in Settings (or `config.json`); with the default `useProx
 ## Repository layout
 
 ```
-public/config.json        deployment config (mounted into the container)
+public/config.json        deployment config (baked into the image, updated by Settings → Save)
 src/lib/                  comfyui client, workflows, llm client, search, config loader
 src/store/useStore.js     persisted app state (Zustand)
 src/components/           UI

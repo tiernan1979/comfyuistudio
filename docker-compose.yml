@@ -6,11 +6,6 @@ services:
     build: .
     ports:
       - "5555:80"
-    volumes:
-      # Deployment config: edit public/config.json on the host, then
-      #   docker compose restart
-      # Seeds browsers that have no saved settings yet.
-      - ./public/config.json:/usr/share/nginx/html/config.json:ro
     environment:
       - NODE_ENV=production
     extra_hosts:
@@ -18,3 +13,25 @@ services:
       # e.g. LM Studio at http://host.docker.internal:1234
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
+
+  # Optional LAN REST API (generate image/edit/video/music, models, history,
+  # shared hidden-ids for cross-device deletes). See api/src/server.js.
+  studio-api:
+    build:
+      context: .
+      dockerfile: api/Dockerfile
+    ports:
+      - "5557:5557"
+    environment:
+      - COMFYUI_URL=http://10.1.1.102:8188
+      # Set to require Authorization: Bearer <key> on every /api route
+      - API_KEY=
+      - DATA_DIR=/app/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+    volumes:
+      - studio-api-data:/app/data
+
+volumes:
+  studio-api-data:

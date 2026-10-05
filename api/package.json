@@ -1,0 +1,16 @@
+{
+  "name": "comfyui-studio-api",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "LAN REST API over ComfyUI Studio: generate image/edit/video/music, model lists, history, shared hidden-ids (cross-device deletes).",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/server.js"
+  },
+  "dependencies": {
+    "express": "^4.21.2"
+  }
+}

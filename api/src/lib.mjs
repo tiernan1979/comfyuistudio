@@ -1,0 +1,238 @@
+// Pure helpers for the Studio REST API — no server I/O, unit-tested directly.
+// Defaults mirror src/store/useStore.js (DEFAULT_MODELS + *Settings) so the
+// API behaves exactly like the app's own defaults.
+
+import {
+  buildImageWorkflow,
+  buildEditWorkflow,
+  buildVideoWorkflow,
+  buildMusicWorkflow,
+} from '../../src/lib/workflows.js'
+
+export const MODES = ['image', 'edit', 'video', 'music']
+
+export const DEFAULT_MODELS = {
+  image: {
+    unet: 'qwen_image_fp8_e4m3fn.safetensors',
+    clip: 'qwen_2.5_vl_7b_fp8_scaled.safetensors',
+    vae: 'qwen_image_vae.safetensors',
+    lora: '',
+  },
+  edit: {
+    unet: 'qwen_image_edit_fp8_e4m3fn.safetensors',
+    clip: 'qwen_2.5_vl_7b_fp8_scaled.safetensors',
+    vae: 'qwen_image_vae.safetensors',
+    lora: '',
+  },
+  video: {
+    unet: 'wan2.1_t2v_1.3B_bf16.safetensors',
+    clip: 'umt5_xxl_fp8_e4m3fn_scaled.safetensors',
+    vae: 'wan_2.1_vae.safetensors',
+  },
+  music: {
+    unet: 'minimax_music3_dit_int8_convrot.safetensors',
+    clip: 'minimax_music3_text_encoder_pruned_int8_convrot.safetensors',
+    vae: 'minimax_music3_dav.safetensors',
+  },
+}
+
+export const DEFAULT_SETTINGS = {
+  image: { aspectRatio: '1:1', turboMode: false, seed: -1, steps: 20, cfg: 4 },
+  edit: { seed: -1, steps: 20, cfg: 2.5 },
+  video: { resolution: '480p', frames: 33, fps: 16, seed: -1, steps: 30, cfg: 6 },
+  music: { duration: 30, seed: -1, steps: 20, cfgScale: 1.5, quality: '320k' },
+}
+
+// Preference order when the exact default file isn't on the server —
+// strongest match first (mirrors useComfyUI's edit-mode resolver).
+export const MODEL_PREFS = {
+  image: {
+    unet: [/qwen.*image/i, /flux/i],
+    clip: [/qwen_2\.5_vl/i, /qwen/i],
+    vae: [/qwen.*image.*vae/i, /qwen.*vae/i],
+  },
+  edit: {
+    unet: [/qwen.*edit/i, /qwen.*2.*int8/i, /qwen/i],
+    clip: [/qwen_2\.5_vl/i, /qwen/i],
+    vae: [/qwen.*image.*vae/i, /qwen.*vae/i],
+  },
+  video: {
+    unet: [/wan/i, /ltx/i, /hunyuan[-_ ]?video/i, /cogvideo/i],
+    clip: [/umt5/i],
+    vae: [/wan/i],
+  },
+  music: {
+    unet: [/minimax[-_ ]?music3[-_ ]?dit/i, /minimax.*dit/i, /music/i],
+    clip: [/minimax.*text.*encoder/i, /minimax/i],
+    vae: [/minimax[-_ ]?music3[-_ ]?dav/i, /dav/i, /music/i],
+  },
+}
+
+const STEM_RE = /\.(safetensors|ckpt|pt|sft|bin)$/i
+
+function stem(name) {
+  return String(name || '').replace(STEM_RE, '')
+}
+
+export function pickModel(list, want, prefs) {
+  const arr = Array.isArray(list) ? list : []
+  if (want) {
+    if (arr.includes(want)) return want
+    const w = stem(want)
+    const fuzzy = arr.find((m) => stem(m) === w)
+    if (fuzzy) return fuzzy
+  }
+  for (const re of prefs || []) {
+    const hit = arr.find((m) => re.test(String(m)))
+    if (hit) return hit
+  }
+  return arr.length > 0 ? arr[0] : null
+}
+
+// Resolve the { unet, clip, vae, lora } set for a mode against the files
+// actually on the server. Explicit overrides must exist on the server
+// (loud failure, like the app's assertModelsAvailable); defaults fall back
+// through MODEL_PREFS so a renamed file doesn't hard-fail the API.
+export function resolveModels(lists, mode, overrides = {}) {
+  const base = DEFAULT_MODELS[mode]
+  if (!base) throw new Error(`Unknown mode "${mode}"`)
+  const prefs = MODEL_PREFS[mode] || {}
+  const out = {}
+  for (const group of Object.keys(base)) {
+    if (group === 'lora') {
+      out.lora = overrides.lora !== undefined ? overrides.lora : base.lora
+      continue
+    }
+    if (overrides[group]) {
+      const arr = Array.isArray(lists?.[group]) ? lists[group] : []
+      const hit = arr.find((m) => m === overrides[group]) || arr.find((m) => stem(m) === stem(overrides[group]))
+      if (!hit) throw new Error(`Model not on server (${group}): ${overrides[group]}`)
+      out[group] = hit
+      continue
+    }
+    const picked = pickModel(lists?.[group], base[group], prefs[group])
+    if (!picked) {
+      throw new Error(`No ${group} models found on the ComfyUI server — is it reachable?`)
+    }
+    out[group] = picked
+  }
+  return out
+}
+
+// data URL or raw base64 → bytes + mime (whitespace/newlines tolerated).
+export function decodeDataUrl(input) {
+  let s = String(input || '')
+  let mime = 'image/png'
+  if (s.startsWith('data:')) {
+    const comma = s.indexOf(',')
+    if (comma < 0) throw new Error('imageBase64 data URL is malformed (no comma)')
+    const head = s.slice(5, comma)
+    const [type, ...encs] = head.split(';')
+    if (type) mime = type
+    if (encs.length && !encs.includes('base64')) {
+      throw new Error(`Unsupported data URL encoding: ${encs.join(';')}`)
+    }
+    s = s.slice(comma + 1)
+  }
+  const clean = s.replace(/\s+/g, '')
+  if (!clean) throw new Error('imageBase64 is empty')
+  const buf = Buffer.from(clean, 'base64')
+  if (!buf.length) throw new Error('imageBase64 did not decode to any bytes')
+  return { buf, mime }
+}
+
+// Build the workflow graph for a mode (same builders the app uses).
+export function workflowFor(mode, { prompt, negativePrompt = '', lyrics = '', settings = {}, models, imageName }) {
+  const s = { ...DEFAULT_SETTINGS[mode], ...settings }
+  if (mode === 'image') {
+    return buildImageWorkflow({
+      prompt,
+      negativePrompt,
+      aspectRatio: s.aspectRatio,
+      seed: s.seed,
+      steps: s.steps,
+      cfg: s.cfg,
+      turboMode: !!s.turboMode,
+      models,
+    })
+  }
+  if (mode === 'edit') {
+    return buildEditWorkflow({
+      prompt,
+      negativePrompt,
+      imageName,
+      seed: s.seed,
+      steps: s.steps,
+      cfg: s.cfg,
+      models,
+    })
+  }
+  if (mode === 'video') {
+    return buildVideoWorkflow({
+      prompt,
+      negativePrompt,
+      resolution: s.resolution,
+      frames: s.frames,
+      fps: s.fps,
+      seed: s.seed,
+      steps: s.steps,
+      cfg: s.cfg,
+      models,
+    })
+  }
+  if (mode === 'music') {
+    return buildMusicWorkflow({
+      caption: prompt,
+      lyrics,
+      duration: s.duration,
+      seed: s.seed,
+      steps: s.steps,
+      cfgScale: s.cfgScale,
+      quality: s.quality,
+      models,
+    })
+  }
+  throw new Error(`Unsupported mode "${mode}" — use one of: ${MODES.join(', ')}`)
+}
+
+const OUTPUT_BUCKETS = [
+  ['image', 'images'],
+  ['video', 'gifs'],
+  ['video', 'videos'],
+  ['music', 'audio'],
+]
+
+export function hasOutputs(item) {
+  return Object.values(item?.outputs || {}).some((node) =>
+    OUTPUT_BUCKETS.some(([, key]) => Array.isArray(node?.[key]) && node[key].some((f) => f?.filename)),
+  )
+}
+
+// History outputs → flat list with API-proxied + direct ComfyUI URLs.
+export function outputsOf(entry, fileBase = '/api/file', comfyuiUrl = '') {
+  const out = []
+  for (const [nodeId, node] of Object.entries(entry?.outputs || {})) {
+    for (const [kind, key] of OUTPUT_BUCKETS) {
+      const list = node?.[key]
+      if (!Array.isArray(list)) continue
+      for (const f of list) {
+        if (!f?.filename) continue
+        const params = new URLSearchParams({
+          filename: f.filename,
+          subfolder: f.subfolder || '',
+          type: f.type || 'output',
+        })
+        out.push({
+          kind,
+          nodeId,
+          filename: f.filename,
+          subfolder: f.subfolder || '',
+          type: f.type || 'output',
+          url: `${fileBase}?${params.toString()}`,
+          comfyuiUrl: comfyuiUrl ? `${comfyuiUrl}/view?${params.toString()}` : '',
+        })
+      }
+    }
+  }
+  return out
+}
