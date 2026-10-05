@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
+import { STRUCTURE_TAGS } from '../lib/workflows.js'
 
 // Defaults for the AI prompt writer (used by fresh installs and migrations)
 const DEFAULT_LLM_CONFIGS = {
@@ -149,7 +150,7 @@ const useStore = create(
       // Sung lyrics for music mode. Default = the section-tag map (also the
       // visible example in the box); tag-only = instrumental at generate
       // time. Not persisted across reloads, so the default always resurfaces.
-      lyrics: '[Intro]\n\n[Instrumental]\n\n[Bridge]\n\n[Outro]\n',
+      lyrics: STRUCTURE_TAGS,
 
       // 3D Generation (optional feature — Settings → 3D Generation).
       // local  = Pixal3D (image→GLB) + MIA auto-rig on your own ComfyUI

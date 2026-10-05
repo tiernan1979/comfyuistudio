@@ -111,7 +111,7 @@ export default function SettingsPanel() {
             onChange={(e) => setLyrics(e.target.value)}
             disabled={generating}
             rows={4}
-            placeholder={'[Intro]\n\n[Instrumental]\n\n[Bridge]\n\n[Outro]\n\nor your words:\nVerse 1:\n…\nChorus:\n…'}
+            placeholder={'[Intro]\n\n[Verse]\n\n[Pre-Chorus]\n\n[Chorus]\n\n[Post-Chorus]\n\n[Bridge]\n\n[Instrumental]\n\n[Solo]\n\n[Outro]\n\nor your words:\nVerse 1:\n…\nChorus:\n…'}
             className="w-full px-3 py-2 rounded-xl bg-bg-card border border-border text-text-primary placeholder:text-text-muted resize-y min-h-20 text-xs leading-relaxed focus:outline-none focus:ring-2 focus:ring-accent disabled:opacity-50"
           />
         </div>

@@ -754,7 +754,7 @@ function bannedClause(items, existing) {
 // box's default text). MiniMax Music3 treats [Tag] lines as executable song
 // structure; a section map is what makes the AR planner actually USE the
 // requested duration instead of ending after 15-40s.
-export const STRUCTURE_TAGS = '[Intro]\n\n[Instrumental]\n\n[Bridge]\n\n[Outro]'
+export const STRUCTURE_TAGS = '[Intro]\n\n[Verse]\n\n[Pre-Chorus]\n\n[Chorus]\n\n[Post-Chorus]\n\n[Bridge]\n\n[Instrumental]\n\n[Solo]\n\n[Outro]'
 
 function stripStructureTags(text) {
   return (text || '').replace(/\[[^\]]*\]/g, '').replace(/\s+/g, ' ').trim()
