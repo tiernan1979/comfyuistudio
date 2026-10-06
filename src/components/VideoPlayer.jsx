@@ -13,14 +13,20 @@ export default function VideoPlayer() {
   const [fullscreen, setFullscreen] = useState(false)
   const videoRef = useRef(null)
 
+  // mp4/webm need <video>; animated webp only renders in <img>.
+  const mediaIsMp4 = /\.(mp4|webm|mov)\b/i.test(outputVideo || '')
+
   const handleDownload = async () => {
     if (!outputVideo) return
     const res = await fetch(outputVideo)
     const blob = await res.blob()
     const url = URL.createObjectURL(blob)
+    const m = /[?&]filename=([^&]+)/.exec(outputVideo)
+    const name = m ? decodeURIComponent(m[1]) : ''
+    const ext = (name.match(/\.\w+$/) || ['.mp4'])[0]
     const a = document.createElement('a')
     a.href = url
-    a.download = `comfyui-video-${Date.now()}.webp`
+    a.download = `comfyui-video-${Date.now()}${ext}`
     a.click()
     URL.revokeObjectURL(url)
   }
@@ -68,25 +74,35 @@ export default function VideoPlayer() {
               exit={{ opacity: 0 }}
               className="relative w-full h-full group"
             >
-              <video
-                ref={videoRef}
-                src={outputVideo}
-                autoPlay
-                loop
-                muted
-                playsInline
-                className="w-full h-full object-contain"
-              />
+              {mediaIsMp4 ? (
+                <video
+                  ref={videoRef}
+                  src={outputVideo}
+                  autoPlay
+                  loop
+                  muted
+                  playsInline
+                  className="w-full h-full object-contain"
+                />
+              ) : (
+                <img
+                  src={outputVideo}
+                  alt="Generated video"
+                  className="w-full h-full object-contain"
+                />
+              )}
 
-              {/* Play/pause overlay */}
-              <div
-                className="absolute inset-0 flex items-center justify-center cursor-pointer opacity-0 group-hover:opacity-100 transition-opacity"
-                onClick={togglePlay}
-              >
-                <div className="w-14 h-14 rounded-full glass flex items-center justify-center bg-black/40">
-                  {playing ? <Pause size={24} /> : <Play size={24} className="ml-1" />}
+              {/* Play/pause overlay (video files only) */}
+              {mediaIsMp4 && (
+                <div
+                  className="absolute inset-0 flex items-center justify-center cursor-pointer opacity-0 group-hover:opacity-100 transition-opacity"
+                  onClick={togglePlay}
+                >
+                  <div className="w-14 h-14 rounded-full glass flex items-center justify-center bg-black/40">
+                    {playing ? <Pause size={24} /> : <Play size={24} className="ml-1" />}
+                  </div>
                 </div>
-              </div>
+              )}
 
               {/* Download button */}
               <div className="absolute bottom-3 right-3 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
@@ -151,16 +167,26 @@ export default function VideoPlayer() {
             >
               <X size={20} />
             </motion.button>
-            <motion.video
-              initial={{ scale: 0.8 }}
-              animate={{ scale: 1 }}
-              src={outputVideo}
-              autoPlay
-              loop
-              muted
-              playsInline
-              className="max-w-full max-h-full object-contain rounded-lg"
-            />
+            {mediaIsMp4 ? (
+              <motion.video
+                initial={{ scale: 0.8 }}
+                animate={{ scale: 1 }}
+                src={outputVideo}
+                autoPlay
+                loop
+                muted
+                playsInline
+                className="max-w-full max-h-full object-contain rounded-lg"
+              />
+            ) : (
+              <motion.img
+                initial={{ scale: 0.8 }}
+                animate={{ scale: 1 }}
+                src={outputVideo}
+                alt="Generated video"
+                className="max-w-full max-h-full object-contain rounded-lg"
+              />
+            )}
           </motion.div>
         )}
       </AnimatePresence>

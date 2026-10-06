@@ -18,7 +18,13 @@ import {
   freeLoadedModels,
   getModelLists,
 } from '../lib/comfyui'
-import { buildImageWorkflow, buildVideoWorkflow, buildEditWorkflow, buildMusicWorkflow } from '../lib/workflows'
+import {
+  buildImageWorkflow,
+  buildVideoWorkflow,
+  buildEditWorkflow,
+  buildMusicWorkflow,
+  isMiniMaxH3,
+} from '../lib/workflows'
 
 // Pull ComfyUI's own /history into the store. Outputs live on the
 // server, so every machine pointed at the same ComfyUI sees the same
@@ -27,6 +33,18 @@ import { buildImageWorkflow, buildVideoWorkflow, buildEditWorkflow, buildMusicWo
 export async function syncServerHistory() {
   const st = useStore.getState()
   try {
+    // Fold in deletions made on other browsers/machines first, so they
+    // drop locally before the fresh server list is merged. Best-effort —
+    // a missing API keeps deletes local-only.
+    try {
+      const h = await fetch('/api/hidden-ids')
+      if (h.ok) {
+        const data = await h.json()
+        useStore.getState().mergeHiddenIds(data?.ids || [])
+      }
+    } catch {
+      /* API offline — nothing to sync */
+    }
     const entries = await getServerHistory(resolveApiBase(st.serverUrl, st.useProxy), 60)
     st.mergeServerHistory(entries)
     return { ok: true, count: entries.length }
@@ -153,9 +171,14 @@ export function useComfyUI() {
         state.setError(`No history found for prompt ${promptId} — did ComfyUI restart or clear its queue?`)
         return
       }
-      if (entry.status?.completed === false || entry.status?.status_str === 'error') {
+      if (
+        entry.status?.completed === false ||
+        entry.status?.status_str === 'error' ||
+        entry.status?.status_str === 'interrupted'
+      ) {
         const errMsg = extractHistoryError(entry) || 'execution did not complete'
-        state.setError(`ComfyUI reported failure: ${errMsg}`)
+        // A user-initiated stop isn't a server failure — no scary prefix.
+        state.setError(errMsg === 'Generation stopped.' ? errMsg : `ComfyUI reported failure: ${errMsg}`)
         return
       }
       if (!entry?.outputs) {
@@ -168,8 +191,9 @@ export function useComfyUI() {
       for (const nodeId of Object.keys(entry.outputs)) {
         const output = entry.outputs[nodeId]
 
-        // Image output
-        if (output.images?.length > 0) {
+        // Image output. H3 video also lands in `images` (animated mp4) —
+        // video mode reads that bucket as video below instead.
+        if (state.mode !== 'video' && output.images?.length > 0) {
           const img = output.images[0]
           const url = await getViewUrl(base, img.filename, img.subfolder, img.type)
           state.setOutputImage(url)
@@ -188,6 +212,24 @@ export function useComfyUI() {
         // Video output (animated WEBP)
         if (output.gifs?.length > 0) {
           const vid = output.gifs[0]
+          const url = await getViewUrl(base, vid.filename, vid.subfolder, vid.type)
+          state.setOutputVideo(url)
+          state.addToHistory({
+            id: promptId,
+            type: 'video',
+            prompt: state.prompt,
+            data: url,
+            timestamp: Date.now(),
+            settings: { ...state.videoSettings },
+          })
+          found = true
+          break
+        }
+
+        // Video output from SaveVideo (MiniMax H3) — ComfyUI files the
+        // mp4 under `images` with animated:[true].
+        if (state.mode === 'video' && output.images?.length > 0 && output.animated?.[0]) {
+          const vid = output.images[0]
           const url = await getViewUrl(base, vid.filename, vid.subfolder, vid.type)
           state.setOutputVideo(url)
           state.addToHistory({
@@ -351,6 +393,19 @@ export function useComfyUI() {
           },
         })
       } else {
+        let videoModels = state.models.video
+        // MiniMax H3 decodes an AV latent — the audio VAE isn't a setting,
+        // pick whatever H3 audio VAE the server has.
+        if (isMiniMaxH3(videoModels?.unet)) {
+          const lists = await getModelLists(base)
+          const audioVae = (lists?.vae || []).find((n) => /audio[-_ ]?vae/i.test(n))
+          if (!audioVae) {
+            throw new Error(
+              'MiniMax H3 video needs an audio VAE on the server (minimax_h3_audio_vae_*.safetensors) — install it or pick another video model in Settings → Models.'
+            )
+          }
+          videoModels = { ...videoModels, vaeAudio: audioVae }
+        }
         workflow = buildVideoWorkflow({
           prompt: state.prompt,
           negativePrompt: state.negativePrompt,
@@ -360,7 +415,7 @@ export function useComfyUI() {
           seed: state.videoSettings.seed,
           steps: state.videoSettings.steps,
           cfg: state.videoSettings.cfg,
-          models: state.models.video,
+          models: videoModels,
         })
       }
 

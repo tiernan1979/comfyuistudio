@@ -7,6 +7,7 @@ import {
   buildEditWorkflow,
   buildVideoWorkflow,
   buildMusicWorkflow,
+  isMiniMaxH3,
 } from '../../src/lib/workflows.js'
 
 export const MODES = ['image', 'edit', 'video', 'music']
@@ -128,6 +129,18 @@ export function resolveModels(lists, mode, overrides = {}) {
     }
     out[group] = picked
   }
+  // MiniMax H3 video additionally needs the H3 audio VAE (AV latent decode).
+  // Not a settings group — resolve it straight from the server's VAE list.
+  if (mode === 'video' && isMiniMaxH3(out.unet)) {
+    const vaes = Array.isArray(lists?.vae) ? lists.vae : []
+    const audio = vaes.find((m) => /audio[-_ ]?vae/i.test(m))
+    if (!audio) {
+      throw new Error(
+        'MiniMax H3 video needs the H3 audio VAE (minimax_h3_audio_vae_*.safetensors) on the ComfyUI server — install it or pick another video model.'
+      )
+    }
+    out.vaeAudio = audio
+  }
   return out
 }
 
@@ -230,13 +243,20 @@ export function outputsOf(entry, fileBase = '/api/file', comfyuiUrl = '') {
       if (!Array.isArray(list)) continue
       for (const f of list) {
         if (!f?.filename) continue
+        // SaveVideo (MiniMax H3) files mp4s under `images` with
+        // animated:[true] — classify as video, not image.
+        const outKind =
+          key === 'images' &&
+          (node.animated?.[0] || /\.(mp4|webm|mov)\b/i.test(f.filename))
+            ? 'video'
+            : kind
         const params = new URLSearchParams({
           filename: f.filename,
           subfolder: f.subfolder || '',
           type: f.type || 'output',
         })
         out.push({
-          kind,
+          kind: outKind,
           nodeId,
           filename: f.filename,
           subfolder: f.subfolder || '',

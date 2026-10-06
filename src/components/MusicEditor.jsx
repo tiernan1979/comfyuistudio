@@ -8,7 +8,7 @@ import {
 import useStore from '../store/useStore'
 import {
   saveBlobAs, queuePrompt, pollHistory, collectOutputFiles, getViewUrl,
-  assertModelsAvailable, freeLoadedModels, resolveApiBase,
+  assertModelsAvailable, freeLoadedModels, resolveApiBase, stopGeneration,
 } from '../lib/comfyui'
 import { buildMusicWorkflow, buildPartCaption } from '../lib/workflows'
 import { clipEndT, splitClipAt, cutRange, muteRange } from '../lib/trackops'
@@ -1006,19 +1006,24 @@ export default function MusicEditor() {
     const files = Array.from(e.target.files || [])
     e.target.value = ''
     if (files.length === 0) return
-    setBusy('Decoding audio…')
     setErr('')
-    try {
-      for (const f of files) {
+    const failures = []
+    for (const f of files) {
+      setBusy(`Decoding "${f.name}"…`)
+      try {
         const ab = await f.arrayBuffer()
         const buffer = await getCtx().decodeAudioData(ab)
         addTrackFromBuffer(buffer, f.name.replace(/\.[^.]+$/, ''), '')
+      } catch (e2) {
+        failures.push(`"${f.name}": ${e2.message}`)
       }
-    } catch (e2) {
-      setErr(`Could not decode file: ${e2.message}`)
-    } finally {
-      setBusy('')
     }
+    if (failures.length) {
+      setErr(
+        `Could not decode ${failures.join('; ')} — the file may be corrupt or an unsupported audio format.`,
+      )
+    }
+    setBusy('')
   }
 
   // ------------------------- export -------------------------
@@ -1279,6 +1284,25 @@ export default function MusicEditor() {
           exit={{ opacity: 0 }}
           className="fixed inset-0 z-50 bg-bg-primary/98 backdrop-blur-sm flex flex-col"
         >
+          {/* Grey-out while audio loads/decodes/renders — big files can
+              take a while, and a bare spinner chip reads as "nothing
+              happened". Blocks clicks on the timeline underneath. */}
+          <AnimatePresence>
+            {busy && (
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                data-testid="studio-loading"
+                className="absolute inset-0 z-40 bg-black/60 backdrop-blur-[2px] flex flex-col items-center justify-center gap-4 px-8 text-center"
+              >
+                <Loader2 size={40} className="animate-spin text-accent" />
+                <p className="text-sm font-medium text-text-secondary">{busy}</p>
+                <p className="text-xs text-text-muted">This can take a moment for long tracks</p>
+              </motion.div>
+            )}
+          </AnimatePresence>
+
           {/* Toolbar */}
           <div className="shrink-0 border-b border-border bg-bg-secondary/70 px-4 py-2.5 flex items-center gap-2 flex-wrap select-none">
             <button
@@ -1901,6 +1925,19 @@ export default function MusicEditor() {
                 >
                   <Loader2 size={13} className="animate-spin text-accent" />
                   {busy}
+                  {busy.startsWith('Generating part') && (
+                    <button
+                      onClick={async () => {
+                        const st = useStore.getState()
+                        await stopGeneration(resolveApiBase(st.serverUrl, st.useProxy), null)
+                      }}
+                      className="flex items-center gap-1 px-2 py-0.5 rounded-md bg-red-500/20 text-red-300 hover:bg-red-500/35 transition-colors"
+                      title="Stop this generation"
+                    >
+                      <Square size={10} fill="currentColor" />
+                      Stop
+                    </button>
+                  )}
                 </motion.div>
               )}
               {err && (

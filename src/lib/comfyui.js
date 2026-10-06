@@ -15,7 +15,7 @@ const NODE_PHASE_LABELS = [
   [/^SaveAudioMP3/, 'Encoding MP3'],
   [/^SaveAudio/, 'Encoding WAV'],
   [/^SaveImage/, 'Saving image'],
-  [/^SaveAnimated|^VHS_VideoCombine|VideoCombine/, 'Encoding video'],
+  [/^SaveAnimated|SaveVideo|CreateVideo|^VHS_VideoCombine|VideoCombine/, 'Encoding video'],
   [/KSampler|SamplerCustom|SDEuler|CFGGuider/, 'Sampling'],
   [/TextEncode|CLIPTextEncode/, 'Encoding text'],
   [/Loader|Checkpoint|UNET|Lora/, 'Loading models'],
@@ -233,7 +233,12 @@ export async function getServerHistory(serverUrl, maxcount = 60) {
     for (const out of Object.values(outputs)) {
       if (out?.images?.length) {
         file = out.images[0]
-        kind = 'image'
+        // SaveVideo (MiniMax H3) files mp4s under `images` with
+        // animated:[true] — that's a video, not a still.
+        kind =
+          out.animated?.[0] || /\.(mp4|webm|mov)\b/i.test(file.filename || '')
+            ? 'video'
+            : 'image'
         break
       }
       if (out?.gifs?.length) {
@@ -359,7 +364,10 @@ export async function getModelLists(base, { force = false } = {}) {
 // fed an image model die inside the net with "too many values to unpack
 // (expected 4)" (image models unpack B,C,H,W; video latents are B,C,T,H,W).
 export function looksLikeVideoModel(name) {
-  return /(^|[^a-z])(wan|hunyuan[-_ ]?video|cogvideo|ltx[-_ ]?v|mochi|svd|animatediff|t2v|i2v|v2v|vid2vid|video)([^a-z]|$)/i.test(
+  // minimax_h3 / hailuo: the MiniMax H3 video dit (e.g.
+  // minimax_h3_fl2va_pruned_int8_convrot.safetensors) — kept in sync with
+  // H3_VIDEO_RE in workflows.js (unit test asserts they agree).
+  return /(^|[^a-z])(wan|hunyuan[-_ ]?video|cogvideo|ltx[-_ ]?v|mochi|svd|animatediff|t2v|i2v|v2v|vid2vid|video|minimax[-_ ]?h\d|hailuo)([^a-z]|$)/i.test(
     String(name || '')
   )
 }
@@ -427,6 +435,13 @@ export async function assertModelsAvailable(base, mode, models) {
   if (mode === 'video') {
     const unet = String(models.video?.unet || '')
     const sameAsImage = unet && (unet === models.image?.unet || unet === models.edit?.unet)
+    // MiniMax H3 decodes an audio-video latent — it needs BOTH H3 VAEs.
+    if (/minimax[-_ ]?h\d|hailuo/i.test(unet) && !lists.vae.some((n) => /audio[-_ ]?vae/i.test(n))) {
+      missing.push(
+        `MiniMax H3 video needs an audio VAE on the server (minimax_h3_audio_vae_*.safetensors) — ` +
+          `have: ${lists.vae.join(', ') || 'none'}.`
+      )
+    }
     if (unet && (sameAsImage || !looksLikeVideoModel(unet))) {
       missing.push(
         `"${unet}" is an image model — video needs a VIDEO diffusion model ` +
@@ -618,6 +633,16 @@ export function handleWsMessage(message) {
       }
       break
 
+    case 'execution_interrupted':
+      // User pressed Stop (or the server aborted us) — settle like a normal
+      // completion so the UI doesn't sit on "Generating…" forever.
+      console.log('Execution interrupted:', data)
+      if (!data?.prompt_id) break
+      if (phaseCallback) phaseCallback(null, data.prompt_id)
+      promptNodes.delete(data.prompt_id)
+      if (completionCallback) completionCallback(data.prompt_id)
+      break
+
     case 'status':
       if (data.status?.exec_info) {
         // Queue update
@@ -714,8 +739,14 @@ export function collectOutputFiles(entry) {
 export function extractHistoryError(entry) {
   const status = entry?.status
   if (!status) return null
-  const failed = status.status_str === 'error' || status.completed === false
+  const failed = status.status_str === 'error' || status.completed === false || status.status_str === 'interrupted'
   if (!failed) return null
+  // A stop request isn't a failure — say so in plain words.
+  const wasInterrupted =
+    status.status_str === 'interrupted' ||
+    (status.messages || []).some((m) => Array.isArray(m) && m[0] === 'execution_interrupted') ||
+    (status.messages || []).some((m) => Array.isArray(m) && /interrupt/i.test(String(m[1]?.exception_message || '')))
+  if (wasInterrupted) return 'Generation stopped.'
   const details = []
   for (const msg of status.messages || []) {
     if (!Array.isArray(msg) || !msg[1] || typeof msg[1] !== 'object') continue
@@ -728,6 +759,34 @@ export function extractHistoryError(entry) {
     }
   }
   return details.length > 0 ? details.join(' | ') : 'workflow failed (no detail in ComfyUI history)'
+}
+
+// Stop the running job; if our prompt is still waiting in the queue it can
+// never be interrupted (nothing is running for it), so clear the pending
+// queue too — this UI only ever has one job of its own in flight.
+export async function stopGeneration(serverUrl, promptId = null) {
+  try {
+    const r = await fetch(`${serverUrl}/interrupt`, { method: 'POST' })
+    if (!r.ok) return false
+  } catch {
+    return false
+  }
+  if (promptId) {
+    try {
+      const q = await (await fetch(`${serverUrl}/queue`)).json()
+      const pending = (q.queue_pending || []).some((r) => r[1] === promptId)
+      if (pending) {
+        await fetch(`${serverUrl}/queue`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ clear: true }),
+        })
+      }
+    } catch {
+      // queue state unavailable — interrupt alone is the best we can do
+    }
+  }
+  return true
 }
 
 // Wait until a queued prompt finishes. Resolves with the history entry,
@@ -749,6 +808,8 @@ export function pollHistory(base, promptId, { timeoutMs = 600000, intervalMs = 3
     let queuePos = null
     let nodeLabel = ''
     let progress = null
+    let everQueued = false // seen in /queue at least once
+    let goneTicks = 0 // consecutive ticks not in queue and no history
 
     const info = () => ({ phase, queuePos, nodeLabel, progress })
 
@@ -764,6 +825,8 @@ export function pollHistory(base, promptId, { timeoutMs = 600000, intervalMs = 3
       } else if (type === 'execution_error') {
         const m = data.exception_message || data.message || `${label} failed on node ${data.node_id || '?'}`
         finish(reject, new Error(String(m).slice(0, 600)))
+      } else if (type === 'execution_interrupted') {
+        finish(reject, new Error('Generation stopped.'))
       }
     })
 
@@ -789,10 +852,11 @@ export function pollHistory(base, promptId, { timeoutMs = 600000, intervalMs = 3
         )
         return
       }
+      let entry = null
       try {
         const res = await fetch(`${base}/history/${promptId}`)
         const data = await res.json()
-        const entry = data?.[promptId]
+        entry = data?.[promptId]
         if (entry) {
           const st = entry.status || {}
           if (st.status_str === 'success' || (st.completed === true && st.status_str !== 'error')) {
@@ -816,9 +880,21 @@ export function pollHistory(base, promptId, { timeoutMs = 600000, intervalMs = 3
         if (running) {
           phase = 'running'
           queuePos = null
+          everQueued = true
+          goneTicks = 0
         } else if (pendingIdx >= 0) {
           phase = 'queued'
           queuePos = pendingIdx + 1
+          everQueued = true
+          goneTicks = 0
+        } else if (everQueued && !entry) {
+          // Was queued, now gone from the queue with no history entry —
+          // it was cleared before it ever ran (stop on a pending prompt).
+          goneTicks += 1
+          if (goneTicks >= 3) {
+            finish(reject, new Error('Generation stopped.'))
+            return
+          }
         }
       } catch {
         // /queue unavailable — keep the last known phase

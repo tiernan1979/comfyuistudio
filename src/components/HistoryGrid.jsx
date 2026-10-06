@@ -48,11 +48,21 @@ export default function HistoryGrid() {
           >
             <Trash2 size={10} />
           </span>
-          {/* Music entries are audio URLs — no thumbnail, show a tile instead */}
+          {/* Music entries are audio URLs — no thumbnail, show a tile.
+              mp4/webm videos need <video preload> for a first-frame poster;
+              animated webp only renders in <img>. */}
           {entry.type === 'music' ? (
             <span className="absolute inset-0 flex items-center justify-center bg-gradient-to-br from-purple-500/30 to-accent/20">
               <Music size={22} className="text-white/80" />
             </span>
+          ) : entry.type === 'video' && /\.(mp4|webm|mov)\b/i.test(entry.data || '') ? (
+            <video
+              src={entry.data}
+              muted
+              playsInline
+              preload="metadata"
+              className="w-full h-full object-cover"
+            />
           ) : (
             <img
               src={entry.data}

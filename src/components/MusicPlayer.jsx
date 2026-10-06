@@ -115,7 +115,19 @@ export default function MusicPlayer() {
               <motion.button
                 whileHover={{ scale: 1.05 }}
                 whileTap={{ scale: 0.95 }}
-                onClick={() => setShowMusicEditor(true)}
+                onClick={() => {
+                  // In the Studio's own tab the button just reopens the
+                  // editor in-page; anywhere else the Studio gets its own
+                  // tab/window so the player and timeline don't compete
+                  // for one viewport.
+                  const here = new URL(window.location.href)
+                  if (here.searchParams.get('studio') === '1') {
+                    setShowMusicEditor(true)
+                    return
+                  }
+                  here.searchParams.set('studio', '1')
+                  window.open(here.pathname + here.search, '_blank')
+                }}
                 className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold bg-accent hover:bg-accent-hover text-white shadow-lg shadow-accent/25 transition-colors"
               >
                 <Scissors size={15} />

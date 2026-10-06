@@ -54,6 +54,20 @@ function uid() {
   return `sp-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
 }
 
+// Cross-browser deletion sync: the app's own API (nginx /api → studio-api)
+// keeps a shared, persisted list of deleted history ids. Every browser
+// pushes its deletes here and pulls the list on each history sync, so an
+// item deleted anywhere disappears everywhere. Best-effort — offline the
+// delete still applies locally.
+function pushHiddenIds(ids) {
+  if (typeof window === 'undefined' || !ids?.length) return
+  fetch('/api/hidden-ids', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ ids: ids.map(String) }),
+  }).catch(() => {})
+}
+
 const useStore = create(
   persist(
     (set, get) => ({
@@ -352,37 +366,70 @@ const useStore = create(
         // Same promptId can arrive twice (local add + server sync) — keep one.
         history: [entry, ...s.history.filter((h) => h.id !== entry.id)].slice(0, 100),
       })),
-      removeFromHistory: (id) => set((s) => {
-        const entry = s.history.find((h) => h.id === id)
-        const patch = {
-          history: s.history.filter((h) => h.id !== id),
-          // Remember the deletion so the next server sync doesn't
-          // resurrect it from ComfyUI's /history.
-          hiddenHistoryIds: s.hiddenHistoryIds.includes(id)
-            ? s.hiddenHistoryIds
-            : [...s.hiddenHistoryIds, id].slice(-200),
+      removeFromHistory: (id) => {
+        set((s) => {
+          const entry = s.history.find((h) => h.id === id)
+          const patch = {
+            history: s.history.filter((h) => h.id !== id),
+            // Remember the deletion so the next server sync doesn't
+            // resurrect it from ComfyUI's /history.
+            hiddenHistoryIds: s.hiddenHistoryIds.includes(id)
+              ? s.hiddenHistoryIds
+              : [...s.hiddenHistoryIds, id].slice(-200),
+          }
+          if (s.selectedHistoryId === id) patch.selectedHistoryId = null
+          if (entry && entry.data === s.outputImage) patch.outputImage = null
+          if (entry && entry.data === s.outputVideo) patch.outputVideo = null
+          if (entry && entry.data === s.outputAudio) patch.outputAudio = null
+          if (entry?.data && typeof entry.data === 'string') {
+            patch.deletedUrls = [entry.data, ...s.deletedUrls.filter((u) => u !== entry.data)].slice(0, 100)
+          }
+          return patch
+        })
+        // Share the delete with every other logged-in browser.
+        pushHiddenIds([id])
+      },
+      // Fold ids learned from other browsers/servers into the local
+      // hidden set: drop matching history entries (and remember their
+      // urls so an open studio drops those tracks too).
+      mergeHiddenIds: (ids) => set((s) => {
+        const incoming = (Array.isArray(ids) ? ids : []).map(String).filter(Boolean)
+        if (incoming.length === 0) return {}
+        const hidden = new Set([...s.hiddenHistoryIds.map(String), ...incoming])
+        const removed = s.history.filter((h) => hidden.has(String(h.id)))
+        const removedUrls = removed
+          .map((h) => h.data)
+          .filter((u) => typeof u === 'string' && u)
+        return {
+          hiddenHistoryIds: [...hidden].slice(-500),
+          history: s.history.filter((h) => !hidden.has(String(h.id))),
+          ...(removedUrls.length
+            ? {
+                deletedUrls: [
+                  ...removedUrls,
+                  ...s.deletedUrls.filter((u) => !removedUrls.includes(u)),
+                ].slice(0, 100),
+              }
+            : {}),
         }
-        if (s.selectedHistoryId === id) patch.selectedHistoryId = null
-        if (entry && entry.data === s.outputImage) patch.outputImage = null
-        if (entry && entry.data === s.outputVideo) patch.outputVideo = null
-        if (entry && entry.data === s.outputAudio) patch.outputAudio = null
-        if (entry?.data && typeof entry.data === 'string') {
-          patch.deletedUrls = [entry.data, ...s.deletedUrls.filter((u) => u !== entry.data)].slice(0, 100)
-        }
-        return patch
       }),
-      clearHistory: () => set((s) => ({
-        history: [],
-        selectedHistoryId: null,
-        outputImage: null,
-        outputVideo: null,
-        outputAudio: null,
-        hiddenHistoryIds: [...new Set([...s.hiddenHistoryIds, ...s.history.map((h) => h.id)])].slice(-200),
-        deletedUrls: [
-          ...s.history.map((h) => h.data).filter((d) => typeof d === 'string' && d),
-          ...s.deletedUrls,
-        ].slice(0, 100),
-      })),
+      clearHistory: () => {
+        const ids = get().history.map((h) => h.id)
+        set((s) => ({
+          history: [],
+          selectedHistoryId: null,
+          outputImage: null,
+          outputVideo: null,
+          outputAudio: null,
+          hiddenHistoryIds: [...new Set([...s.hiddenHistoryIds, ...s.history.map((h) => h.id)])].slice(-200),
+          deletedUrls: [
+            ...s.history.map((h) => h.data).filter((d) => typeof d === 'string' && d),
+            ...s.deletedUrls,
+          ].slice(0, 100),
+        }))
+        // Share the wipe with every other logged-in browser.
+        pushHiddenIds(ids)
+      },
       // Merge entries fetched from the ComfyUI server's /history. Local
       // entries win (they hold extra settings), deletions stick, and the
       // list is sorted newest-first.
@@ -521,6 +568,10 @@ const useStore = create(
         musicSettings: state.musicSettings,
         history: state.history,
         hiddenHistoryIds: state.hiddenHistoryIds,
+        outputAudio: state.outputAudio,
+        // Which tab/mode you were on — a new tab (e.g. the Studio's own
+        // window) should come back where you left off.
+        mode: state.mode,
         savedPrompts: state.savedPrompts,
         sidebarWidth: state.sidebarWidth,
         controlsWidth: state.controlsWidth,

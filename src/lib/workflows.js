@@ -916,6 +916,13 @@ export function buildMusicWorkflow({
   return wf
 }
 
+// MiniMax H3 (Hailuo) video dit — matches minimax_h3_* / hailuo files.
+// Shared with comfyui.js (validation) and useComfyUI.js (audio-VAE pick).
+export const H3_VIDEO_RE = /minimax[-_ ]?h\d|hailuo/i
+export function isMiniMaxH3(name) {
+  return H3_VIDEO_RE.test(String(name || ''))
+}
+
 export function buildVideoWorkflow({
   prompt,
   negativePrompt = '',
@@ -927,6 +934,7 @@ export function buildVideoWorkflow({
   cfg = 6,
   models,
 }) {
+  if (isMiniMaxH3(models?.unet)) return buildH3VideoWorkflow({ prompt, resolution, frames, fps, seed, steps, models })
   const { width, height } = VIDEO_RESOLUTIONS[resolution] || VIDEO_RESOLUTIONS['480p']
   const actualSeed = seed === -1 ? Math.floor(Math.random() * 2 ** 48) : seed
 
@@ -1008,6 +1016,59 @@ export function buildVideoWorkflow({
         quality: 90,
         method: 'default',
       },
+    },
+  }
+}
+
+// MiniMax H3 native graph (comfy_extras.nodes_minimax_h3). Ground truth:
+// official template video_minimax_h3_t2v.json (Comfy-Org/workflow_templates),
+// probed live on 0.37 — SaveVideo accepts {format:'auto', codec:'auto'} and
+// reports the mp4 under outputs.images with animated:[true].
+//   - MiniMaxH3ImageToVideo preps prompt + empty AV latent (no source image)
+//   - BasicGuider: the model is guidance-embedded — no CFG, no negative
+//   - res_multistep + simple scheduler (official docs: every local H3 workflow)
+//   - AV latent decodes to frames + stereo audio, muxed by CreateVideo/SaveVideo
+function buildH3VideoWorkflow({ prompt, resolution, frames, fps, seed, steps, models }) {
+  if (!models?.vaeAudio) {
+    throw new Error(
+      'MiniMax H3 video needs the H3 audio VAE (minimax_h3_audio_vae_*.safetensors) — it was not found on the server.'
+    )
+  }
+  const raw = VIDEO_RESOLUTIONS[resolution] || VIDEO_RESOLUTIONS['480p']
+  // H3 requires multiples of 32 (e.g. 720 → 736).
+  const width = Math.max(32, Math.round(raw.width / 32) * 32)
+  const height = Math.max(32, Math.round(raw.height / 32) * 32)
+  const actualSeed = seed === -1 ? Math.floor(Math.random() * 2 ** 48) : seed
+  // H3 samples at 24fps on a 17k+5 frame grid. The UI speaks frames/fps, so
+  // convert the intended duration to 24fps frames and snap UP to the grid
+  // (same maths as the template's expression, python-style modulo).
+  const f = Math.max(5, Math.round(((frames || 33) / (fps || 16)) * 24))
+  const length = f + ((((5 - (f % 17)) % 17) + 17) % 17)
+
+  return {
+    '37': { class_type: 'UNETLoader', inputs: { unet_name: models.unet, weight_dtype: 'default' } },
+    '38': { class_type: 'CLIPLoader', inputs: { clip_name: models.clip, type: 'minimax', device: 'default' } },
+    '39': { class_type: 'VAELoader', inputs: { vae_name: models.vae } },
+    '391': { class_type: 'VAELoader', inputs: { vae_name: models.vaeAudio } },
+    '40': {
+      class_type: 'MiniMaxH3ImageToVideo',
+      inputs: { clip: ['38', 0], vae: ['39', 0], prompt, width, height, length },
+    },
+    '41': { class_type: 'RandomNoise', inputs: { noise_seed: actualSeed } },
+    '42': { class_type: 'KSamplerSelect', inputs: { sampler_name: 'res_multistep' } },
+    '43': { class_type: 'BasicScheduler', inputs: { model: ['37', 0], scheduler: 'simple', steps, denoise: 1 } },
+    '44': { class_type: 'BasicGuider', inputs: { model: ['37', 0], conditioning: ['40', 0] } },
+    '45': {
+      class_type: 'SamplerCustomAdvanced',
+      inputs: { noise: ['41', 0], guider: ['44', 0], sampler: ['42', 0], sigmas: ['43', 0], latent_image: ['40', 1] },
+    },
+    '46': { class_type: 'VAEDecode', inputs: { samples: ['45', 0], vae: ['39', 0] } },
+    '47': { class_type: 'VAEDecodeAudio', inputs: { samples: ['45', 0], vae: ['391', 0] } },
+    // H3 is a 24fps model — never the UI's fps (would change playback speed).
+    '48': { class_type: 'CreateVideo', inputs: { images: ['46', 0], audio: ['47', 0], fps: 24 } },
+    '28': {
+      class_type: 'SaveVideo',
+      inputs: { video: ['48', 0], filename_prefix: 'video/ComfyUI', format: 'auto', codec: 'auto' },
     },
   }
 }

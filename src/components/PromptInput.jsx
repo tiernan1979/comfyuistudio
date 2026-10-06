@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { motion } from 'framer-motion'
-import { Sparkles, ChevronDown, ChevronUp, Wand2, Bot, Loader2, Globe, BookmarkPlus } from 'lucide-react'
+import { Sparkles, ChevronDown, ChevronUp, Wand2, Bot, Loader2, Globe, BookmarkPlus, BookmarkCheck } from 'lucide-react'
 import useStore from '../store/useStore'
 import { STYLES, enhancePrompt } from '../lib/enhance'
 import { rewritePrompt, resolveLlmConfig, PROVIDERS } from '../lib/llm'
@@ -42,6 +42,7 @@ export default function PromptInput() {
   const addSavedPrompt = useStore((s) => s.addSavedPrompt)
   const [showNegative, setShowNegative] = useState(false)
   const [rewriting, setRewriting] = useState(false)
+  const [savedFlash, setSavedFlash] = useState(false)
 
   const styleOptions = Object.entries(STYLES).map(([key, s]) => ({ value: key, label: s.label }))
 
@@ -53,6 +54,9 @@ export default function PromptInput() {
   const saveCurrentPrompt = () => {
     if (!prompt.trim()) return
     addSavedPrompt({ prompt, negativePrompt, style })
+    // Saved prompts persist to localStorage — flash the icon so it's obvious.
+    setSavedFlash(true)
+    setTimeout(() => setSavedFlash(false), 1600)
   }
 
   const applyStyle = (styleKey) => {
@@ -196,9 +200,13 @@ export default function PromptInput() {
             onClick={saveCurrentPrompt}
             disabled={generating || !prompt.trim()}
             className="p-1 rounded-md bg-bg-hover hover:bg-accent/20 text-text-muted hover:text-accent transition-colors disabled:opacity-50"
-            title="Save this prompt to the sidebar"
+            title={savedFlash ? 'Saved to the sidebar' : 'Save this prompt to the sidebar'}
           >
-            <BookmarkPlus size={14} />
+            {savedFlash ? (
+              <BookmarkCheck size={14} className="text-accent" />
+            ) : (
+              <BookmarkPlus size={14} />
+            )}
           </motion.button>
           <motion.button
             whileHover={{ scale: 1.05 }}
