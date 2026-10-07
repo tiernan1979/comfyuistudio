@@ -15,48 +15,41 @@ import { SEARCH_ENGINES } from './search'
 const LLM_PROVIDERS = new Set(['lmstudio', 'openai', 'anthropic', 'custom'])
 const MODEL_GROUPS = new Set(['image', 'video', 'edit', 'music'])
 
-// Quality presets for the local Pixal3D pipeline. Each preset fills the
-// individual pixal* fields below — the fields are always the source of
-// truth at run time; the preset is a UI convenience ('custom' = hand-tuned).
+// Quality presets for the local native 3D pipeline (Pixal3D/TRELLIS.2).
+// Each preset fills the individual pixal* fields below — the fields are
+// always the source of truth at run time; the preset is a UI convenience
+// ('custom' = hand-tuned).
 //   standard — the proven baseline (matches earlier runs)
 //   high     — sharper texture + more geometry, moderate slowdown
 //   ultra    — every node-supported maximum for face/detail sharpness
 export const QUALITY_PRESETS = {
-  // Tuned against Pixal3D upstream defaults (steps 12, texture_guidance 1.0,
-  // guidance 7.5): distilled samplers gain nothing past ~30 steps, and 8k
-  // PNG textures triple the GLB for zero visible gain. ~40 MB outputs stay
-  // rig/upscale-friendly (the old high preset shipped 159 MB monsters).
+  // Tuned against the template defaults (shape 20 steps @ cfg 7.5,
+  // 4k texture bake): the distilled samplers gain nothing past ~30 steps,
+  // and 8k PNG textures triple the GLB for zero visible gain. ~40 MB
+  // outputs stay rig/upscale-friendly (the old high preset shipped
+  // 159 MB monsters).
   standard: {
-    pixalPipeline: '1536_cascade',
     pixalCameraRes: 1024,
     pixalTextureSize: 4096,
     pixalDecimation: 300000,
     pixalSteps: 20,
     pixalGuidance: 7.5,
-    pixalTextureGuidance: 2.0,
-    pixalMaxTokens: 49152,
     pixalRemesh: true,
   },
   high: {
-    pixalPipeline: '1536_cascade',
     pixalCameraRes: 1024,
     pixalTextureSize: 4096,
     pixalDecimation: 400000,
     pixalSteps: 24,
     pixalGuidance: 7.5,
-    pixalTextureGuidance: 2.5,
-    pixalMaxTokens: 65536,
     pixalRemesh: true,
   },
   ultra: {
-    pixalPipeline: '1536_cascade',
     pixalCameraRes: 1536,
     pixalTextureSize: 8192,
     pixalDecimation: 600000,
     pixalSteps: 30,
     pixalGuidance: 8.0,
-    pixalTextureGuidance: 3.0,
-    pixalMaxTokens: 65536,
     // false skips the voxel remesh that otherwise smooths fine facial
     // geometry at export — flip back on if rigging ever rejects the mesh
     pixalRemesh: false,
@@ -68,22 +61,20 @@ const THREE_D_PIPELINES = new Set(['local', 'tripo'])
 const THREE_D_FIELDS = {
   enabled: 'boolean',
   pipeline: THREE_D_PIPELINES,
-  pixalModelRepo: 'string',
-  pixalVramMode: 'string',
+  // which native engine the local pipeline uses (both built into ComfyUI)
+  meshMode: new Set(['pixal3d', 'trellis2']),
   qualityPreset: new Set(['standard', 'high', 'ultra', 'custom']),
-  pixalPipeline: new Set(['1024_cascade', '1536_cascade']),
   // numeric ranges [min, max]
   pixalCameraRes: [256, 2048],
   pixalTextureSize: [512, 8192],
   pixalDecimation: [5000, 5000000],
   pixalSteps: [1, 100],
   pixalGuidance: [0, 20],
-  pixalTextureGuidance: [0, 20],
-  pixalMaxTokens: [4096, 200000],
   pixalRemesh: 'boolean',
   pixalEnhance: new Set(['none', 'sharpen', 'esrgan', 'magnific4x']),
   pixalUpscaleModel: 'string',
-  pixalNafMode: new Set(['fallback_if_missing', 'strict']),
+  // Face fix: source-image enhance + front-view paint refine (threed.js)
+  faceFix: 'boolean',
   // UltraShape 1.0 mesh upscale (local refine)
   ultrashapeCheckpoint: 'string',
   ultrashapeDtype: new Set(['float16', 'bfloat16', 'float32']),

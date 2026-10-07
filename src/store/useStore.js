@@ -24,6 +24,7 @@ const DEFAULT_MODELS = {
     unet: 'wan2.1_t2v_1.3B_bf16.safetensors',
     clip: 'umt5_xxl_fp8_e4m3fn_scaled.safetensors',
     vae: 'wan_2.1_vae.safetensors',
+    lora: '', // optional H3 turbo LoRA (Settings → Models → Video)
   },
   edit: {
     unet: 'qwen_image_edit_fp8_e4m3fn.safetensors',
@@ -140,7 +141,7 @@ const useStore = create(
         frames: 33,
         fps: 16,
         seed: -1,
-        steps: 30,
+        steps: 20, // was 30 — sampler dominates on 16GB RAM; raise in Settings if needed
         cfg: 6,
       },
 
@@ -167,27 +168,24 @@ const useStore = create(
       lyrics: STRUCTURE_TAGS,
 
       // 3D Generation (optional feature — Settings → 3D Generation).
-      // local  = Pixal3D (image→GLB) + MIA auto-rig on your own ComfyUI
+      // local  = native Pixal3D/TRELLIS.2 (image→GLB, ComfyUI ≥ 0.39)
+      //          + MIA auto-rig on your own ComfyUI
       // tripo  = Tripo cloud: image→model→rig→animated in one chain
       threeD: {
         enabled: false,
         pipeline: 'local', // 'local' | 'tripo'
-        pixalModelRepo: 'TencentARC/Pixal3D',
-        pixalVramMode: 'dynamic_vram',
+        meshMode: 'pixal3d', // 'pixal3d' | 'trellis2' — both built into ComfyUI
         // Quality — higher = sharper face/texture, bigger files, slower runs
         qualityPreset: 'standard', // 'standard' | 'high' | 'ultra' | 'custom'
-        pixalPipeline: '1536_cascade', // '1024_cascade' | '1536_cascade'
-        pixalCameraRes: 1024, // 256–2048
-        pixalTextureSize: 4096, // 512–8192
+        pixalCameraRes: 1024, // 256–2048 crop box around the subject
+        pixalTextureSize: 4096, // 512–8192 UV atlas
         pixalDecimation: 300000, // 5000–5000000 triangle budget
-        pixalSteps: 20, // 1–100 sampling steps (upstream default is 12; distilled sampler gains nothing past ~30)
-        pixalGuidance: 7.5, // 0–20 structure guidance (upstream 7.5)
-        pixalTextureGuidance: 2.0, // 0–20 texture conditioning adherence (upstream 1.0)
-        pixalMaxTokens: 49152, // 4096–200000 sparse token cap (higher = more detail, more VRAM)
+        pixalSteps: 20, // 1–100 shape/upsample sampler steps (template default 20)
+        pixalGuidance: 7.5, // 0–20 shape guidance (template default 7.5)
         pixalRemesh: true, // voxel remesh at export (false preserves fine geometry)
         pixalEnhance: 'sharpen', // 'none' | 'sharpen' (local) | 'esrgan' (local, free) | 'magnific4x' (PAID)
         pixalUpscaleModel: '', // models/upscale_models/*.pth used when pixalEnhance === 'esrgan'
-        pixalNafMode: 'fallback_if_missing', // natten/NAF: 'fallback_if_missing' | 'strict' (requires natten.HAS_LIBNATTEN)
+        faceFix: true, // face-focused source enhance + front-view paint refine
         // UltraShape 1.0 mesh upscale (Upscale button — local refine of the mesh)
         ultrashapeCheckpoint: 'ultrashape_v1.pt', // models/UltraShape/*.pt
         ultrashapeDtype: 'bfloat16', // float16 | bfloat16 | float32
@@ -216,6 +214,7 @@ const useStore = create(
       threeDRun: {
         stage: 'idle', // 'idle' | 'working' | 'done' | 'error'
         status: '',
+        pct: null, // overall generation percent (0–100) for the progress bar
         error: null,
         mesh: null, // generated GLB ref for the local pipeline's rig step
         results: [], // downloadable output files of the last completed step

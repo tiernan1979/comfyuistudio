@@ -1,9 +1,6 @@
 import { useEffect, useRef, useCallback } from 'react'
 import useStore from '../store/useStore'
 import {
-  checkConnection,
-  connectWebSocket,
-  disconnectWebSocket,
   queuePrompt,
   getHistory,
   getServerHistory,
@@ -54,12 +51,7 @@ export async function syncServerHistory() {
 }
 
 export function useComfyUI() {
-  const serverUrl = useStore((s) => s.serverUrl)
-  const useProxy = useStore((s) => s.useProxy)
-  const apiBase = resolveApiBase(serverUrl, useProxy)
   const timerRef = useRef(null)
-  const wasConnectedRef = useRef(false)
-  const lastSyncRef = useRef(0)
 
   // Drop models from VRAM as soon as a run reaches a terminal state
   // (success or error). ComfyUI otherwise keeps the previous pipeline's
@@ -76,36 +68,9 @@ export function useComfyUI() {
     return freed
   }, [])
 
-  // Check connection on mount and periodically
-  useEffect(() => {
-    let cancelled = false
-    const check = async () => {
-      const ok = await checkConnection(apiBase)
-      if (cancelled) return
-      useStore.getState().setConnected(ok)
-      if (ok) {
-        connectWebSocket(apiBase)
-        // Load/refresh the shared server-side history: on first contact
-        // and then every ~45s while connected, so generations made from
-        // other machines show up without a reload.
-        const now = Date.now()
-        if (!wasConnectedRef.current || now - lastSyncRef.current > 45000) {
-          lastSyncRef.current = now
-          syncServerHistory()
-        }
-        wasConnectedRef.current = true
-      } else {
-        wasConnectedRef.current = false
-      }
-    }
-    check()
-    const interval = setInterval(check, 10000)
-    return () => {
-      cancelled = true
-      clearInterval(interval)
-      disconnectWebSocket()
-    }
-  }, [apiBase])
+  // Connection polling, the shared WebSocket and the idle-unload timer
+  // live in useAppConnection (mounted from App) — they must keep running
+  // when GenerateButton unmounts (the 3D tab).
 
   // Set up progress callback
   useEffect(() => {
@@ -432,34 +397,6 @@ export function useComfyUI() {
         timerRef.current = null
       }
     }
-  }, [])
-
-  // Auto-unload ComfyUI models after 5 minutes without generating:
-  // POST /free with { unload_models: true } drops model weights from
-  // VRAM/RAM (the next generation reloads them).
-  useEffect(() => {
-    const IDLE_MS = 5 * 60 * 1000
-    const interval = setInterval(async () => {
-      const s = useStore.getState()
-      if (!s.autoUnload || !s.connected || s.generating) return
-      if (s.modelsUnloaded || !s.lastGenAt) return
-      if (Date.now() - s.lastGenAt < IDLE_MS) return
-      try {
-        const base = resolveApiBase(s.serverUrl, s.useProxy)
-        const res = await fetch(`${base}/free`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ unload_models: true, free_memory: false }),
-        })
-        if (res.ok) {
-          s.setModelsUnloaded(true)
-        }
-        // Non-OK: leave modelsUnloaded false and retry next tick
-      } catch {
-        // Server unreachable — retry next tick
-      }
-    }, 30000)
-    return () => clearInterval(interval)
   }, [])
 
   return { generate }

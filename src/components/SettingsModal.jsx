@@ -179,7 +179,7 @@ export default function SettingsModal() {
   // predates (localStorage from a previous build may lack them).
   const [localThreeD, setLocalThreeD] = useState({
     qualityPreset: 'standard',
-    pixalNafMode: 'fallback_if_missing',
+    meshMode: 'pixal3d',
     ...QUALITY_PRESETS.standard,
     ...threeD,
   })
@@ -855,15 +855,16 @@ export default function SettingsModal() {
             )}
             {threeDCheck && !threeDCheck.ok && threeDCheck.missing?.length > 0 && (
               <div className="rounded-lg bg-red-500/10 border border-red-500/30 px-3 py-2.5 text-[11px] leading-relaxed text-red-300">
-                <p className="font-semibold">Can't enable the 3D tab — node pack(s) missing on the server:</p>
+                <p className="font-semibold">Can't enable the 3D tab — required node(s) missing on the server:</p>
                 <ul className="mt-1 space-y-0.5 list-disc list-inside">
                   {threeDCheck.missing.map((n) => (
                     <li key={n}>{describeNode(n)}</li>
                   ))}
                 </ul>
                 <p className="mt-1.5 text-red-200/80">
-                  Install them into <span className="font-mono">custom_nodes/</span> on the ComfyUI machine (pip install
-                  -r requirements.txt inside each pack), restart ComfyUI, then try again.
+                  Built-in nodes mean your ComfyUI is too old — update ComfyUI to ≥ 0.39 and restart it. MIA/UniRig
+                  entries go into <span className="font-mono">custom_nodes/</span> (pip install -r requirements.txt
+                  inside each pack), then restart ComfyUI and try again.
                 </p>
               </div>
             )}
@@ -889,35 +890,22 @@ export default function SettingsModal() {
                   options={['local', 'tripo']}
                   hint={
                     localThreeD.pipeline === 'local'
-                      ? 'Local: Pixal3D + MIA/UniRig run on your own ComfyUI (both node packs installed there).'
+                      ? 'Local: native Pixal3D/TRELLIS.2 mesh + MIA/UniRig rigging run on your own ComfyUI (needs ComfyUI ≥ 0.39).'
                       : 'Tripo cloud: one job does model → rig → animation. Needs ComfyUI signed in to comfy.org.'
                   }
                 />
 
                 {localThreeD.pipeline === 'local' ? (
                   <>
-                    <InputField
-                      label="Pixal3D model repo (HuggingFace)"
-                      value={localThreeD.pixalModelRepo}
-                      onChange={(v) => setLocalThreeD((t) => ({ ...t, pixalModelRepo: v }))}
-                      placeholder="TencentARC/Pixal3D"
-                    />
                     <SelectField
-                      label="Pixal3D VRAM mode"
-                      value={localThreeD.pixalVramMode}
-                      onChange={(v) => setLocalThreeD((t) => ({ ...t, pixalVramMode: v }))}
-                      options={['dynamic_vram', 'hybrid_low_vram', 'native_low_vram', 'full_gpu']}
-                      hint="dynamic_vram adapts as it goes; full_gpu is fastest if you have the VRAM to spare"
-                    />
-                    <SelectField
-                      label="natten (NAF upsampler)"
-                      value={localThreeD.pixalNafMode || 'fallback_if_missing'}
-                      onChange={(v) => setLocalThreeD((t) => ({ ...t, pixalNafMode: v }))}
+                      label="3D engine"
+                      value={localThreeD.meshMode || 'pixal3d'}
+                      onChange={(v) => setLocalThreeD((t) => ({ ...t, meshMode: v }))}
                       options={[
-                        ['fallback_if_missing', 'Fallback — duplicate_lr if NAF is unavailable'],
-                        ['strict', 'Strict — require real NAF (needs natten.HAS_LIBNATTEN)'],
+                        ['pixal3d', 'Pixal3D — stable, proven (default)'],
+                        ['trellis2', 'TRELLIS.2 — newer, sometimes sharper detail'],
                       ]}
-                      hint="Fallback is safe without CUDA NATTEN kernels. Strict errors instead of substituting — only useful once natten reports HAS_LIBNATTEN=true (pip natten wheels without the CUDA extension show HAS_LIBNATTEN=false)"
+                      hint="Both engines ship built into ComfyUI ≥ 0.39 (no custom pack); models are already in models/diffusion/"
                     />
                     <SelectField
                       label="Quality preset"
@@ -936,6 +924,16 @@ export default function SettingsModal() {
                         ['custom', 'Custom — use the values below as-is'],
                       ]}
                       hint="Presets stay file-size friendly (~40 MB GLBs): 8k textures triple the file for no visible gain, and past ~30 sampling steps the distilled sampler just burns time. Ultra is the only preset that pushes texture to 8192. Editing any field below switches to Custom."
+                    />
+                    <SelectField
+                      label="Face fix"
+                      value={String(localThreeD.faceFix ?? true)}
+                      onChange={(v) => setLocalThreeD((t) => ({ ...t, faceFix: v === 'true' }))}
+                      options={[
+                        ['true', 'On — sharpen the face before mesh gen and during Skin'],
+                        ['false', 'Off — use the picture as-is'],
+                      ]}
+                      hint="Faces get ~1-2% of the texture, so this runs a face-focused Qwen edit on your picture before generation, then refines the face on the front paint view (views 768px, texture 4096). Precise face masking switches on automatically when models/detection/mediapipe_face_fp32.safetensors is installed (restart ComfyUI after adding it); until then a low-strength whole-image face pass is used. Any failure falls back to your original picture."
                     />
                     <SelectField
                       label="Source pre-enhance"
@@ -962,13 +960,6 @@ export default function SettingsModal() {
                         }
                       />
                     )}
-                    <SelectField
-                      label="Mesh quality pipeline"
-                      value={localThreeD.pixalPipeline}
-                      onChange={(v) => setLocalThreeD((t) => ({ ...t, pixalPipeline: v, qualityPreset: 'custom' }))}
-                      options={['1536_cascade', '1024_cascade']}
-                      hint="1536_cascade = much more detail than 1024 (slower)"
-                    />
                     <NumberField
                       label="Texture size (px)"
                       value={localThreeD.pixalTextureSize ?? 4096}
@@ -988,13 +979,13 @@ export default function SettingsModal() {
                       hint="300k suits most characters; 1M (Pixal's demo default) tripled the file for a smooth model. Oversized meshes are auto-decimated before Upscale anyway"
                     />
                     <NumberField
-                      label="Camera resolution (px)"
+                      label="Subject crop (px)"
                       value={localThreeD.pixalCameraRes ?? 1024}
                       onChange={(n) => setLocalThreeD((t) => ({ ...t, pixalCameraRes: n, qualityPreset: 'custom' }))}
                       min={256}
                       max={2048}
                       step={64}
-                      hint="Camera fitting math only — 1024 is plenty; does not affect texture resolution"
+                      hint="Square crop box around the subject before the 3D conditioning (1024 is plenty; does not affect texture resolution)"
                     />
                     <NumberField
                       label="Sampling steps"
@@ -1002,36 +993,16 @@ export default function SettingsModal() {
                       onChange={(n) => setLocalThreeD((t) => ({ ...t, pixalSteps: n, qualityPreset: 'custom' }))}
                       min={1}
                       max={100}
-                      hint="20 (node default 12) — the distilled sampler gains nothing past ~30 and just burns time"
+                      hint="20 (template default) — shape & upsample samplers; the distilled model gains nothing past ~30 and just burns time"
                     />
                     <NumberField
-                      label="Structure guidance"
+                      label="Shape guidance"
                       value={localThreeD.pixalGuidance ?? 7.5}
                       onChange={(n) => setLocalThreeD((t) => ({ ...t, pixalGuidance: n, qualityPreset: 'custom' }))}
                       min={0}
                       max={20}
                       step={0.1}
-                      hint="Locks the shape harder to the image (upstream default 7.5; too high causes artifacts)"
-                    />
-                    <NumberField
-                      label="Texture guidance"
-                      value={localThreeD.pixalTextureGuidance ?? 2.0}
-                      onChange={(n) =>
-                        setLocalThreeD((t) => ({ ...t, pixalTextureGuidance: n, qualityPreset: 'custom' }))
-                      }
-                      min={0}
-                      max={20}
-                      step={0.1}
-                      hint="How tightly texture follows the image conditioning — the main 'face looks painted-on' lever (upstream default 1.0)"
-                    />
-                    <NumberField
-                      label="Detail token budget"
-                      value={localThreeD.pixalMaxTokens ?? 49152}
-                      onChange={(n) => setLocalThreeD((t) => ({ ...t, pixalMaxTokens: n, qualityPreset: 'custom' }))}
-                      min={4096}
-                      max={200000}
-                      step={1024}
-                      hint="49152 = default; 100000 = more high-res detail tokens (needs VRAM — lower it if a run OOMs)"
+                      hint="Locks the shape harder to the image (template default 7.5; too high causes artifacts)"
                     />
                     <SelectField
                       label="Voxel remesh at export"
@@ -1359,6 +1330,13 @@ export default function SettingsModal() {
               onChange={(v) => setLocalModels((m) => ({ ...m, video: { ...m.video, vae: v } }))}
               options={modelLists.vae}
               placeholder="wan_2.1_vae.safetensors"
+            />
+            <ModelField
+              label="Turbo LoRA (optional — MiniMax H3, sample at 4–8 steps)"
+              value={localModels.video.lora || ''}
+              onChange={(v) => setLocalModels((m) => ({ ...m, video: { ...m.video, lora: v } }))}
+              options={modelLists.lora}
+              placeholder="minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors"
             />
           </div>
 

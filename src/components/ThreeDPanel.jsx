@@ -47,6 +47,7 @@ export default function ThreeDPanel() {
   const serverUrl = useStore((s) => s.serverUrl)
   const useProxy = useStore((s) => s.useProxy)
   const threeD = useStore((s) => s.threeD)
+  const models = useStore((s) => s.models)
   const run = useStore((s) => s.threeDRun)
   const setRun = useStore((s) => s.setThreeDRun)
   const setShowSettings = useStore((s) => s.setShowSettings)
@@ -56,6 +57,14 @@ export default function ThreeDPanel() {
   const base = resolveApiBase(serverUrl, useProxy)
   const busy = run.stage === 'working'
   const isLocal = threeD.pipeline !== 'tripo'
+
+  // Edit-stack model names for the face-fix passes; threed.js resolves them
+  // against the server's live lists (fresh profiles carry foreign defaults).
+  const editModels = {
+    unet: models.edit?.unet || '',
+    clip: models.image?.clip || '',
+    vae: models.image?.vae || '',
+  }
 
   const [image, setImage] = useState(null) // { file, preview, name }
   const [dragOver, setDragOver] = useState(false)
@@ -200,7 +209,7 @@ export default function ThreeDPanel() {
 
   const guard = (startPatch) => (fn) => async () => {
     if (busy || !fn) return
-    setRun({ stage: 'working', status: 'Starting…', error: null, ...startPatch })
+    setRun({ stage: 'working', status: 'Starting…', pct: null, error: null, ...startPatch })
     try {
       await fn()
     } catch (err) {
@@ -278,6 +287,7 @@ export default function ThreeDPanel() {
           meshEntry: run.mesh || undefined,
           meshFile: importedMesh?.file,
           meshName: run.mesh ? run.mesh.filename : importedMesh.name,
+          editModels,
         },
         (s) => setRun({ status: s })
       )
@@ -296,7 +306,13 @@ export default function ThreeDPanel() {
     if (!image) return
     setImportedMesh(null)
     if (isLocal) {
-      const glb = await runGenerateMesh(base, image.file, threeD, (s) => setRun({ status: s }))
+      const glb = await runGenerateMesh(
+        base,
+        image.file,
+        threeD,
+        (s, meta) => setRun({ status: s, pct: meta?.pct ?? null }),
+        editModels
+      )
       setRun({ stage: 'done', status: '', mesh: glb, results: [] })
     } else {
       const files = await runTripo(base, image.file, threeD, presetSel, (s) => setRun({ status: s }))
@@ -355,7 +371,7 @@ export default function ThreeDPanel() {
               <h2 className="text-lg font-bold">3D Generation</h2>
               <p className="text-xs text-text-muted">
                 {isLocal
-                  ? 'Local · Pixal3D image → mesh, MIA auto-rig on your ComfyUI'
+                  ? 'Local · image → mesh (Pixal3D/TRELLIS.2) + MIA auto-rig on your ComfyUI'
                   : 'Tripo cloud · image → model → rig → preset animation'}
               </p>
             </div>
@@ -457,7 +473,8 @@ export default function ThreeDPanel() {
                     Generate mesh
                   </p>
                   <p className="text-[11px] text-text-muted mt-1">
-                    Pixal3D turns the image into a textured GLB on your ComfyUI box (first run downloads the model).
+                    The native 3D engine turns the image into a textured GLB on your ComfyUI box (built into ComfyUI ≥
+                    0.39 — first run loads the model).
                   </p>
                 </div>
                 <button onClick={handleGenerate} disabled={!image || busy} className={BTN_PRIMARY}>
@@ -665,9 +682,22 @@ export default function ThreeDPanel() {
           {/* Status / error footer (mirrors the other tabs' Generate area) */}
           <div className="p-4 border-t border-border space-y-3">
             {busy && (
-              <div className="flex items-center gap-2 text-xs text-accent">
-                <Loader2 size={14} className="animate-spin shrink-0" />
-                <span>{run.status || 'Working…'}</span>
+              <div className="space-y-1.5">
+                <div className="flex items-center gap-2 text-xs text-accent">
+                  <Loader2 size={14} className="animate-spin shrink-0" />
+                  <span>{run.status || 'Working…'}</span>
+                  {run.pct != null && (
+                    <span className="ml-auto tabular-nums text-text-secondary">{run.pct}%</span>
+                  )}
+                </div>
+                {run.pct != null && (
+                  <div className="w-full h-1.5 rounded-full bg-bg-card overflow-hidden">
+                    <div
+                      className="h-full rounded-full bg-gradient-to-r from-accent to-purple-500 transition-all duration-700 ease-out"
+                      style={{ width: `${run.pct}%` }}
+                    />
+                  </div>
+                )}
               </div>
             )}
             {run.error && (

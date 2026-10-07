@@ -410,6 +410,8 @@ export async function assertModelsAvailable(base, mode, models) {
         ['unet', models.video?.unet, 'Video model'],
         ['clip', models.video?.clip, 'Video text encoder'],
         ['vae', models.video?.vae, 'Video VAE'],
+        // Optional H3 turbo LoRA — only validated when one is picked.
+        ...(models.video?.lora ? [['lora', models.video.lora, 'Turbo LoRA']] : []),
       ]
     }
     if (mode === 'music') {
@@ -792,7 +794,7 @@ export async function stopGeneration(serverUrl, promptId = null) {
 // Wait until a queued prompt finishes. Resolves with the history entry,
 // rejects on execution error or timeout.
 //
-//   onTick(secondsElapsed, info) — info = { phase, queuePos, nodeLabel, progress }
+//   onTick(secondsElapsed, info) — info = { phase, queuePos, nodeLabel, progress, node }
 //   nodes  — { nodeId: humanLabel } so WS "executing" messages can show
 //            which step the server is on (built from the workflow object)
 //   label  — job name used in timeout/error messages ("Pixal3D", "MIA rig")
@@ -807,17 +809,19 @@ export function pollHistory(base, promptId, { timeoutMs = 600000, intervalMs = 3
     let phase = null // 'queued' | 'running' | null (unknown/history lag)
     let queuePos = null
     let nodeLabel = ''
+    let node = '' // raw workflow node id currently executing
     let progress = null
     let everQueued = false // seen in /queue at least once
     let goneTicks = 0 // consecutive ticks not in queue and no history
 
-    const info = () => ({ phase, queuePos, nodeLabel, progress })
+    const info = () => ({ phase, queuePos, nodeLabel, progress, node })
 
     const offListener = addExecutionListener((msg) => {
       const { type, data } = msg
       if (!data || data.prompt_id !== promptId) return
       if (type === 'executing' && data.node) {
         phase = 'running'
+        node = String(data.node)
         nodeLabel = (nodes && nodes[data.node]) || data.node
         progress = null
       } else if (type === 'progress') {
@@ -944,7 +948,14 @@ export async function uploadMeshFile(base, filename, blob) {
   } catch (err) {
     throw new Error(`could not upload mesh (${err.message})`)
   }
-  if (!res.ok) throw new Error(`mesh upload failed (HTTP ${res.status})`)
+  if (!res.ok) {
+    const detail = (await res.text().catch(() => '')).slice(0, 160)
+    const hint =
+      res.status === 413
+        ? ' — file exceeds ComfyUI\'s request-body limit; raise it by restarting ComfyUI with --max-upload-size 400, or lower the triangle budget/texture size'
+        : ''
+    throw new Error(`mesh upload failed (HTTP ${res.status}${hint})${detail ? `: ${detail}` : ''}`)
+  }
   const data = await res.json()
   if (!data.name) throw new Error('ComfyUI did not accept the mesh upload')
   return data.name

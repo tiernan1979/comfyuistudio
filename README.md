@@ -123,15 +123,158 @@ All other settings (ComfyUI URL, models, providers, SearXNG URL) can also be cha
 
 | Feature | Needs |
 |---|---|
-| Image generation | ComfyUI + Qwen-Image models (UNet, CLIP, VAE) |
-| Edit mode | ComfyUI + `qwen_image_edit_*.safetensors` in `models/diffusion_models/` |
-| Video generation | ComfyUI + Wan 2.1 models |
-| 3D (local pipeline) | ComfyUI + the **Pixal3D** and **MIA/UniRig** node packs; animation FBX files in `input/animation_templates/mixamo/` |
-| 3D (Tripo pipeline) | ComfyUI signed in to comfy.org (Menu → API keys) + Tripo credits |
+| Image generation | ComfyUI + Qwen-Image models (see [Models](#models)) |
+| Edit mode | ComfyUI + `qwen_image_edit_*.safetensors` (see [Models](#models)) |
+| Video generation | ComfyUI + Wan 2.1 or MiniMax H3 models |
+| Music generation | ComfyUI + MiniMax Music 3 models |
+| 3D (local pipeline) | ComfyUI ≥ 0.39 + the **Hunyuan3D-Paint**, **UltraShape** and **UniRig** node packs + 3D models |
+| 3D (Tripo pipeline) | ComfyUI signed in to comfy.org (Menu → API keys) + Tripo credits (no local models) |
 | AI prompt writer | LM Studio running, or an OpenAI/Anthropic API key |
 | Web image search | A SearXNG instance with JSON format enabled (`search.formats: [html, json]`) |
 
 The ComfyUI URL is set in Settings (or `config.json`); with the default `useProxy` enabled, all traffic flows through the app's `/proxy/...` nginx route, so plain HTTP backends work even though the UI runs in a browser.
+
+## Models
+
+ComfyUI Studio ships no weights — every feature runs against models installed in your
+ComfyUI. Download only what you use. All links are direct Hugging Face `resolve` URLs;
+`wget -c` each file into the folder shown (folder names match ComfyUI ≥ 0.39 — on older
+builds `models/diffusion_models/` is called `models/unet/`). Quantized `*_int8_convrot`
+/ `*_fp8_*` files are the practical choice on 12–16 GB cards; bf16/fp16 equivalents live
+in the same repos.
+
+File names in **Settings → Models** must match what you install — the dropdowns list the
+files your server actually has, and the app picks up common variants automatically.
+
+### Image generation — Qwen-Image
+
+| File | Put in | Download |
+|---|---|---|
+| `qwen_image_fp8_e4m3fn.safetensors` | `models/diffusion_models/` | [Comfy-Org/Qwen-Image_ComfyUI](https://huggingface.co/Comfy-Org/Qwen-Image_ComfyUI/resolve/main/split_files/diffusion_models/qwen_image_fp8_e4m3fn.safetensors) |
+| `qwen_2.5_vl_7b_fp8_scaled.safetensors` | `models/text_encoders/` | [Comfy-Org/Qwen-Image_ComfyUI](https://huggingface.co/Comfy-Org/Qwen-Image_ComfyUI/resolve/main/split_files/text_encoders/qwen_2.5_vl_7b_fp8_scaled.safetensors) |
+| `qwen_image_vae.safetensors` | `models/vae/` | [Comfy-Org/Qwen-Image_ComfyUI](https://huggingface.co/Comfy-Org/Qwen-Image_ComfyUI/resolve/main/split_files/vae/qwen_image_vae.safetensors) |
+
+Lighter alternative ([Comfy-Org/Qwen-Image-2.1](https://huggingface.co/Comfy-Org/Qwen-Image-2.1),
+used on low-VRAM installs): `qwen_image_2.1_int8_convrot.safetensors` →
+`models/diffusion_models/`, `qwen3vl_8b_w4a8.safetensors` → `models/text_encoders/`,
+`qwen_image_2.1_vae_bf16.safetensors` → `models/vae/`.
+
+Turbo mode (optional): put `Qwen-Image-Lightning-8steps-V2.0-bf16.safetensors` in
+`models/loras/` ([lightx2v/Qwen-Image-Lightning](https://huggingface.co/lightx2v/Qwen-Image-Lightning/resolve/main/Qwen-Image-Lightning-8steps-V2.0-bf16.safetensors))
+and select it in Settings → Models → image LoRA.
+
+### Edit mode & face fix — Qwen-Image-Edit
+
+| File | Put in | Download |
+|---|---|---|
+| `qwen_image_edit_fp8_e4m3fn.safetensors` | `models/diffusion_models/` | [Comfy-Org/Qwen-Image-Edit_ComfyUI](https://huggingface.co/Comfy-Org/Qwen-Image-Edit_ComfyUI/resolve/main/split_files/diffusion_models/qwen_image_edit_fp8_e4m3fn.safetensors) |
+
+Edit mode reuses the image text encoder + VAE above; newer variants
+(`qwen_image_edit_2509_*`, `qwen_image_edit_2511_*`) from the same repo work too.
+
+Optional — precise face mask for the **face fix** feature:
+
+| File | Put in | Download |
+|---|---|---|
+| `mediapipe_face_fp32.safetensors` | `models/detection/` | [Comfy-Org/mediapipe](https://huggingface.co/Comfy-Org/mediapipe/resolve/main/detection/mediapipe_face_fp32.safetensors) |
+
+Restart ComfyUI after adding it. Without it the face fix still runs, using a
+low-strength whole-image pass instead of a face-only mask.
+
+### Video generation — Wan 2.1 (default)
+
+| File | Put in | Download |
+|---|---|---|
+| `wan2.1_t2v_1.3B_bf16.safetensors` | `models/diffusion_models/` | [Comfy-Org/Wan_2.1_ComfyUI_repackaged](https://huggingface.co/Comfy-Org/Wan_2.1_ComfyUI_repackaged/resolve/main/split_files/diffusion_models/wan2.1_t2v_1.3B_bf16.safetensors) |
+| `umt5_xxl_fp8_e4m3fn_scaled.safetensors` | `models/text_encoders/` | [Comfy-Org/Wan_2.1_ComfyUI_repackaged](https://huggingface.co/Comfy-Org/Wan_2.1_ComfyUI_repackaged/resolve/main/split_files/text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors) |
+| `wan_2.1_vae.safetensors` | `models/vae/` | [Comfy-Org/Wan_2.1_ComfyUI_repackaged](https://huggingface.co/Comfy-Org/Wan_2.1_ComfyUI_repackaged/resolve/main/split_files/vae/wan_2.1_vae.safetensors) |
+
+Bigger resolutions need the 14B variants (`wan2.1_t2v_14B_*`) from the same repo.
+
+### Video generation — MiniMax H3 (alternative)
+
+Pick any `minimax_h3_*` file in Settings → Video Models and the app switches to the
+native H3 workflow:
+
+| File | Put in | Download |
+|---|---|---|
+| `minimax_h3_fl2va_pruned_int8_convrot.safetensors` | `models/diffusion_models/` | [Comfy-Org/MiniMax-H3](https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/diffusion_models/minimax_h3_fl2va_pruned_int8_convrot.safetensors) |
+| `qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors` | `models/text_encoders/` | [Comfy-Org/MiniMax-H3](https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors) |
+| `minimax_h3_video_vae_fp16.safetensors` | `models/vae/` | [Comfy-Org/MiniMax-H3](https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/vae/minimax_h3_video_vae_fp16.safetensors) |
+| `minimax_h3_audio_vae_fp32.safetensors` | `models/vae/` | [Comfy-Org/MiniMax-H3](https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/vae/minimax_h3_audio_vae_fp32.safetensors) |
+
+H3 videos carry audio, so the audio VAE is required — the app checks for it before
+queueing.
+
+### Music generation — MiniMax Music 3
+
+| File | Put in | Download |
+|---|---|---|
+| `minimax_music3_dit_int8_convrot.safetensors` | `models/diffusion_models/` | [Comfy-Org/MiniMax-Music-3](https://huggingface.co/Comfy-Org/MiniMax-Music-3/resolve/main/diffusion_models/minimax_music3_dit_int8_convrot.safetensors) |
+| `minimax_music3_text_encoder_pruned_int8_convrot.safetensors` | `models/text_encoders/` | [Comfy-Org/MiniMax-Music-3](https://huggingface.co/Comfy-Org/MiniMax-Music-3/resolve/main/text_encoders/minimax_music3_text_encoder_pruned_int8_convrot.safetensors) |
+| `minimax_music3_dav.safetensors` | `models/vae/` | [Comfy-Org/MiniMax-Music-3](https://huggingface.co/Comfy-Org/MiniMax-Music-3/resolve/main/vae/minimax_music3_dav.safetensors) |
+
+`minimax_music3_dit_fp16.safetensors` from the same repo is the full-precision DiT if
+you have the VRAM. Music is subject to the [MiniMax community license](https://huggingface.co/MiniMaxAI/MiniMax-Music3/blob/main/LICENSE).
+
+### 3D generation — engines & shared models
+
+The **TRELLIS.2** and **Pixal3D** engines are built into ComfyUI ≥ 0.39 (no node pack
+needed); only their weights must be installed. Settings → 3D lets you switch engines.
+
+| File | Put in | Download | Used by |
+|---|---|---|---|
+| `trellis_2_int8_convrot.safetensors` | `models/diffusion_models/` | [Comfy-Org/TRELLIS.2](https://huggingface.co/Comfy-Org/TRELLIS.2/resolve/main/diffusion_models/trellis_2_int8_convrot.safetensors) | TRELLIS.2 engine |
+| `trellis_2_shape_vae_bf16.safetensors` | `models/vae/` | [Comfy-Org/TRELLIS.2](https://huggingface.co/Comfy-Org/TRELLIS.2/resolve/main/vae/trellis_2_shape_vae_bf16.safetensors) | TRELLIS.2 (+ Pixal3D) |
+| `trellis_2_texture_vae_bf16.safetensors` | `models/vae/` | [Comfy-Org/TRELLIS.2](https://huggingface.co/Comfy-Org/TRELLIS.2/resolve/main/vae/trellis_2_texture_vae_bf16.safetensors) | TRELLIS.2 (+ Pixal3D) |
+| `pixal3d_int8_convrot.safetensors` | `models/diffusion_models/` | [Comfy-Org/Pixal3D](https://huggingface.co/Comfy-Org/Pixal3D/resolve/main/diffusion_models/pixal3d_int8_convrot.safetensors) | Pixal3D engine |
+| `dino_v3_L_naf_fp32.safetensors` | `models/clip_vision/` | [Comfy-Org/Pixal3D](https://huggingface.co/Comfy-Org/Pixal3D/resolve/main/clip_vision/dino_v3_L_naf_fp32.safetensors) | both engines (image conditioning) |
+| `birefnet.safetensors` | `models/background_removal/` | [Comfy-Org/BiRefNet](https://huggingface.co/Comfy-Org/BiRefNet/resolve/main/background_removal/birefnet.safetensors) | input cutout (built-in node) |
+| `moge_2_vitl_normal_fp16.safetensors` | `models/geometry_estimation/` | [Comfy-Org/MoGe](https://huggingface.co/Comfy-Org/MoGe/resolve/main/geometry_estimation/moge_2_vitl_normal_fp16.safetensors) | Pixal3D camera FOV (built-in node) |
+| `ultrashape_v1.pt` | `models/UltraShape/` | [infinith/UltraShape](https://huggingface.co/infinith/UltraShape/resolve/main/ultrashape_v1.pt) | **Upscale** button |
+
+### 3D generation — node packs
+
+```bash
+cd ComfyUI/custom_nodes
+git clone https://github.com/agenticvibes/ComfyUI-Hunyuan3D-Paint.git   # Paint (texture)
+git clone https://github.com/jtydhr88/ComfyUI-UltraShape1.git           # Upscale (refine)
+git clone https://github.com/PozzettiAndrea/ComfyUI-UniRig.git          # auto-rig + animate
+```
+
+- **Hunyuan3D-Paint** installs its Python deps + C++ rasterizers automatically on load.
+- **UltraShape1** additionally needs `pip install -r requirements.txt` inside the pack,
+  and `ultrashape_v1.pt` (table above) in `models/UltraShape/`.
+- **UniRig** (MIA/UniRig rigging) pulls its rigging models from Hugging Face on first
+  run via its `install.py`, which also bundles Blender. Animation presets need Mixamo
+  FBX files in `input/animation_templates/mixamo/`.
+
+### 3D generation — Paint models
+
+```
+# Hunyuan3D 2.1 PBR paint model (~3.7 GB) → models/diffusers/hunyuan3d-paintpbr-v2-1/
+huggingface-cli download tencent/Hunyuan3D-2.1 \
+  --include "hunyuan3d-paintpbr-v2-1/*" \
+  --local-dir ComfyUI/models/diffusers
+
+# DINOv2 image encoder (~4.5 GB) → models/clip_vision/dinov2-giant/
+huggingface-cli download facebook/dinov2-giant \
+  --local-dir ComfyUI/models/clip_vision/dinov2-giant
+```
+
+### Texture enhance / image upscale — ESRGAN
+
+Used by the 3D *enhance* setting (`esrgan`) and the `1080p-fast` image preset:
+
+| File | Put in | Download |
+|---|---|---|
+| `4x-UltraSharp.pth` | `models/upscale_models/` | [Kim2091/UltraSharp](https://huggingface.co/Kim2091/UltraSharp/resolve/main/4x-UltraSharp.pth) |
+| `RealESRGAN_x4plus.pth` (alt) | `models/upscale_models/` | [xinntao/Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth) |
+
+### Not needed locally
+
+- **Tripo / Meshy pipelines** — cloud jobs; only a comfy.org sign-in (+ credits) is required.
+- **AI prompt writer** — LM Studio or an OpenAI/Anthropic key; no ComfyUI model.
 
 ## Repository layout
 

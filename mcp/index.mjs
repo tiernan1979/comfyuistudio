@@ -70,7 +70,10 @@ const waitSchema = z
   .describe('true (default) = block until the generation finishes; false = return the promptId immediately')
 
 async function generate(mode, args) {
-  const body = { mode, ...args }
+  const { video_lora, ...rest } = args
+  const body = { mode, ...rest }
+  // Optional H3 turbo LoRA → model override (file must be in models/loras).
+  if (video_lora) body.models = { video: { lora: video_lora } }
   const out = await api('/api/generate', {
     method: 'POST',
     body,
@@ -136,10 +139,11 @@ tool(
   {
     prompt: z.string().describe('Text description of the video'),
     negativePrompt: z.string().optional(),
-    resolution: z.enum(['480p', '720p']).optional().describe('Default 480p (faster)'),
+    resolution: z.enum(['480p', '720p', '1080p-fast', '1080p']).optional().describe('Default 480p (faster). 1080p-fast samples at 960×544 and upscales to 1080p (fast, slightly softer). Native 1080p is very slow on 16GB RAM — keep clips short'),
     frames: z.number().int().min(9).max(121).optional().describe('Frame count (default 33 ≈ 2s at 16fps)'),
     fps: z.number().int().min(4).max(30).optional(),
     steps: z.number().int().min(1).max(60).optional(),
+    video_lora: z.string().optional().describe('Optional H3 turbo LoRA filename from the server models/loras folder (e.g. a LightX2V/comfy-org 4-step turbo .safetensors). When set, use steps 4–8 for best quality/speed.'),
     cfg: z.number().min(0).max(20).optional(),
     seed: z.number().int().optional().describe('-1 (default) = random'),
     wait: waitSchema,

@@ -29,6 +29,7 @@ export const DEFAULT_MODELS = {
     unet: 'wan2.1_t2v_1.3B_bf16.safetensors',
     clip: 'umt5_xxl_fp8_e4m3fn_scaled.safetensors',
     vae: 'wan_2.1_vae.safetensors',
+    lora: '', // optional H3 turbo LoRA (4–8 steps)
   },
   music: {
     unet: 'minimax_music3_dit_int8_convrot.safetensors',
@@ -40,7 +41,7 @@ export const DEFAULT_MODELS = {
 export const DEFAULT_SETTINGS = {
   image: { aspectRatio: '1:1', turboMode: false, seed: -1, steps: 20, cfg: 4 },
   edit: { seed: -1, steps: 20, cfg: 2.5 },
-  video: { resolution: '480p', frames: 33, fps: 16, seed: -1, steps: 30, cfg: 6 },
+  video: { resolution: '480p', frames: 33, fps: 16, seed: -1, steps: 20, cfg: 6 },
   music: { duration: 30, seed: -1, steps: 30, cfgScale: 1.7, quality: '320k' },
 }
 

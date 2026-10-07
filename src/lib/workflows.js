@@ -11,6 +11,10 @@ const ASPECT_RATIOS = {
 const VIDEO_RESOLUTIONS = {
   '480p': { width: 832, height: 480 },
   '720p': { width: 1280, height: 720 },
+  // Fast 1080p: sample at 960×544 (the official H3 "fast" size — 4× fewer
+  // tokens than 1920×1088) and upscale with 4x-UltraSharp at the end.
+  '1080p-fast': { width: 1920, height: 1080, genWidth: 960, genHeight: 544, upscale: '4x-UltraSharp.pth' },
+  '1080p': { width: 1920, height: 1080 },
 }
 
 export function buildImageWorkflow({
@@ -140,6 +144,7 @@ export function buildEditWorkflow({
   seed = -1,
   steps = 20,
   cfg = 2.5,
+  denoise = 1,
   models,
 }) {
   const actualSeed = seed === -1 ? Math.floor(Math.random() * 2 ** 48) : seed
@@ -224,7 +229,7 @@ export function buildEditWorkflow({
         cfg: cfg,
         sampler_name: 'euler',
         scheduler: 'simple',
-        denoise: 1,
+        denoise: denoise,
       },
     },
     '8': {
@@ -245,6 +250,98 @@ export function buildEditWorkflow({
 }
 
 // ---------------------------------------------------------------------------
+// Face-fix (settings toggle threeD.faceFix): face-focused Qwen-Image edit
+// passes that run around the 3D pipeline. Faces get ~1-2% of the texels in a
+// full-body texture bake, so sharpening the face at source (before mesh gen)
+// and on the front paint view (before bake) is where the quality lands.
+//
+// When ComfyUI/models/detection/ has a MediaPipe face model, a precise
+// landmark mask confines the edit to the face oval; otherwise a conservative
+// whole-image pass is used and the prompt has to carry the "keep everything
+// else identical" constraint.
+// ---------------------------------------------------------------------------
+export const FACE_ENHANCE_PROMPT =
+  'Enhance the face in this image: sharpen the eyes, define the iris, eyelids and eyelashes, ' +
+  'add natural fine skin texture, crisp lips and clean facial features. Keep the pose, expression, ' +
+  'outfit, colors, lighting, background and composition exactly the same — photorealistic detail only, ' +
+  'no style change.'
+export const FACE_ENHANCE_NEG =
+  'deformed face, warped features, asymmetric eyes, plastic or waxy skin, changed clothes, ' +
+  'changed background, blurry, low quality'
+
+const FACE_PAINT_PROMPT =
+  'Fix and sharpen the face in this rendered character view: crisp eyes with clear irises and ' +
+  'eyelids, defined eyelashes, natural skin detail, clean lips. Keep the pose, outfit, colors, ' +
+  'lighting and background exactly the same — no style change.'
+const FACE_PAINT_NEG =
+  'deformed face, melted features, warped eyes, plastic skin, changed outfit, changed pose, blur'
+
+// Shared face-mask softening: MediaPipeFaceMask is a hard-edged polygon fill,
+// which would leave a visible seam where the edit meets the untouched image.
+// FeatherMask only softens the image border, so blur the mask instead.
+function addFaceMask(wf, { landmarksNode }) {
+  wf['13'] = { class_type: 'MediaPipeFaceMask', inputs: { face_landmarks: [landmarksNode, 0], regions: 'all' } }
+  wf['14'] = { class_type: 'MaskToImage', inputs: { mask: ['13', 0] } }
+  wf['15'] = { class_type: 'ImageBlur', inputs: { image: ['14', 0], blur_radius: 15, sigma: 2.5 } }
+  wf['16'] = { class_type: 'ImageToMask', inputs: { image: ['15', 0], channel: 'red' } }
+  return ['16', 0]
+}
+
+// First step of the local pipeline: sharpen the face of the source picture
+// before the 3D generator ever sees it. Saves under outputName; the caller
+// downloads the PNG and re-uploads it for the mesh workflow.
+export function buildFaceEnhanceWorkflow({
+  imageName,
+  outputName = 'facefix',
+  models,
+  faceModelName = '',
+  denoise,
+  steps = 20,
+  cfg = 2.5,
+  seed = -1,
+}) {
+  const wf = buildEditWorkflow({
+    prompt: FACE_ENHANCE_PROMPT,
+    negativePrompt: FACE_ENHANCE_NEG,
+    imageName,
+    seed,
+    steps,
+    cfg,
+    denoise: denoise ?? (faceModelName ? 0.55 : 0.4),
+    models,
+  })
+  wf['60'].inputs.filename_prefix = outputName
+  if (faceModelName) {
+    wf['41'] = { class_type: 'LoadMediaPipeFaceLandmarker', inputs: { model_name: faceModelName } }
+    wf['42'] = {
+      class_type: 'MediaPipeFaceLandmarker',
+      inputs: {
+        face_detection_model: ['41', 0],
+        image: ['78', 0],
+        detector_variant: 'both',
+        num_faces: 1,
+        min_confidence: 0.3,
+        missing_frame_fallback: 'empty',
+      },
+    }
+    const mask = addFaceMask(wf, { landmarksNode: '42' })
+    wf['61'] = {
+      class_type: 'ImageCompositeMasked',
+      inputs: {
+        destination: ['78', 0],
+        source: ['8', 0],
+        x: 0,
+        y: 0,
+        resize_source: false,
+        mask,
+      },
+    }
+    wf['60'].inputs.images = ['61', 0]
+  }
+  return wf
+}
+
+// ---------------------------------------------------------------------------
 // 3D workflows (optional feature, enabled in Settings → 3D Generation)
 // ---------------------------------------------------------------------------
 
@@ -254,107 +351,757 @@ function randomHex(len) {
   return s
 }
 
-// Local pipeline, step 1: image → 3D mesh (Pixal3D, TencentARC).
-// Mirrors the proven homeclaw workflow: LoadImage → Pixal3DModelLoader →
-// Pixal3DImageTo3D → Pixal3DExportGLB. The hf_endpoint cache-buster forces
-// a clean model fetch per run.
-export function buildPixal3DWorkflow({
+// Local pipeline, step 1: image → textured GLB using ComfyUI's NATIVE
+// Pixal3D / TRELLIS.2 nodes (built into ComfyUI ≥ 0.39 — no custom pack).
+// Converted from the official 3d_pixal3d_trellis2_image_to_model template:
+// bg-removal → crop → dual conditioning (switched by mode) → structure →
+// shape → upsample → texture → remesh/decimate/unwrap → PBR bake → GLB.
+export function buildMeshWorkflow({
   imageName,
-  modelRepo = 'TencentARC/Pixal3D',
-  vramMode = 'dynamic_vram',
+  mode = 'pixal3d', // 'pixal3d' | 'trellis2'
   seed = Math.floor(Math.random() * 2 ** 32),
-  pipeline = '1536_cascade',
+  steps = 20,
+  guidance = 7.5,
   cameraRes = 1024,
   textureSize = 4096,
   decimation = 300000,
-  steps = 20,
-  guidance = 7.5,
-  textureGuidance = 2.0,
-  maxTokens = 49152,
   remesh = true,
   enhance = 'none', // 'none' | 'sharpen' | 'esrgan' | 'magnific4x'
   enhanceModel = '', // upscale_models/*.pth name when enhance === 'esrgan'
-  nafMode = 'fallback_if_missing', // 'fallback_if_missing' | 'strict' (natten/NAF)
+  filenameBase = 'mesh',
 }) {
   const wf = {
-    '1': {
-      class_type: 'LoadImage',
-      inputs: { image: imageName },
-    },
-    '2': {
-      class_type: 'Pixal3DModelLoader',
-      inputs: {
-        model_repo: modelRepo,
-        hf_endpoint: `https://huggingface.co/hc-${randomHex(12)}`,
-        attention_backend: 'auto',
-        vram_mode: vramMode,
-        download_if_missing: true,
-        load_moge: true,
-        load_rembg: false,
-        naf_mode: nafMode,
-        naf_target_size: 'upstream',
-        preload_naf: nafMode === 'strict',
-        force_reload: true,
-      },
-    },
+
     '3': {
-      class_type: 'Pixal3DImageTo3D',
-      inputs: {
-        model: ['2', 0],
-        image: ['1', 0],
-        seed: seed,
-        pipeline_type: pipeline,
-        background_mode: 'none',
-        camera_mode: 'moge',
-        manual_camera_angle_x: 0.857556,
-        manual_distance: 2.0,
-        mesh_scale: 1.0,
-        extend_pixel: 0,
-        camera_resolution: cameraRes,
-        steps,
-        guidance,
-        texture_guidance: textureGuidance,
-        max_num_tokens: maxTokens,
-        force_offload: false,
-      },
+      "class_type": "KSampler",
+      "inputs": {
+        "model": [
+          "108",
+          0
+        ],
+        "seed": 56,
+        "steps": 12,
+        "cfg": 7.5,
+        "sampler_name": "euler",
+        "scheduler": "normal",
+        "positive": [
+          "314",
+          0
+        ],
+        "negative": [
+          "315",
+          0
+        ],
+        "latent_image": [
+          "87",
+          0
+        ],
+        "denoise": 1
+      }
     },
-    '4': {
-      class_type: 'Pixal3DExportGLB',
-      inputs: {
-        pixal3d_result: ['3', 0],
-        decimation_target: decimation,
-        texture_size: textureSize,
-        remesh,
-        filename_prefix: String(imageName || 'pixal3d').replace(/\.[^.]+$/, ''),
-      },
+    '12': {
+      "class_type": "KSampler",
+      "inputs": {
+        "model": [
+          "318",
+          0
+        ],
+        "seed": 43,
+        "steps": 12,
+        "cfg": 1,
+        "sampler_name": "euler",
+        "scheduler": "normal",
+        "positive": [
+          "98",
+          0
+        ],
+        "negative": [
+          "98",
+          1
+        ],
+        "latent_image": [
+          "98",
+          2
+        ],
+        "denoise": 1
+      }
+    },
+    '15': {
+      "class_type": "CLIPVisionLoader",
+      "inputs": {
+        "clip_name": "dino_v3_L_naf_fp32.safetensors"
+      }
+    },
+    '18': {
+      "class_type": "KSampler",
+      "inputs": {
+        "model": [
+          "126",
+          0
+        ],
+        "seed": 42,
+        "steps": 20,
+        "cfg": 7.5,
+        "sampler_name": "euler",
+        "scheduler": "normal",
+        "positive": [
+          "91",
+          0
+        ],
+        "negative": [
+          "91",
+          1
+        ],
+        "latent_image": [
+          "91",
+          2
+        ],
+        "denoise": 1
+      }
+    },
+    '23': {
+      "class_type": "KSampler",
+      "inputs": {
+        "model": [
+          "126",
+          0
+        ],
+        "seed": 42,
+        "steps": 12,
+        "cfg": 7.5,
+        "sampler_name": "euler",
+        "scheduler": "simple",
+        "positive": [
+          "94",
+          0
+        ],
+        "negative": [
+          "94",
+          1
+        ],
+        "latent_image": [
+          "94",
+          2
+        ],
+        "denoise": 1
+      }
+    },
+    '40': {
+      "class_type": "UNETLoader",
+      "inputs": {
+        "unet_name": "trellis_2_int8_convrot.safetensors",
+        "weight_dtype": "default"
+      }
+    },
+    '87': {
+      "class_type": "EmptyTrellis2LatentStructure",
+      "inputs": {
+        "batch_size": 1
+      }
+    },
+    '91': {
+      "class_type": "Trellis2ShapeStage",
+      "inputs": {
+        "positive": [
+          "314",
+          0
+        ],
+        "negative": [
+          "315",
+          0
+        ],
+        "voxel": [
+          "119",
+          0
+        ]
+      }
+    },
+    '92': {
+      "class_type": "VaeDecodeShapeTrellis",
+      "inputs": {
+        "samples": [
+          "23",
+          0
+        ],
+        "vae": [
+          "117",
+          0
+        ]
+      }
+    },
+    '93': {
+      "class_type": "VaeDecodeTextureTrellis",
+      "inputs": {
+        "samples": [
+          "12",
+          0
+        ],
+        "vae": [
+          "118",
+          0
+        ],
+        "shape_subdivides": [
+          "92",
+          1
+        ]
+      }
+    },
+    '94': {
+      "class_type": "Trellis2UpsampleStage",
+      "inputs": {
+        "positive": [
+          "91",
+          0
+        ],
+        "negative": [
+          "91",
+          1
+        ],
+        "shape_latent": [
+          "18",
+          0
+        ],
+        "vae": [
+          "117",
+          0
+        ],
+        "target_resolution": 1536
+      }
+    },
+    '98': {
+      "class_type": "Trellis2TextureStage",
+      "inputs": {
+        "positive": [
+          "94",
+          0
+        ],
+        "negative": [
+          "94",
+          1
+        ],
+        "shape_latent": [
+          "23",
+          0
+        ]
+      }
+    },
+    // MoGe FOV branch (official workflow 920c795f693a): depth-estimate the
+    // cropped input and derive the true horizontal FOV for Pixal3D
+    // conditioning — a fixed 49.13° placeholder distorts geometry on most
+    // photos. Runs only in pixal3d mode (TRELLIS.2's conditioning has no
+    // camera input, so 298 never executes and these stay lazy).
+    '55': {
+      "class_type": "LoadMoGeModel",
+      "inputs": {
+        "model_name": "moge_2_vitl_normal_fp16.safetensors"
+      }
+    },
+    '56': {
+      "class_type": "MoGeInference",
+      "inputs": {
+        "moge_model": [
+          "55",
+          0
+        ],
+        "image": [
+          "312",
+          0
+        ],
+        "resolution_level": 9,
+        "fov_x_degrees": 0,
+        "batch_size": 4,
+        "force_projection": true,
+        "apply_mask": true,
+        "refine_steps": 3
+      }
+    },
+    '242': {
+      "class_type": "MoGeGeometryToFOV",
+      "inputs": {
+        "moge_geometry": [
+          "56",
+          0
+        ],
+        "axis": "horizontal",
+        "unit": "degrees"
+      }
+    },
+    '108': {
+      "class_type": "ModelSamplingSD3",
+      "inputs": {
+        "model": [
+          "125",
+          0
+        ],
+        "shift": 5
+      }
+    },
+    '117': {
+      "class_type": "VAELoader",
+      "inputs": {
+        "vae_name": "trellis_2_shape_vae_bf16.safetensors"
+      }
+    },
+    '118': {
+      "class_type": "VAELoader",
+      "inputs": {
+        "vae_name": "trellis_2_texture_vae_bf16.safetensors"
+      }
+    },
+    '119': {
+      "class_type": "VaeDecodeStructureTrellis2",
+      "inputs": {
+        "samples": [
+          "3",
+          0
+        ],
+        "vae": [
+          "117",
+          0
+        ],
+        "resolution": "32"
+      }
+    },
+    '122': {
+      "class_type": "LoadImage",
+      "inputs": {
+        "image": "cave_wall.png"
+      }
+    },
+    '125': {
+      "class_type": "RescaleCFG",
+      "inputs": {
+        "model": [
+          "199",
+          0
+        ],
+        "multiplier": 0.7
+      }
+    },
+    '126': {
+      "class_type": "RescaleCFG",
+      "inputs": {
+        "model": [
+          "279",
+          0
+        ],
+        "multiplier": 0.5
+      }
+    },
+    '147': {
+      "class_type": "BakeTextureFromVoxel",
+      "inputs": {
+        "mesh": [
+          "196",
+          0
+        ],
+        "voxel_colors": [
+          "93",
+          0
+        ],
+        "texture_size": [
+          "288",
+          0
+        ],
+        "reference_mesh": [
+          "92",
+          0
+        ]
+      }
+    },
+    '186': {
+      "class_type": "DecimateMesh",
+      "inputs": {
+        "mesh": [
+          "241",
+          0
+        ],
+        "target_face_count": 700000,
+        "placement_mode": "midpoint"
+      }
+    },
+    '192': {
+      "class_type": "RemoveBackground",
+      "inputs": {
+        "bg_removal_model": [
+          "193",
+          0
+        ],
+        "image": [
+          "122",
+          0
+        ]
+      }
+    },
+    '193': {
+      "class_type": "LoadBackgroundRemovalModel",
+      "inputs": {
+        "bg_removal_name": "birefnet.safetensors"
+      }
+    },
+    '196': {
+      "class_type": "UnwrapMesh",
+      "inputs": {
+        "mesh": [
+          "238",
+          0
+        ],
+        "segmenter": "pec",
+        "resolution": [
+          "288",
+          0
+        ],
+        "padding": 1,
+        "weld_distance": 0.0002
+      }
+    },
+    '199': {
+      "class_type": "CFGOverride",
+      "inputs": {
+        "model": [
+          "318",
+          0
+        ],
+        "cfg": 1,
+        "start_percent": 0.667,
+        "end_percent": 1
+      }
+    },
+    '202': {
+      "class_type": "GetMeshInfo",
+      "inputs": {
+        "mesh": [
+          "92",
+          0
+        ]
+      }
+    },
+    '210': {
+      "class_type": "ApplyTextureToMesh",
+      "inputs": {
+        "mesh": [
+          "196",
+          0
+        ],
+        "base_color": [
+          "147",
+          0
+        ],
+        "metallic": [
+          "147",
+          1
+        ],
+        "roughness": [
+          "147",
+          2
+        ],
+        "occlusion": [
+          "233",
+          0
+        ],
+        "normal_map": [
+          "224",
+          0
+        ]
+      }
+    },
+    '224': {
+      "class_type": "BakeNormalMapFromMesh",
+      "inputs": {
+        "low_poly": [
+          "196",
+          0
+        ],
+        "high_poly": [
+          "241",
+          0
+        ],
+        "resolution": 2048,
+        "cage_distance": 0.05,
+        "ignore_backfaces": true
+      }
+    },
+    '233': {
+      "class_type": "BakeAmbientOcclusion",
+      "inputs": {
+        "low_poly": [
+          "196",
+          0
+        ],
+        "high_poly": [
+          "241",
+          0
+        ],
+        "resolution": 1024,
+        "samples": 64,
+        "max_distance": 0.71,
+        "strength": 1,
+        "bias": 0.01
+      }
+    },
+    '238': {
+      "class_type": "MeshSmoothNormals",
+      "inputs": {
+        "mesh": [
+          "186",
+          0
+        ],
+        "crease_angle": 180
+      }
+    },
+    '241': {
+      "class_type": "RemeshMesh",
+      "inputs": {
+        "mesh": [
+          "202",
+          0
+        ],
+        "resolution": 768,
+        "sign_mode": "udf",
+        "sign_mode.qef": false,
+        "sign_mode.drop_inverted_components": false,
+        "sign_mode.drop_enclosed_components": false,
+        "band": 1,
+        "project_back": 0,
+        "fix_poles": false,
+        "smooth_iters": 20,
+        "drop_small_components": 0.01,
+        "precluster_max_verts": 20000000
+      }
+    },
+    '248': {
+      "class_type": "ComfySwitchNode",
+      "inputs": {
+        "switch": true,
+        "on_false": [
+          "122",
+          1
+        ],
+        "on_true": [
+          "192",
+          0
+        ]
+      }
+    },
+    '260': {
+      "class_type": "MeshSmoothNormals",
+      "inputs": {
+        "mesh": [
+          "210",
+          0
+        ],
+        "crease_angle": 180
+      }
+    },
+    '279': {
+      "class_type": "CFGOverride",
+      "inputs": {
+        "model": [
+          "318",
+          0
+        ],
+        "cfg": 1,
+        "start_percent": 0.769,
+        "end_percent": 1
+      }
+    },
+    '285': {
+      "class_type": "MeshToFile3D",
+      "inputs": {
+        "mesh": [
+          "260",
+          0
+        ]
+      }
+    },
+    '288': {
+      "class_type": "PrimitiveInt",
+      "inputs": {
+        "value": 4096
+      }
+    },
+    '298': {
+      "class_type": "Pixal3DConditioning",
+      "inputs": {
+        "clip_vision_model": [
+          "15",
+          0
+        ],
+        "image": [
+          "312",
+          0
+        ],
+        "camera_angle_x": [
+          "242",
+          0
+        ]
+      }
+    },
+    '299': {
+      "class_type": "Trellis2Conditioning",
+      "inputs": {
+        "clip_vision_model": [
+          "15",
+          0
+        ],
+        "image": [
+          "312",
+          0
+        ]
+      }
+    },
+    '312': {
+      "class_type": "ImageCropToMask",
+      "inputs": {
+        "images": [
+          "122",
+          0
+        ],
+        "masks": [
+          "248",
+          0
+        ],
+        "width": 1024,
+        "height": 1024,
+        "pad_factor": 1.1,
+        "grow_mask": 0,
+        "background": "#000000"
+      }
+    },
+    '314': {
+      "class_type": "ComfySwitchNode",
+      "inputs": {
+        "switch": [
+          "316",
+          0
+        ],
+        "on_false": [
+          "298",
+          0
+        ],
+        "on_true": [
+          "299",
+          0
+        ]
+      }
+    },
+    '315': {
+      "class_type": "ComfySwitchNode",
+      "inputs": {
+        "switch": [
+          "316",
+          0
+        ],
+        "on_false": [
+          "298",
+          1
+        ],
+        "on_true": [
+          "299",
+          1
+        ]
+      }
+    },
+    '316': {
+      "class_type": "PrimitiveBoolean",
+      "inputs": {
+        "value": false
+      }
+    },
+    '318': {
+      "class_type": "ComfySwitchNode",
+      "inputs": {
+        "switch": [
+          "316",
+          0
+        ],
+        "on_false": [
+          "319",
+          0
+        ],
+        "on_true": [
+          "40",
+          0
+        ]
+      }
+    },
+    '319': {
+      "class_type": "UNETLoader",
+      "inputs": {
+        "unet_name": "pixal3d_int8_convrot.safetensors",
+        "weight_dtype": "default"
+      }
+    },
+    '322': {
+      "class_type": "Save3DAdvanced",
+      "inputs": {
+        "model_3d": [
+          "285",
+          0
+        ],
+        "filename_prefix": "3d/ComfyUI",
+        "viewport_state": "",
+        "width": 1024,
+        "height": 1024
+      }
     },
   }
 
-  // Optional source pre-enhance. The conditioning AND texture bake sample
-  // the input image, so a sharper/bigger face here directly sharpens the
-  // face on the mesh — this is the biggest remaining local lever.
+  // --- parameter injection -------------------------------------------------
+  wf['122'].inputs.image = imageName
+  // mode: false = pixal3D conditioning+UNET, true = TRELLIS.2 (lazy switches)
+  wf['316'].inputs.value = mode === 'trellis2'
+  // randomize every sampler (template ships fixed demo seeds)
+  wf['3'].inputs.seed = seed
+  wf['18'].inputs.seed = seed + 1
+  wf['23'].inputs.seed = seed + 2
+  wf['12'].inputs.seed = seed + 3
+  // shape sampler follows the steps/guidance knobs; structure (12 @ 7.5),
+  // upsample (12 @ 7.5) and texture (12 @ cfg 1) keep the official
+  // template's tuned values — over-guiding the texture sampler (cfg > 1)
+  // wrecks the baked colors.
+  wf['18'].inputs.steps = steps
+  wf['18'].inputs.cfg = guidance
+  wf['23'].inputs.cfg = guidance
+  wf['12'].inputs.cfg = 1
+  const crop = Math.min(4096, Math.max(64, Math.round(cameraRes / 8) * 8))
+  wf['312'].inputs.width = crop
+  wf['312'].inputs.height = crop
+  wf['288'].inputs.value = textureSize
+  wf['186'].inputs.target_face_count = decimation
+  wf['322'].inputs.filename_prefix = `3d/${filenameBase}`
+
+  // voxel remesh off: bypass RemeshMesh, everything downstream reads the
+  // raw dense mesh (GetMeshInfo is a pass-through)
+  if (!remesh) {
+    delete wf['241']
+    wf['186'].inputs.mesh = ['202', 0]
+    wf['224'].inputs.high_poly = ['202', 0]
+    wf['233'].inputs.high_poly = ['202', 0]
+  }
+
+  // optional source pre-enhance — both the conditioning and the texture bake
+  // sample this image, so a sharper input directly sharpens the face.
   if (enhance === 'sharpen') {
     wf['5'] = {
       class_type: 'ImageSharpen',
-      inputs: { image: ['1', 0], sharpen_radius: 1, sigma: 1.0, alpha: 1.0 },
+      inputs: { image: ['122', 0], sharpen_radius: 1, sigma: 1.0, alpha: 1.0 },
     }
-    wf['3'].inputs.image = ['5', 0]
+    wf['192'].inputs.image = ['5', 0]
+    wf['312'].inputs.images = ['5', 0]
   } else if (enhance === 'esrgan' && enhanceModel) {
-    // free, local 4x upscaler (models live in models/upscale_models/)
-    wf['5'] = {
-      class_type: 'UpscaleModelLoader',
-      inputs: { model_name: enhanceModel },
-    }
+    wf['5'] = { class_type: 'UpscaleModelLoader', inputs: { model_name: enhanceModel } }
     wf['6'] = {
       class_type: 'ImageUpscaleWithModel',
-      inputs: { upscale_model: ['5', 0], image: ['1', 0] },
+      inputs: { upscale_model: ['5', 0], image: ['122', 0] },
     }
-    wf['3'].inputs.image = ['6', 0]
+    wf['192'].inputs.image = ['6', 0]
+    wf['312'].inputs.images = ['6', 0]
   } else if (enhance === 'magnific4x') {
-    wf['5'] = {
+    wf['7'] = {
       class_type: 'MagnificImageUpscalerPreciseV2Node',
       inputs: {
-        image: ['1', 0],
+        image: ['122', 0],
         scale_factor: '4x',
         flavor: 'photo',
         sharpen: 20,
@@ -363,8 +1110,10 @@ export function buildPixal3DWorkflow({
         auto_downscale: true,
       },
     }
-    wf['3'].inputs.image = ['5', 0]
+    wf['192'].inputs.image = ['7', 0]
+    wf['312'].inputs.images = ['7', 0]
   }
+
   return wf
 }
 
@@ -640,8 +1389,9 @@ export function buildPaintWorkflow({
   textureSize = 1024,
   seed = 42,
   outputName = 'painted',
+  faceFix = null, // { faceModelName, editModels, denoise } | null
 }) {
-  return {
+  const wf = {
     '1': { class_type: 'MeshToolsLoad', inputs: { mesh_path: meshPath } },
     '2': {
       class_type: 'Hy3D21CameraConfig',
@@ -690,6 +1440,96 @@ export function buildPaintWorkflow({
       },
     },
   }
+  if (faceFix) applyPaintFaceFix(wf, faceFix)
+  return wf
+}
+
+// Face pass inside the paint run: after the 6 views are generated (node 4)
+// and before they are baked (node 5), run a Qwen-Image face refine on the
+// FRONT view only (camera azimuth list starts at 0), then rebuild the albedo
+// batch so the bake sees the fixed view in slot 0. mr and pipeline are
+// untouched. With a MediaPipe model the edit is confined to a blurred face
+// mask; without one it's a low-denoise global refine of the front view
+// (the front view dominates the bake at view weight 1.0).
+function applyPaintFaceFix(wf, { faceModelName = '', editModels, denoise = 0.35 }) {
+  wf['10'] = { class_type: 'ImageFromBatch', inputs: { image: ['4', 1], batch_index: 0, length: 1 } }
+
+  let refined = ['78', 0]
+  if (faceModelName) {
+    wf['11'] = { class_type: 'LoadMediaPipeFaceLandmarker', inputs: { model_name: faceModelName } }
+    wf['12'] = {
+      class_type: 'MediaPipeFaceLandmarker',
+      inputs: {
+        face_detection_model: ['11', 0],
+        image: ['10', 0],
+        detector_variant: 'both',
+        num_faces: 1,
+        min_confidence: 0.3,
+        missing_frame_fallback: 'empty',
+      },
+    }
+    const mask = addFaceMask(wf, { landmarksNode: '12' })
+    wf['61'] = {
+      class_type: 'ImageCompositeMasked',
+      inputs: { destination: ['10', 0], source: ['78', 0], x: 0, y: 0, resize_source: false, mask },
+    }
+    refined = ['61', 0]
+  } else {
+    // VAEDecode straight into ImageBatch deterministically poisons the bake's
+    // raw texture output (diagnosed against the live server: direct path G/G2
+    // byte-identical garbage, composite path Q/Q2 byte-identical clean with
+    // identical pixel values). Materialize the refined pixels through a
+    // full-opacity composite so the bake sees a fresh tensor; sized from the
+    // view generator so non-512 view sizes still match.
+    const vs = wf['4']?.inputs?.view_size ?? 512
+    wf['64'] = { class_type: 'SolidMask', inputs: { value: 1, width: vs, height: vs } }
+    wf['61'] = {
+      class_type: 'ImageCompositeMasked',
+      inputs: { destination: ['10', 0], source: ['78', 0], x: 0, y: 0, resize_source: false, mask: ['64', 0] },
+    }
+    refined = ['61', 0]
+  }
+
+  // Qwen-Image img2img on the front view (same verified stack as the edit tab).
+  wf['37'] = { class_type: 'UNETLoader', inputs: { unet_name: editModels.unet, weight_dtype: 'default' } }
+  wf['38'] = {
+    class_type: 'CLIPLoader',
+    inputs: { clip_name: editModels.clip, type: 'qwen_image', device: 'default' },
+  }
+  wf['39'] = { class_type: 'VAELoader', inputs: { vae_name: editModels.vae } }
+  wf['76'] = {
+    class_type: 'TextEncodeQwenImageEdit',
+    inputs: { clip: ['38', 0], vae: ['39', 0], image: ['10', 0], prompt: FACE_PAINT_PROMPT },
+  }
+  wf['77'] = {
+    class_type: 'TextEncodeQwenImageEdit',
+    inputs: { clip: ['38', 0], vae: ['39', 0], image: ['10', 0], prompt: FACE_PAINT_NEG },
+  }
+  wf['88'] = { class_type: 'VAEEncode', inputs: { pixels: ['10', 0], vae: ['39', 0] } }
+  wf['66'] = { class_type: 'ModelSamplingAuraFlow', inputs: { model: ['37', 0], shift: 3 } }
+  wf['75'] = { class_type: 'CFGNorm', inputs: { model: ['66', 0], strength: 1 } }
+  wf['73'] = {
+    class_type: 'KSampler',
+    inputs: {
+      model: ['75', 0],
+      positive: ['76', 0],
+      negative: ['77', 0],
+      latent_image: ['88', 0],
+      seed: 1234,
+      control_after_generate: 'fixed',
+      steps: 14,
+      cfg: 2.5,
+      sampler_name: 'euler',
+      scheduler: 'simple',
+      denoise,
+    },
+  }
+  wf['78'] = { class_type: 'VAEDecode', inputs: { samples: ['73', 0], vae: ['39', 0] } }
+
+  // Rebuild the 6-view albedo batch: refined front + views 1..5 untouched.
+  wf['62'] = { class_type: 'ImageFromBatch', inputs: { image: ['4', 1], batch_index: 1, length: 5 } }
+  wf['63'] = { class_type: 'ImageBatch', inputs: { image1: refined, image2: ['62', 0] } }
+  wf['5'].inputs.albedo = ['63', 0]
 }
 
 // ---------------------------------------------------------------------------
@@ -930,7 +1770,7 @@ export function buildVideoWorkflow({
   frames = 33,
   fps = 16,
   seed = -1,
-  steps = 30,
+  steps = 20, // sampler is the bottleneck on 16GB RAM — 20 (was 30) default
   cfg = 6,
   models,
 }) {
@@ -1035,29 +1875,39 @@ function buildH3VideoWorkflow({ prompt, resolution, frames, fps, seed, steps, mo
     )
   }
   const raw = VIDEO_RESOLUTIONS[resolution] || VIDEO_RESOLUTIONS['480p']
-  // H3 requires multiples of 32 (e.g. 720 → 736).
-  const width = Math.max(32, Math.round(raw.width / 32) * 32)
-  const height = Math.max(32, Math.round(raw.height / 32) * 32)
+  // Sample size (fast paths declare a smaller genWidth/genHeight), snapped
+  // to H3's multiple-of-32 requirement (e.g. 720 → 736). The final size is
+  // what the saved video comes out as after the optional upscale chain.
+  const genWidth = Math.max(32, Math.round((raw.genWidth || raw.width) / 32) * 32)
+  const genHeight = Math.max(32, Math.round((raw.genHeight || raw.height) / 32) * 32)
+  const finalWidth = Math.max(32, Math.round(raw.width / 32) * 32)
+  const finalHeight = Math.max(32, Math.round(raw.height / 32) * 32)
+  const upscale = !!(raw.upscale && (genWidth !== finalWidth || genHeight !== finalHeight))
   const actualSeed = seed === -1 ? Math.floor(Math.random() * 2 ** 48) : seed
   // H3 samples at 24fps on a 17k+5 frame grid. The UI speaks frames/fps, so
   // convert the intended duration to 24fps frames and snap UP to the grid
   // (same maths as the template's expression, python-style modulo).
   const f = Math.max(5, Math.round(((frames || 33) / (fps || 16)) * 24))
   const length = f + ((((5 - (f % 17)) % 17) + 17) % 17)
+  // Optional turbo LoRA sits between the loader and the sampler.
+  const baseSrc = models.lora ? '52' : '37'
 
-  return {
+  const wf = {
     '37': { class_type: 'UNETLoader', inputs: { unet_name: models.unet, weight_dtype: 'default' } },
     '38': { class_type: 'CLIPLoader', inputs: { clip_name: models.clip, type: 'minimax', device: 'default' } },
     '39': { class_type: 'VAELoader', inputs: { vae_name: models.vae } },
     '391': { class_type: 'VAELoader', inputs: { vae_name: models.vaeAudio } },
     '40': {
       class_type: 'MiniMaxH3ImageToVideo',
-      inputs: { clip: ['38', 0], vae: ['39', 0], prompt, width, height, length },
+      inputs: { clip: ['38', 0], vae: ['39', 0], prompt, width: genWidth, height: genHeight, length },
     },
     '41': { class_type: 'RandomNoise', inputs: { noise_seed: actualSeed } },
     '42': { class_type: 'KSamplerSelect', inputs: { sampler_name: 'res_multistep' } },
-    '43': { class_type: 'BasicScheduler', inputs: { model: ['37', 0], scheduler: 'simple', steps, denoise: 1 } },
-    '44': { class_type: 'BasicGuider', inputs: { model: ['37', 0], conditioning: ['40', 0] } },
+    // Comfy Kitchen INT8 attention: measured 201s vs 316-341s pytorch on the
+    // 5060 Ti (1.6-1.7×, same seed/output quality in A/B tests).
+    '53': { class_type: 'ModelAttentionBackend', inputs: { model: [baseSrc, 0], attention: 'comfy kitchen attention' } },
+    '43': { class_type: 'BasicScheduler', inputs: { model: ['53', 0], scheduler: 'simple', steps, denoise: 1 } },
+    '44': { class_type: 'BasicGuider', inputs: { model: ['53', 0], conditioning: ['40', 0] } },
     '45': {
       class_type: 'SamplerCustomAdvanced',
       inputs: { noise: ['41', 0], guider: ['44', 0], sampler: ['42', 0], sigmas: ['43', 0], latent_image: ['40', 1] },
@@ -1065,10 +1915,28 @@ function buildH3VideoWorkflow({ prompt, resolution, frames, fps, seed, steps, mo
     '46': { class_type: 'VAEDecode', inputs: { samples: ['45', 0], vae: ['39', 0] } },
     '47': { class_type: 'VAEDecodeAudio', inputs: { samples: ['45', 0], vae: ['391', 0] } },
     // H3 is a 24fps model — never the UI's fps (would change playback speed).
-    '48': { class_type: 'CreateVideo', inputs: { images: ['46', 0], audio: ['47', 0], fps: 24 } },
+    '48': { class_type: 'CreateVideo', inputs: { images: [upscale ? '51' : '46', 0], audio: ['47', 0], fps: 24 } },
     '28': {
       class_type: 'SaveVideo',
       inputs: { video: ['48', 0], filename_prefix: 'video/ComfyUI', format: 'auto', codec: 'auto' },
     },
   }
+  if (models.lora) {
+    wf['52'] = {
+      class_type: 'LoraLoaderModelOnly',
+      inputs: { model: ['37', 0], lora_name: models.lora, strength_model: models.loraStrength ?? 1 },
+    }
+  }
+  if (upscale) {
+    // ESRGAN 4× on the decoded frames, then lanczos down to the exact final
+    // size (960×544 → 3840×2176 → 1920×1088). Tiled internally by the node,
+    // so it stays inside 16GB VRAM.
+    wf['49'] = { class_type: 'UpscaleModelLoader', inputs: { model_name: raw.upscale } }
+    wf['50'] = { class_type: 'ImageUpscaleWithModel', inputs: { upscale_model: ['49', 0], image: ['46', 0] } }
+    wf['51'] = {
+      class_type: 'ImageScale',
+      inputs: { image: ['50', 0], upscale_method: 'lanczos', width: finalWidth, height: finalHeight, crop: 'disabled' },
+    }
+  }
+  return wf
 }

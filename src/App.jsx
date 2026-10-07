@@ -4,8 +4,10 @@ import Layout from './components/Layout'
 import SettingsModal from './components/SettingsModal'
 import DragDivider from './components/DragDivider'
 import useStore from './store/useStore'
+import { useAppConnection } from './hooks/useAppConnection'
 
 export default function App() {
+  useAppConnection()
   const sidebarWidth = useStore((s) => s.sidebarWidth)
   const setSidebarWidth = useStore((s) => s.setSidebarWidth)
   const setShowMusicEditor = useStore((s) => s.setShowMusicEditor)

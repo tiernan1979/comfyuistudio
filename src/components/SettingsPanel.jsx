@@ -3,7 +3,8 @@ import useStore from '../store/useStore'
 import clsx from 'clsx'
 
 const ASPECT_RATIOS = ['1:1', '16:9', '9:16', '4:3', '3:4', '3:2', '2:3']
-const VIDEO_RESOLUTIONS = ['480p', '720p']
+const VIDEO_RESOLUTIONS = ['480p', '720p', '1080p-fast', '1080p']
+const RES_LABELS = { '1080p-fast': '1080p fast', '1080p': '1080p native' }
 
 function Toggle({ label, value, onChange, disabled }) {
   return (
@@ -274,10 +275,24 @@ export default function SettingsPanel() {
                 generating && 'opacity-50'
               )}
             >
-              {res}
+              {RES_LABELS[res] || res}
             </motion.button>
           ))}
         </div>
+        {videoSettings.resolution === '1080p' && (
+          <p className="text-[11px] text-text-muted mt-1.5 leading-snug">
+            Native 1080p — ~20+ min per 2-3s clip on 16GB RAM. Keep clips short (longer ones can
+            take hours or fail); much faster after a RAM upgrade. Prefer{' '}
+            <span className="text-text-secondary">1080p fast</span> until then.
+          </p>
+        )}
+        {videoSettings.resolution === '1080p-fast' && (
+          <p className="text-[11px] text-text-muted mt-1.5 leading-snug">
+            Samples at 960×544 (the official H3 fast size) and upscales to 1080p with
+            4x-UltraSharp — far less RAM/VRAM pressure than native 1080p; slightly softer than a
+            native render.
+          </p>
+        )}
       </div>
 
       <Slider
