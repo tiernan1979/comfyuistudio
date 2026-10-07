@@ -7,6 +7,7 @@ Static frontend (React + Vite) served by nginx; every external request (ComfyUI,
 ## Features
 
 - **Image generation** — Qwen-Image workflows with aspect ratio, steps, CFG, turbo mode, seed control
+- **Music generation** — Minimax H3 generation with prompt, lyrics, steps, guidance and Output Quality
 - **Video generation** — Wan 2.1 text-to-video with resolution, frames, FPS controls
 - **Edit mode** — upload an image (or pick one from the web) and change it with Qwen-Image-Edit
 - **History** — last 50 generations kept in the browser, with download / copy / restore / delete
@@ -56,13 +57,14 @@ services:
     ports:
       - "5555:80"
     volumes:
-      # Deployment config: edit public/config.json on the host, then
-      #    docker compose restart
-      # Seeds browsers that have no saved settings yet.
-      - ./public/config.json:/usr/share/nginx/html/config.json:ro
+      # Deployment config (Settings → Save writes it here) — persists
+      # across rebuilds; every browser/device shares it.
+      - studio-config:/configdir
     environment:
       - NODE_ENV=production
     restart: unless-stopped
+volumes:
+  studio-config:
 EOF
 
 
@@ -70,9 +72,9 @@ EOF
 docker compose pull && docker compose up -d
 
 # ...or build locally instead
-./deploy.sh               # = docker compose build && up -d, but keeps your
-                          #   saved Settings (plain `up -d --build` resets
-                          #   config.json to defaults)
+./deploy.sh               # = docker compose build && up -d; backs up and
+                          #   restores config.json (covers the migration
+                          #   from images without the volume)
 ```
 
 ### Option C — from source (development)
@@ -87,9 +89,9 @@ npm run build      # production build into dist/
 
 ## Configuration
 
-Instance configuration lives in **[`public/config.json`](public/config.json)**, baked into the image. It is served read-only (`Cache-Control: no-store`) and the in-app **Settings → Save** writes an updated copy back into the container through nginx's WebDAV `PUT /config.json` — no rebuild, no shell access, and every browser picks the change up on its next load.
+Instance configuration lives in **[`public/config.json`](public/config.json)**, baked into the image as the seed, then stored in the **`studio-config` docker volume** (`/configdir/config.json`). It is served with `Cache-Control: no-store` and the in-app **Settings → Save** writes an updated copy back through nginx's WebDAV `PUT /config.json` — no rebuild, no shell access, and every browser picks the change up on its next load (or on **Settings → Update from server**, which pulls on demand).
 
-> **Rebuilding the image resets `config.json`** to the baked defaults (it lives in the container, not a volume). Use **`./deploy.sh`** for local builds — it backs up the live config and restores it after the restart.
+> **Rebuilds keep your settings** — the volume outlives `docker compose up -d --build` and image pulls. `./deploy.sh` additionally backs up and restores the live config, covering stacks that predate the volume.
 
 ```jsonc
 {
@@ -113,7 +115,9 @@ Instance configuration lives in **[`public/config.json`](public/config.json)**, 
 }
 ```
 
-**Precedence:** a fresh browser (no saved settings yet) always seeds from `config.json`. After any **Settings → Save** the file carries `synced: true`, and from then on every browser applies it on load — change a setting once, it shows up everywhere. Settings you made before that still win until the first Save. To re-seed one browser from scratch, clear the site's local storage.
+**Precedence:** a fresh browser (no saved settings yet) always seeds from `config.json`. After any **Settings → Save** the file carries `synced: true`, and from then on every browser applies it on load — change a setting once, it shows up everywhere. **Settings → Update from server** force-pulls the saved config on demand (useful when another device saved after this one loaded). Settings you made before that still win until the first Save. To re-seed one browser from scratch, clear the site's local storage.
+
+**What syncs:** server URL, models (image/video/edit/music), 3D options, per-mode generation settings (steps/cfg/seeds/resolution/quality), style, search and AI-provider config. **API keys never sync** — they stay in the browser that typed them.
 
 **API keys are never read from disk.** OpenAI / Anthropic keys are typed into the Settings screen and stay in that browser's local storage — `config.json` only carries non-secret values, and the loader strips any `key` fields defensively.
 
@@ -279,7 +283,7 @@ Used by the 3D *enhance* setting (`esrgan`) and the `1080p-fast` image preset:
 ## Repository layout
 
 ```
-public/config.json        deployment config (baked into the image, updated by Settings → Save)
+public/config.json        deployment config seed (baked into the image; live copy lives in the studio-config volume, updated by Settings → Save)
 src/lib/                  comfyui client, workflows, llm client, search, config loader
 src/store/useStore.js     persisted app state (Zustand)
 src/components/           UI

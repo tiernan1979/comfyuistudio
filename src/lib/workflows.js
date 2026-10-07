@@ -1350,9 +1350,14 @@ export function buildUltraShapeWorkflow({
         high_poly: ['8', 0],
         resolution: bakeResolution,
         samples: 64,
-        max_distance: 0.5,
-        strength: 1.0,
-        bias: 0.01,
+        // UltraShape's old defaults (max_distance 0.5, bias 0.01, strength 1)
+        // baked a half-black AO map — rays of half the bbox start inside the
+        // surface and self-hit, then glTF occlusion darkened the albedo to
+        // blotches. Verified on the character mesh: these values keep mean
+        // ~178/255 with 0% near-black texels while still adding contact shade.
+        max_distance: 0.15,
+        strength: 0.85,
+        bias: 0.03,
       },
     },
     '12': {
@@ -1614,7 +1619,10 @@ export function buildMusicWorkflow({
   negativePrompt = '', // merged into an in-caption "no X, no Y" ban clause
   lyrics = '', // sung lyrics; '' = default section map (instrumental)
   structure = true, // inject STRUCTURE_TAGS when lyrics are empty
-  duration = 30, // seconds
+  // Cap in seconds for the AR structure planner (node's own default).
+  // No UI control anymore — the planner ends the song when it wants to
+  // (`<|audio_end|>`); this only bounds how long it may keep planning.
+  duration = 120,
   seed = -1,
   steps = 30, // official template default
   cfgScale = 1.7, // MiniMaxMusic3TextEncode.cfg_scale (official template)

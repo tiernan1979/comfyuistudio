@@ -153,9 +153,9 @@ const useStore = create(
       },
 
       // Music settings (MiniMax Music 3). quality: 'wav' (lossless via
-      // SaveAudio) or an MP3 bitrate for SaveAudioMP3.
+      // SaveAudio) or an MP3 bitrate for SaveAudioMP3. No duration —
+      // the model's structure planner picks the length (see workflows.js).
       musicSettings: {
-        duration: 30, // seconds (10–300)
         seed: -1,
         steps: 30, // official template default
         cfgScale: 1.7, // AR-planner CFG inside MiniMaxMusic3TextEncode
@@ -272,10 +272,11 @@ const useStore = create(
       // Save marks the server config with `synced: true` — that way a
       // stale browser can't clobber the server on upgrade.
       // `config` is pre-sanitized by src/lib/config.js (whitelisted
-      // fields, keys stripped).
-      applyServerConfig: (config) => {
+      // fields, keys stripped). `{ force: true }` (Settings → Update
+      // from server) applies a synced config regardless of the gate.
+      applyServerConfig: (config, { force = false } = {}) => {
         if (!config || Object.keys(config).length === 0) return
-        if (!FRESH_INSTALL && config.synced !== true) return
+        if (!force && !FRESH_INSTALL && config.synced !== true) return
         set((s) => {
           const patch = {}
           for (const key of ['serverUrl', 'useProxy', 'autoUnload', 'style', 'searchUrl', 'searchEngine', 'searchApiKey', 'searchCseId', 'llmProvider']) {
@@ -295,6 +296,10 @@ const useStore = create(
               models[k] = { ...(s.models[k] || {}), ...(config.models[k] || {}) }
             }
             patch.models = models
+          }
+          // Per-mode generation settings — server wins per key.
+          for (const k of ['imageSettings', 'videoSettings', 'editSettings', 'musicSettings']) {
+            if (config[k]) patch[k] = { ...s[k], ...config[k] }
           }
           if (config.threeD) {
             patch.threeD = { ...s.threeD, ...config.threeD }

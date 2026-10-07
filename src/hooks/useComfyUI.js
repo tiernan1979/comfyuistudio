@@ -346,7 +346,6 @@ export function useComfyUI() {
           caption: state.prompt,
           negativePrompt: state.negativePrompt,
           lyrics: state.lyrics,
-          duration: state.musicSettings.duration,
           seed: state.musicSettings.seed,
           steps: state.musicSettings.steps,
           cfgScale: state.musicSettings.cfgScale,

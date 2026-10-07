@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Build + restart WITHOUT losing your saved settings.
 #
-# config.json is baked into the image, so a plain `docker compose up -d --build`
-# resets it (and every browser's Settings) back to defaults. This script grabs
-# the live config out of the container first and puts it back afterwards.
+# config.json now lives in the `studio-config` docker volume
+# (/configdir/config.json), so rebuilds keep it automatically. This
+# script still backs it up first — it covers the one-time migration from
+# the old in-image location and any stack running without the volume.
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -11,7 +12,9 @@ CONTAINER=imagegen-comfyui-studio-1
 CFG=/tmp/comfyui-studio-config.bak.json
 
 if docker ps --format '{{.Names}}' | grep -qx "$CONTAINER"; then
-  if docker exec "$CONTAINER" cat /usr/share/nginx/html/config.json > "$CFG" 2>/dev/null && [ -s "$CFG" ]; then
+  # New layout first (/configdir, volume-backed), old layout as fallback
+  # (config baked under the html root, pre-volume images).
+  if docker exec "$CONTAINER" sh -c 'cat /configdir/config.json 2>/dev/null || cat /usr/share/nginx/html/config.json 2>/dev/null' > "$CFG" && [ -s "$CFG" ]; then
     echo "backed up live config -> $CFG"
   else
     echo "no live config to back up"
@@ -26,9 +29,11 @@ docker compose build
 docker compose up -d
 
 if [ -n "$CFG" ] && [ -s "$CFG" ]; then
-  docker cp "$CFG" "$CONTAINER":/usr/share/nginx/html/config.json
-  docker exec "$CONTAINER" chown nginx:nginx /usr/share/nginx/html/config.json
-  docker exec "$CONTAINER" chmod 600 /usr/share/nginx/html/config.json
+  # Write to both locations: /configdir is what the new nginx serves
+  # (and lands in the volume), the html copy keeps older images working.
+  docker cp "$CFG" "$CONTAINER":/configdir/config.json
+  docker cp "$CFG" "$CONTAINER":/usr/share/nginx/html/config.json 2>/dev/null || true
+  docker exec "$CONTAINER" sh -c 'chmod 777 /configdir && chown nginx:nginx /configdir/config.json /usr/share/nginx/html/config.json 2>/dev/null || true'
   echo "restored saved config (Settings survive the rebuild)"
 fi
 

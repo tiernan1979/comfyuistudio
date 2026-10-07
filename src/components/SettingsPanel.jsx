@@ -118,17 +118,6 @@ export default function SettingsPanel() {
         </div>
 
         <Slider
-          label="Duration"
-          value={musicSettings.duration}
-          onChange={(v) => setMusicSettings({ duration: v })}
-          min={10}
-          max={300}
-          step={5}
-          disabled={generating}
-          suffix="s"
-        />
-
-        <Slider
           label="Steps"
           value={musicSettings.steps}
           onChange={(v) => setMusicSettings({ steps: v })}

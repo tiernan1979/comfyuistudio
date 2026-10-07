@@ -13,6 +13,13 @@ services:
       # e.g. LM Studio at http://host.docker.internal:1234
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
+    volumes:
+      # Settings (config.json) — written by Settings → Save (WebDAV PUT),
+      # read by every browser. Named volume keeps them across rebuilds and
+      # image pulls; without this a `docker compose up -d --build` resets
+      # every device back to defaults. (Mounted on the /configdir
+      # directory — Docker volumes can't target a single file.)
+      - studio-config:/configdir
 
   # Optional LAN REST API (generate image/edit/video/music, models, history,
   # shared hidden-ids for cross-device deletes). See api/src/server.js.
@@ -35,3 +42,4 @@ services:
 
 volumes:
   studio-api-data:
+  studio-config:

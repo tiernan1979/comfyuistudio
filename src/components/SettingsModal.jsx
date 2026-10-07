@@ -5,7 +5,7 @@ import useStore from '../store/useStore'
 import { getModelLists, resolveApiBase, getNodeComboOptions, checkNodes } from '../lib/comfyui'
 import { fetchLlmModels, PROVIDERS, MODEL_SUGGESTIONS } from '../lib/llm'
 import { SEARCH_ENGINES, searchEngineInfo } from '../lib/search'
-import { configFromState, pushRuntimeConfig, QUALITY_PRESETS } from '../lib/config'
+import { configFromState, pushRuntimeConfig, fetchRuntimeConfig, QUALITY_PRESETS } from '../lib/config'
 import { requiredThreeDNodes, describeNode } from '../lib/threed'
 import Dropdown from './Dropdown'
 import clsx from 'clsx'
@@ -137,6 +137,7 @@ export default function SettingsModal() {
   const setShowSettings = useStore((s) => s.setShowSettings)
   const serverUrl = useStore((s) => s.serverUrl)
   const setServerUrl = useStore((s) => s.setServerUrl)
+  const applyServerConfig = useStore((s) => s.applyServerConfig)
   const models = useStore((s) => s.models)
   const setModels = useStore((s) => s.setModels)
   const useProxy = useStore((s) => s.useProxy)
@@ -148,6 +149,8 @@ export default function SettingsModal() {
   const [localModels, setLocalModels] = useState(JSON.parse(JSON.stringify(models)))
   const [saved, setSaved] = useState(false)
   const [saveError, setSaveError] = useState(null)
+  const [pulling, setPulling] = useState(false)
+  const [pullNote, setPullNote] = useState(null)
   const [modelLists, setModelLists] = useState({ unet: [], clip: [], vae: [], lora: [] })
   const [loadingLists, setLoadingLists] = useState(false)
   const [listsError, setListsError] = useState(null)
@@ -315,50 +318,85 @@ export default function SettingsModal() {
 
   // Refresh local fields + server model lists each time the modal opens.
   // Merges in defaults so settings saved by older versions still work.
+  // Reads straight from the store (getState) so it can also re-seed right
+  // after a pull from the server, before React re-renders with new props.
+  const seedFromStore = () => {
+    const st = useStore.getState()
+    setLocalUrl(st.serverUrl)
+    const current = JSON.parse(JSON.stringify(st.models))
+    setLocalModels({
+      ...current,
+      edit: {
+        unet: 'qwen_image_edit_fp8_e4m3fn.safetensors',
+        ...(current.edit || {}),
+      },
+    })
+    loadModelLists(st.serverUrl)
+    setLocalProvider(st.llmProvider)
+    const cfgs = JSON.parse(JSON.stringify(st.llmConfigs))
+    setLocalConfigs(cfgs)
+    setLlmModels([])
+    setLlmModelsError(null)
+    if (PROVIDERS[st.llmProvider]?.modelsBtn && cfgs[st.llmProvider]?.url) {
+      loadLlmModels(cfgs[st.llmProvider].url)
+    }
+    setLocalSearchUrl(st.searchUrl)
+    setLocalSearchEngine(st.searchEngine || 'searxng')
+    setLocalSearchApiKey(st.searchApiKey || '')
+    setLocalSearchCseId(st.searchCseId || '')
+    setLocalThreeD({
+      qualityPreset: 'standard',
+      ...QUALITY_PRESETS.standard,
+      ...JSON.parse(JSON.stringify(st.threeD)),
+    })
+    setThreeDCheck(null)
+    setThreeDLists({
+      modelVersion: [],
+      rigVersion: [],
+      rigType: [],
+      spec: [],
+      outFormat: [],
+      presets: [],
+      localAnims: [],
+      upscaleModels: [],
+    })
+  }
+
   useEffect(() => {
     if (showSettings) {
       setTab('server')
       setSaveError(null)
-      setLocalUrl(serverUrl)
-      const current = JSON.parse(JSON.stringify(models))
-      setLocalModels({
-        ...current,
-        edit: {
-          unet: 'qwen_image_edit_fp8_e4m3fn.safetensors',
-          ...(current.edit || {}),
-        },
-      })
-      loadModelLists(serverUrl)
-      setLocalProvider(llmProvider)
-      const cfgs = JSON.parse(JSON.stringify(llmConfigs))
-      setLocalConfigs(cfgs)
-      setLlmModels([])
-      setLlmModelsError(null)
-      if (PROVIDERS[llmProvider]?.modelsBtn && cfgs[llmProvider]?.url) {
-        loadLlmModels(cfgs[llmProvider].url)
-      }
-      setLocalSearchUrl(searchUrl)
-      setLocalSearchEngine(searchEngine || 'searxng')
-      setLocalSearchApiKey(searchApiKey || '')
-      setLocalSearchCseId(searchCseId || '')
-      setLocalThreeD({
-        qualityPreset: 'standard',
-        ...QUALITY_PRESETS.standard,
-        ...JSON.parse(JSON.stringify(threeD)),
-      })
-      setThreeDCheck(null)
-      setThreeDLists({
-        modelVersion: [],
-        rigVersion: [],
-        rigType: [],
-        spec: [],
-        outFormat: [],
-        presets: [],
-        localAnims: [],
-        upscaleModels: [],
-      })
+      setPullNote(null)
+      seedFromStore()
     }
   }, [showSettings])
+
+  // "Update from server" — pull config.json (shared settings saved by any
+  // device via Save Settings) and apply it on demand, re-seeding the open
+  // modal so the fields show the pulled values immediately.
+  const handlePull = async () => {
+    if (pulling) return
+    setPulling(true)
+    setPullNote(null)
+    setSaveError(null)
+    try {
+      const config = await fetchRuntimeConfig()
+      if (!config || Object.keys(config).length === 0) {
+        setPullNote({ kind: 'warn', text: 'No settings found on the server (or it is unreachable) — nothing to update.' })
+        return
+      }
+      if (config.synced !== true) {
+        setPullNote({ kind: 'warn', text: 'Server has no saved settings yet — press Save Settings on a device first.' })
+        return
+      }
+      applyServerConfig(config, { force: true })
+      seedFromStore()
+      setPullNote({ kind: 'ok', text: 'Settings updated from the server.' })
+      setTimeout(() => setPullNote(null), 4000)
+    } finally {
+      setPulling(false)
+    }
+  }
 
   // Esc closes the modal (same as the X button in the header).
   useEffect(() => {
@@ -1385,15 +1423,34 @@ export default function SettingsModal() {
 
               {/* Footer — Save is always reachable, whatever section is open */}
               <div className="shrink-0 border-t border-border px-6 py-3.5 flex items-center gap-4 bg-bg-card/50">
-                {saveError && (
+                {saveError ? (
                   <p className="text-[11px] text-warning flex-1 min-w-0">Saved in this browser only — {saveError}</p>
+                ) : pullNote ? (
+                  <p className={clsx('text-[11px] flex-1 min-w-0', pullNote.kind === 'ok' ? 'text-green-400' : 'text-warning')}>
+                    {pullNote.text}
+                  </p>
+                ) : (
+                  <p className="text-[11px] text-text-muted flex-1 min-w-0">
+                    Shared by every device — API keys stay in this browser
+                  </p>
                 )}
+                <motion.button
+                  whileHover={{ scale: 1.02 }}
+                  whileTap={{ scale: 0.98 }}
+                  onClick={handlePull}
+                  disabled={pulling}
+                  className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm border border-border text-text-secondary hover:bg-bg-card hover:text-text-primary transition-all disabled:opacity-60"
+                  title="Load the settings saved by any device (Save Settings) from the server"
+                >
+                  <RefreshCw size={14} className={pulling ? 'animate-spin' : ''} />
+                  {pulling ? 'Updating…' : 'Update from server'}
+                </motion.button>
                 <motion.button
                   whileHover={{ scale: 1.02 }}
                   whileTap={{ scale: 0.98 }}
                   onClick={handleSave}
                   className={clsx(
-                    'ml-auto flex items-center gap-2 px-6 py-2.5 rounded-xl font-semibold text-sm transition-all',
+                    'flex items-center gap-2 px-6 py-2.5 rounded-xl font-semibold text-sm transition-all',
                     saved ? 'bg-green-500 text-white' : 'bg-accent hover:bg-accent-hover text-white'
                   )}
                 >

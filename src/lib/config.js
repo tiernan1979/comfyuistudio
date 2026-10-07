@@ -5,12 +5,16 @@
 // via WebDAV so every browser shares it. In dev, Vite serves
 // public/config.json. The app reads it once at startup and seeds ONLY
 // fresh browsers (no saved settings yet) — per-browser localStorage wins
-// afterwards unless the file carries `synced: true`.
+// afterwards unless the file carries `synced: true` (Settings → Update
+// from server force-applies a synced file on demand).
+//
+// The file is persisted in a docker volume (docker-compose.yml) so a
+// rebuild or image pull doesn't reset every browser back to defaults.
 //
 // API keys are deliberately never read from disk: they stay in the
 // browser that typed them.
 
-import { SEARCH_ENGINES } from './search'
+import { SEARCH_ENGINES } from './search.js'
 
 const LLM_PROVIDERS = new Set(['lmstudio', 'openai', 'anthropic', 'custom'])
 const MODEL_GROUPS = new Set(['image', 'video', 'edit', 'music'])
@@ -98,6 +102,66 @@ const THREE_D_FIELDS = {
   tripoPbr: 'boolean',
 }
 
+// Per-mode generation settings (image/video/edit/music panels) — shared
+// so tuning steps/cfg/seeds on one device shows up on every other one.
+// Rules mirror THREE_D_FIELDS: 'boolean' | 'string' | 'number' (finite),
+// a Set of allowed strings, or [min, max] for bounded numbers.
+const MODE_SETTING_FIELDS = {
+  imageSettings: {
+    aspectRatio: 'string',
+    turboMode: 'boolean',
+    seed: 'number',
+    steps: [1, 100],
+    cfg: [0, 30],
+  },
+  videoSettings: {
+    resolution: 'string',
+    frames: [1, 4096],
+    fps: [1, 60],
+    seed: 'number',
+    steps: [1, 100],
+    cfg: [0, 30],
+  },
+  editSettings: {
+    seed: 'number',
+    steps: [1, 100],
+    cfg: [0, 30],
+  },
+  // musicSettings: no `duration` — the length slider was removed; the
+  // model's structure planner decides the length (max_duration cap in
+  // buildMusicWorkflow).
+  musicSettings: {
+    seed: 'number',
+    steps: [1, 100],
+    cfgScale: [0, 10],
+    quality: new Set(['wav', '320k', 'V0', '128k']),
+  },
+}
+
+function sanitizeModeSettings(raw, out) {
+  for (const [section, fields] of Object.entries(MODE_SETTING_FIELDS)) {
+    const rawSection = raw[section]
+    if (!rawSection || typeof rawSection !== 'object') continue
+    const sectionOut = {}
+    for (const [k, rule] of Object.entries(fields)) {
+      const v = rawSection[k]
+      if (v === undefined) continue
+      if (rule === 'boolean') {
+        if (typeof v === 'boolean') sectionOut[k] = v
+      } else if (rule === 'string') {
+        if (typeof v === 'string') sectionOut[k] = v
+      } else if (rule === 'number') {
+        if (typeof v === 'number' && Number.isFinite(v)) sectionOut[k] = v
+      } else if (rule instanceof Set) {
+        if (typeof v === 'string' && rule.has(v)) sectionOut[k] = v
+      } else if (Array.isArray(rule)) {
+        if (typeof v === 'number' && Number.isFinite(v) && v >= rule[0] && v <= rule[1]) sectionOut[k] = v
+      }
+    }
+    if (Object.keys(sectionOut).length > 0) out[section] = sectionOut
+  }
+}
+
 function sanitizeThreeD(raw) {
   if (!raw || typeof raw !== 'object') return undefined
   const out = {}
@@ -168,6 +232,8 @@ function sanitize(raw) {
   const threeD = sanitizeThreeD(raw.threeD)
   if (threeD) out.threeD = threeD
 
+  sanitizeModeSettings(raw, out)
+
   return out
 }
 
@@ -206,6 +272,13 @@ export function configFromState(state) {
     llmConfigs,
     models: JSON.parse(JSON.stringify(state.models || {})),
     threeD: JSON.parse(JSON.stringify(state.threeD || {})),
+    // Per-mode generation settings — flat objects of primitives, so a
+    // shallow spread is enough (old localStorage may carry a stale
+    // `duration` key on musicSettings; the sanitizer drops it).
+    imageSettings: { ...(state.imageSettings || {}) },
+    videoSettings: { ...(state.videoSettings || {}) },
+    editSettings: { ...(state.editSettings || {}) },
+    musicSettings: { ...(state.musicSettings || {}) },
   }
 }
 
