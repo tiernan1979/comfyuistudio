@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import { STRUCTURE_TAGS } from '../lib/workflows.js'
+import { viewFromUrl } from '../lib/comfyui.js'
 
 // Defaults for the AI prompt writer (used by fresh installs and migrations)
 const DEFAULT_LLM_CONFIGS = {
@@ -66,6 +67,31 @@ function pushHiddenIds(ids) {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ ids: ids.map(String) }),
+  }).catch(() => {})
+}
+
+// Cross-browser/origin history: the app's own API keeps a durable,
+// shared copy of generated entries (ComfyUI's own /history is in-memory
+// and resets on restart/cleanup), so every browser — including other
+// origins like https://… vs http://host:5555 — converges on the same
+// list. Entries carry their `view` file params so each browser can
+// rebuild the output URL against its own origin. Best-effort, like
+// pushHiddenIds — offline the entry still lands locally and is re-pushed
+// by the next successful sync's catch-up.
+export function pushHistoryEntries(entries) {
+  if (typeof window === 'undefined' || !entries?.length) return
+  const list = entries
+    .filter((e) => e?.id && e?.data)
+    .slice(0, 200)
+    .map((e) => {
+      const view = e.view || viewFromUrl(e.data)
+      return view ? { ...e, view } : e
+    })
+  if (!list.length) return
+  fetch('/api/history', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ entries: list }),
   }).catch(() => {})
 }
 
@@ -152,14 +178,17 @@ const useStore = create(
         cfg: 2.5,
       },
 
-      // Music settings (MiniMax Music 3). quality: 'wav' (lossless via
-      // SaveAudio) or an MP3 bitrate for SaveAudioMP3. No duration —
-      // the model's structure planner picks the length (see workflows.js).
+      // Music settings (MiniMax Music 3 / ACE-Step). quality: 'wav'
+      // (lossless via SaveAudio) or an MP3 bitrate for SaveAudioMP3.
+      // duration: cap on track length (10–360s) — the structure planner
+      // sizes the song itself and the tail trim cuts any silent pad; this
+      // is the ceiling, not an exact length.
       musicSettings: {
         seed: -1,
         steps: 30, // official template default
         cfgScale: 1.7, // AR-planner CFG inside MiniMaxMusic3TextEncode
         quality: '320k', // 'wav' | '320k' | 'V0' | '128k'
+        duration: 300, // 5-minute default cap
       },
 
       // Sung lyrics for music mode. Default = the section-tag map (also the
@@ -176,7 +205,7 @@ const useStore = create(
         pipeline: 'local', // 'local' | 'tripo'
         meshMode: 'pixal3d', // 'pixal3d' | 'trellis2' — both built into ComfyUI
         // Quality — higher = sharper face/texture, bigger files, slower runs
-        qualityPreset: 'standard', // 'standard' | 'high' | 'ultra' | 'custom'
+        qualityPreset: 'high', // 'standard' | 'high' | 'ultra' | 'custom'
         pixalCameraRes: 1024, // 256–2048 crop box around the subject
         pixalTextureSize: 4096, // 512–8192 UV atlas
         pixalDecimation: 300000, // 5000–5000000 triangle budget
@@ -186,6 +215,14 @@ const useStore = create(
         pixalEnhance: 'sharpen', // 'none' | 'sharpen' (local) | 'esrgan' (local, free) | 'magnific4x' (PAID)
         pixalUpscaleModel: '', // models/upscale_models/*.pth used when pixalEnhance === 'esrgan'
         faceFix: true, // face-focused source enhance + front-view paint refine
+        // Hunyuan3D paint (Skin button) — quality presets set these too
+        hunyuanPaintModel: 'hunyuan3d-paintpbr-v2-1', // paint model file in models/diffusion/
+        hunyuanViewSize: 1024, // per-view render px (512 standard / 1024 high / 1536 ultra)
+        hunyuanTextureSize: 4096, // paint atlas px
+        hunyuanPaintSteps: 12, // 1–100 paint diffusion steps (returns diminish past ~20)
+        hunyuanGuidance: 3, // photo adherence during repaint (3 default)
+        hunyuanSkinBlend: true, // hybrid skin: paint's face into the generated texture (keeps hair/clothes)
+        hunyuanViewUpscale: true, // detail-upscale bake views (4x-UltraSharp on the front view) for sharper faces
         // UltraShape 1.0 mesh upscale (Upscale button — local refine of the mesh)
         ultrashapeCheckpoint: 'ultrashape_v1.pt', // models/UltraShape/*.pt
         ultrashapeDtype: 'bfloat16', // float16 | bfloat16 | float32
@@ -222,6 +259,12 @@ const useStore = create(
 
       // Source image for edit mode (File kept in memory only, never persisted)
       sourceImage: null, // { file, preview, name }
+
+      // Reference audio for ACE-Step (File kept in memory only, never persisted)
+      referenceAudio: null, // { file, name }
+
+      // Open 3D history viewer modal (transient)
+      viewing3d: null, // { url, name }
 
       // Models
       models: DEFAULT_MODELS,
@@ -356,6 +399,8 @@ const useStore = create(
       setThreeD: (patch) => set((s) => ({ threeD: { ...s.threeD, ...patch } })),
       setThreeDRun: (patch) => set((s) => ({ threeDRun: { ...s.threeDRun, ...patch } })),
       setSourceImage: (sourceImage) => set({ sourceImage }),
+      setReferenceAudio: (referenceAudio) => set({ referenceAudio }),
+      setViewing3d: (viewing3d) => set({ viewing3d }),
       setModels: (mode, models) => set((s) => ({
         models: { ...s.models, [mode]: { ...s.models[mode], ...models } },
       })),
@@ -366,10 +411,14 @@ const useStore = create(
       clearError: () => set({ error: null }),
       setShowSettings: (showSettings) => set({ showSettings }),
 
-      addToHistory: (entry) => set((s) => ({
-        // Same promptId can arrive twice (local add + server sync) — keep one.
-        history: [entry, ...s.history.filter((h) => h.id !== entry.id)].slice(0, 100),
-      })),
+      addToHistory: (entry) => {
+        set((s) => ({
+          // Same promptId can arrive twice (local add + server sync) — keep one.
+          history: [entry, ...s.history.filter((h) => h.id !== entry.id)].slice(0, 100),
+        }))
+        // Share the new entry with every other browser/origin.
+        pushHistoryEntries([entry])
+      },
       removeFromHistory: (id) => {
         set((s) => {
           const entry = s.history.find((h) => h.id === id)
@@ -451,6 +500,12 @@ const useStore = create(
       selectHistory: (id) => {
         const entry = get().history.find((h) => h.id === id)
         if (entry) {
+          // 3D entries open the GLB viewer modal — they don't map to any
+          // of the image/video/music output slots.
+          if (entry.type === '3d') {
+            set({ selectedHistoryId: id, viewing3d: { url: entry.data, name: entry.prompt || '3D model' } })
+            return
+          }
           const isVideo = entry.type === 'video'
           const isMusic = entry.type === 'music'
           const mode = isVideo ? 'video' : isMusic ? 'music' : entry.type === 'edit' ? 'edit' : 'image'

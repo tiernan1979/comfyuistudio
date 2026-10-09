@@ -14,6 +14,7 @@ import ErrorBanner from './ErrorBanner'
 import WebSearchPanel from './WebSearchPanel'
 import ThreeDPanel from './ThreeDPanel'
 import MusicEditor from './MusicEditor'
+import ModelViewerModal from './ModelViewerModal'
 import DragDivider from './DragDivider'
 
 export default function Layout() {
@@ -109,6 +110,7 @@ export default function Layout() {
 
       <WebSearchPanel />
       <MusicEditor />
+      <ModelViewerModal />
     </div>
   )
 }

@@ -221,15 +221,8 @@ export default function PromptInput() {
         </div>
       </div>
 
-      {/* MiniMax Music has no negative conditioning — hide the field, explain why */}
-      {mode === 'music' && (
-        <p className="text-[11px] text-text-muted leading-snug">
-          MiniMax Music 3 has no negative prompt — put exclusions in the caption itself
-          (e.g. “no vocals, no choir”). A “Negative Prompt: …” section is converted
-          into the caption automatically. The AI button writes the structured
-          Global Metadata + Arrangement caption for you.
-        </p>
-      )}
+      {/* Music hides the negative-prompt field entirely (the model has no
+          negative conditioning) — no explanatory note under the prompt. */}
       {mode !== 'music' && (
         <motion.button
           onClick={() => setShowNegative(!showNegative)}

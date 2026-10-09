@@ -3,15 +3,21 @@
 // Serves the same workflows the web app uses (src/lib/workflows.js) over a
 // plain HTTP API so MCP clients and scripts can drive image / edit / video /
 // music generation without a browser. Browser-only state (DAW sessions,
-// saved prompts, per-device history view) is intentionally NOT exposed;
-// cross-device history deletes are shared through hidden-ids instead.
+// saved prompts) is intentionally NOT exposed; shared state lives here
+// instead: a durable history store (ComfyUI's own /history is in-memory
+// and resets on restart) plus the hidden-ids deletion list.
 //
 //   GET  /api/health            service + ComfyUI reachability
 //   GET  /api/models            model lists + resolved per-mode defaults
-//   GET  /api/history           ComfyUI history (hidden-ids filtered out)
+//   GET  /api/history           durable shared history (live ComfyUI merged in, hidden-ids filtered)
+//   POST /api/history           add entries  { entries: [...] } (browsers share their local entries)
+//   DELETE /api/history         reset the durable store
 //   GET  /api/queue             ComfyUI queue depth
 //   POST /api/cancel            interrupt the running prompt
 //   POST /api/generate          run a generation (wait=true default, or wait=false + GET /api/job/:promptId)
+//                               modes: image | edit | video | music (graphs, wait supported)
+//                               + 3d | skin | meshupscale (long-lived flows — always block,
+//                                 timeoutSec up to 60min, no promptId/job polling)
 //   GET  /api/job/:promptId     status/outputs of a queued prompt
 //   GET  /api/file              proxy of ComfyUI /view (filename, subfolder, type)
 //   GET  /api/hidden-ids        shared deleted-history ids (persisted)
@@ -26,12 +32,15 @@ import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import {
   MODES,
+  FLOW_MODES,
   DEFAULT_SETTINGS,
   resolveModels,
+  resolveUpscaleModel,
   workflowFor,
   decodeDataUrl,
   outputsOf,
   hasOutputs,
+  pickModelOverrides,
 } from './lib.mjs'
 import {
   getModelLists,
@@ -40,7 +49,9 @@ import {
   queuePrompt,
   freeLoadedModels,
   extractHistoryError,
+  hasAudioTailTrim,
 } from '../../src/lib/comfyui.js'
+import { runGenerateMesh, runPaintSkin, runMeshUpscale } from '../../src/lib/threed.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -63,6 +74,8 @@ export function createApp(opts = {}) {
     pollMs: opts.pollMs || 2000,
   }
   const hiddenFile = path.join(cfg.dataDir, 'hidden-ids.json')
+  const historyFile = path.join(cfg.dataDir, 'history.json')
+  const HISTORY_CAP = 200
 
   // In-memory map of prompts this service queued (promptId also works for
   // jobs from other clients via /history/:promptId after a restart).
@@ -97,6 +110,87 @@ export function createApp(opts = {}) {
   function writeHidden(ids) {
     fs.mkdirSync(cfg.dataDir, { recursive: true })
     fs.writeFileSync(hiddenFile, JSON.stringify({ ids }, null, 2))
+  }
+
+  // Durable shared history. ComfyUI's own /history is in-memory (restarts
+  // and cleanups wipe it) and browsers only share localStorage within their
+  // own origin — so entries converge here instead: GET folds live ComfyUI
+  // entries into this store, POST lets each browser upload entries only it
+  // has (its pre-shared localStorage). Entries are id-keyed, newest-first,
+  // capped at HISTORY_CAP. Deletions stay in hidden-ids and are filtered
+  // from reads, so resetting hidden-ids restores them from here too.
+  function readHist() {
+    try {
+      const data = JSON.parse(fs.readFileSync(historyFile, 'utf8'))
+      return Array.isArray(data.entries) ? data.entries.filter((e) => e && e.id) : []
+    } catch {
+      return []
+    }
+  }
+
+  function writeHist(entries) {
+    fs.mkdirSync(cfg.dataDir, { recursive: true })
+    fs.writeFileSync(historyFile, JSON.stringify({ entries: entries.slice(0, HISTORY_CAP) }, null, 2))
+  }
+
+  const HISTORY_FIELDS = ['type', 'prompt', 'lyrics', 'data', 'thumbnail', 'timestamp', 'settings', 'view', 'fromServer']
+
+  function normalizeEntry(e) {
+    if (!e || typeof e !== 'object') return null
+    if (typeof e.id !== 'string' && typeof e.id !== 'number') return null
+    const out = { id: String(e.id) }
+    for (const k of HISTORY_FIELDS) {
+      if (e[k] !== undefined && e[k] !== null) out[k] = e[k]
+    }
+    if (typeof out.data !== 'string') delete out.data
+    // Thumbnails are PNG data URLs — cap at 500 KB to keep the history file lean.
+    if (typeof out.thumbnail !== 'string' || !out.thumbnail.startsWith('data:image/') || out.thumbnail.length > 500 * 1024) delete out.thumbnail
+    if (typeof out.timestamp !== 'number' || !Number.isFinite(out.timestamp)) delete out.timestamp
+    if (!out.settings || typeof out.settings !== 'object' || Array.isArray(out.settings)) delete out.settings
+    if (!out.view || typeof out.view !== 'object' || typeof out.view.filename !== 'string') delete out.view
+    return out
+  }
+
+  // Merge incoming entries into the store (id-keyed, newest-first). The
+  // entry with content wins: a non-empty `settings` is preferred (client
+  // entries carry the mode's settings; ComfyUI-derived ones are {}), and
+  // lyrics/view params are filled in from whichever side has them.
+  function mergeHist(incoming) {
+    const before = readHist()
+    const byId = new Map()
+    for (const raw of [...before, ...(incoming || [])]) {
+      const e = normalizeEntry(raw)
+      if (!e) continue
+      const prev = byId.get(e.id)
+      if (!prev) {
+        byId.set(e.id, e)
+        continue
+      }
+      const prevRich = !!(prev.settings && Object.keys(prev.settings).length)
+      const nextRich = !!(e.settings && Object.keys(e.settings).length)
+      const keep = nextRich && !prevRich ? e : prev
+      const other = keep === prev ? e : prev
+      const merged = { ...other, ...keep }
+      const settings = keep.settings || other.settings
+      const lyrics = keep.lyrics || other.lyrics
+      // Same non-empty preference as lyrics: an early live merge can capture
+      // an entry before its caption is extractable (e.g. ACE graphs before
+      // `tags` support) — a later merge with a real prompt must win over ''.
+      const prompt = keep.prompt || other.prompt
+      const view = keep.view || other.view
+      if (settings) merged.settings = settings
+      else delete merged.settings
+      if (prompt !== undefined) merged.prompt = prompt
+      if (lyrics) merged.lyrics = lyrics
+      else delete merged.lyrics
+      if (view) merged.view = view
+      else delete merged.view
+      merged.timestamp = Math.max(Number(prev.timestamp) || 0, Number(e.timestamp) || 0)
+      byId.set(e.id, merged)
+    }
+    const merged = [...byId.values()].sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0))
+    if (JSON.stringify(merged.slice(0, HISTORY_CAP)) !== JSON.stringify(before)) writeHist(merged)
+    return merged
   }
 
   async function rawHistoryItem(promptId) {
@@ -140,11 +234,12 @@ export function createApp(opts = {}) {
       throw new HttpError(400, `mode must be one of: ${MODES.join(', ')}`)
     }
     const prompt = typeof body.prompt === 'string' ? body.prompt.trim() : ''
-    if (!prompt) throw new HttpError(400, 'prompt is required')
+    // Flow modes (3d/skin/meshupscale) are picture-driven pipelines — no prompt.
+    if (!FLOW_MODES.includes(mode) && !prompt) throw new HttpError(400, 'prompt is required')
     const negativePrompt = typeof body.negativePrompt === 'string' ? body.negativePrompt : ''
     const lyrics = typeof body.lyrics === 'string' ? body.lyrics : ''
     const settings = body.settings && typeof body.settings === 'object' ? body.settings : {}
-    const modelOverrides = body.models && typeof body.models === 'object' ? body.models : {}
+    const modelOverrides = pickModelOverrides(mode, body.models)
     const wait = body.wait !== false
     const timeoutMs = Math.min(
       Number(body.timeoutSec) > 0 ? Number(body.timeoutSec) * 1000 : cfg.timeoutMs,
@@ -157,11 +252,26 @@ export function createApp(opts = {}) {
     } catch (err) {
       throw new HttpError(502, `Could not reach ComfyUI at ${cfg.comfyuiUrl} (${err.message})`)
     }
+
+    if (FLOW_MODES.includes(mode)) return runFlow(mode, body, settings, lists)
+
     let models
     try {
       models = resolveModels(lists, mode, modelOverrides)
     } catch (err) {
       throw new HttpError(502, err.message)
+    }
+    if (mode === 'image') {
+      try {
+        models = { ...models, upscale: resolveUpscaleModel(lists, settings.upscale) }
+      } catch (err) {
+        throw new HttpError(502, err.message)
+      }
+    }
+    if (mode === 'music') {
+      // Trim dead-air tails when the AudioTailTrim custom node is installed
+      // (comfy_nodes/AudioTailTrim.py); graphs stay stock without it.
+      models.trimAudio = await hasAudioTailTrim(cfg.comfyuiUrl)
     }
 
     let imageName
@@ -211,6 +321,93 @@ export function createApp(opts = {}) {
     }
   }
 
+  // Flow modes: multi-prompt pipelines from threed.js (image → mesh, skin,
+  // UltraShape refine). Each polls its own prompts and blocks until done
+  // (their internal timeouts: mesh 30min / paint 25min / ultrashape 45min —
+  // pass timeoutSec only as a client-side cushion). GLB outputs live on
+  // ComfyUI's output dir, so results are ordinary /api/file URLs.
+  async function runFlow(mode, body, settings, lists) {
+    if (!body.imageBase64) {
+      throw new HttpError(400, `imageBase64 is required for ${mode} mode (data URL or raw base64)`)
+    }
+    const { buf, mime } = decodeDataUrl(body.imageBase64)
+    const imageFile = new File([buf], mode === '3d' ? 'mesh3d-source.png' : 'skin-source.png', { type: mime })
+
+    let meshEntry = null
+    let meshFile = null
+    let meshName = 'mesh.glb'
+    if (mode !== '3d') {
+      if (body.meshBase64) {
+        const m = decodeDataUrl(body.meshBase64)
+        meshFile = new File([m.buf], 'mesh-input.glb', { type: 'model/gltf-binary' })
+        meshName = 'mesh-input.glb'
+      } else if (body.mesh && typeof body.mesh === 'object' && typeof body.mesh.filename === 'string') {
+        const { filename, subfolder = '', type } = body.mesh
+        if (!filename || filename.includes('..') || String(subfolder).includes('..')) {
+          throw new HttpError(400, 'mesh.filename is required (no path traversal)')
+        }
+        meshEntry = { filename, subfolder: String(subfolder), type: type === 'input' ? 'input' : 'output' }
+        meshName = filename
+      } else {
+        throw new HttpError(
+          400,
+          `${mode} mode needs a mesh — pass mesh: { filename, subfolder?, type? } (a GLB from a prior ` +
+            '3d run, e.g. outputs[0].filename) or meshBase64 (raw GLB bytes)',
+        )
+      }
+    }
+
+    // Face passes use the same Qwen edit stack edit mode resolves; a server
+    // without edit models simply skips them (the pipelines degrade gracefully).
+    let editModels = null
+    try {
+      editModels = resolveModels(lists, 'edit')
+    } catch {
+      editModels = null
+    }
+
+    const base = cfg.comfyuiUrl
+    const started = Date.now()
+    const onStatus = (s) => console.log(`[flow:${mode}] ${s}`)
+    try {
+      if (mode === '3d') {
+        const t = { ...DEFAULT_SETTINGS['3d'], ...settings }
+        const glb = await runGenerateMesh(base, imageFile, t, onStatus, editModels)
+        return { ok: true, mode, elapsedMs: Date.now() - started, outputs: [flowFileOut(glb)], settings: t }
+      }
+      if (mode === 'skin') {
+        const t = { ...DEFAULT_SETTINGS.skin, ...settings }
+        const res = await runPaintSkin(
+          base,
+          { cfg: t, imageFile, meshEntry, meshFile, meshName, editModels },
+          onStatus,
+        )
+        return { ok: true, mode, elapsedMs: Date.now() - started, outputs: [flowFileOut(res.entry)], settings: t }
+      }
+      const t = { ...DEFAULT_SETTINGS.meshupscale, ...settings }
+      const res = await runMeshUpscale(base, { cfg: t, imageFile, meshEntry, meshFile, meshName }, onStatus)
+      return { ok: true, mode, elapsedMs: Date.now() - started, outputs: [flowFileOut(res.entry)], settings: t }
+    } catch (err) {
+      throw new HttpError(502, err.message || String(err))
+    }
+  }
+
+  function flowFileOut(f) {
+    const params = new URLSearchParams({
+      filename: f.filename,
+      subfolder: f.subfolder || '',
+      type: f.type || 'output',
+    })
+    return {
+      kind: '3d',
+      filename: f.filename,
+      subfolder: f.subfolder || '',
+      type: f.type || 'output',
+      url: `/api/file?${params.toString()}`,
+      comfyuiUrl: `${cfg.comfyuiUrl}/view?${params.toString()}`,
+    }
+  }
+
   app.get('/api/health', async (req, res) => {
     let comfyui = false
     let version = null
@@ -247,12 +444,46 @@ export function createApp(opts = {}) {
   app.get('/api/history', async (req, res, next) => {
     try {
       const limit = Math.min(Number(req.query.limit) || 60, 300)
-      const entries = await getServerHistory(cfg.comfyuiUrl, limit)
+      let live = null
+      let liveErr = null
+      try {
+        live = await getServerHistory(cfg.comfyuiUrl, limit)
+      } catch (err) {
+        liveErr = err
+      }
+      let store = readHist()
+      if (live) store = mergeHist(live)
+      // ComfyUI unreachable but the durable store has entries — serve
+      // those (degraded) instead of failing the whole read.
+      if (!live && store.length === 0) {
+        return next(new HttpError(502, `Could not read ComfyUI history (${liveErr.message})`))
+      }
       const hidden = new Set(readHidden().map(String))
-      res.json({ entries: entries.filter((e) => !hidden.has(String(e.id))) })
+      const entries = store.filter((e) => !hidden.has(String(e.id))).slice(0, limit)
+      res.json({ entries, ...(live ? {} : { source: 'store' }) })
     } catch (err) {
-      next(new HttpError(502, `Could not read ComfyUI history (${err.message})`))
+      next(err)
     }
+  })
+
+  // Browsers upload entries only they have (e.g. localStorage from before
+  // history became shared) so every origin converges on the same list.
+  // Idempotent — merging an entry twice is a no-op.
+  app.post('/api/history', (req, res, next) => {
+    try {
+      const incoming = req.body?.entries
+      if (!Array.isArray(incoming)) throw new HttpError(400, 'entries must be an array')
+      const valid = incoming.map(normalizeEntry).filter(Boolean).slice(0, HISTORY_CAP)
+      const merged = mergeHist(valid)
+      res.json({ ok: true, accepted: valid.length, total: Math.min(merged.length, HISTORY_CAP) })
+    } catch (err) {
+      next(err)
+    }
+  })
+
+  app.delete('/api/history', (req, res) => {
+    writeHist([])
+    res.json({ entries: [] })
   })
 
   app.get('/api/queue', async (req, res) => {

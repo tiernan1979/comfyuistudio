@@ -139,7 +139,12 @@ export default function ImageViewer() {
               <img
                 src={outputImage}
                 alt="Generated"
-                className="w-full h-full object-contain"
+                draggable
+                onDragStart={(e) => {
+                  e.dataTransfer.setData('application/x-generated-image', outputImage)
+                  e.dataTransfer.setData('text/plain', outputImage)
+                }}
+                className="w-full h-full object-contain cursor-grab active:cursor-grabbing"
               />
 
               {/* Overlay controls */}
@@ -218,7 +223,12 @@ export default function ImageViewer() {
               animate={{ scale: 1 }}
               src={outputImage}
               alt="Generated fullscreen"
-              className="max-w-full max-h-full object-contain rounded-lg"
+              draggable
+              onDragStart={(e) => {
+                e.dataTransfer.setData('application/x-generated-image', outputImage)
+                e.dataTransfer.setData('text/plain', outputImage)
+              }}
+              className="max-w-full max-h-full object-contain rounded-lg cursor-grab active:cursor-grabbing"
             />
           </motion.div>
         )}

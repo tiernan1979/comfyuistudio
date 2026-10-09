@@ -27,11 +27,16 @@ const MODEL_GROUPS = new Set(['image', 'video', 'edit', 'music'])
 //   high     — sharper texture + more geometry, moderate slowdown
 //   ultra    — every node-supported maximum for face/detail sharpness
 export const QUALITY_PRESETS = {
+  // Unified tiers: one pick configures the whole 3D pipeline together —
+  // mesh generation (pixal*), Skin/Hunyuan3D paint (hunyuan*) and the
+  // UltraShape Upscale refine (ultrashape*) — so every combination stays
+  // correct-looking and VRAM-safe instead of only the gen stage.
   // Tuned against the template defaults (shape 20 steps @ cfg 7.5,
   // 4k texture bake): the distilled samplers gain nothing past ~30 steps,
   // and 8k PNG textures triple the GLB for zero visible gain. ~40 MB
   // outputs stay rig/upscale-friendly (the old high preset shipped
-  // 159 MB monsters).
+  // 159 MB monsters). Hardware knobs (ultrashapeLowVram, dtype,
+  // checkpoint) are deliberately excluded — they depend on the GPU.
   standard: {
     pixalCameraRes: 1024,
     pixalTextureSize: 4096,
@@ -39,6 +44,15 @@ export const QUALITY_PRESETS = {
     pixalSteps: 20,
     pixalGuidance: 7.5,
     pixalRemesh: true,
+    hunyuanViewSize: 512,
+    hunyuanTextureSize: 2048,
+    hunyuanPaintSteps: 15,
+    hunyuanGuidance: 3.5,
+    ultrashapeOctree: 384,
+    ultrashapeSteps: 20,
+    ultrashapeGuidance: 5,
+    ultrashapeNumChunks: 8000,
+    ultrashapeNumLatents: 16384,
   },
   high: {
     pixalCameraRes: 1024,
@@ -47,16 +61,36 @@ export const QUALITY_PRESETS = {
     pixalSteps: 24,
     pixalGuidance: 7.5,
     pixalRemesh: true,
+    hunyuanViewSize: 1024,
+    hunyuanTextureSize: 2048,
+    hunyuanPaintSteps: 25,
+    hunyuanGuidance: 4.0,
+    ultrashapeOctree: 448,
+    ultrashapeSteps: 25,
+    ultrashapeGuidance: 5,
+    ultrashapeNumChunks: 8000,
+    ultrashapeNumLatents: 16384,
   },
   ultra: {
     pixalCameraRes: 1536,
     pixalTextureSize: 8192,
-    pixalDecimation: 600000,
+    pixalDecimation: 500000,
     pixalSteps: 30,
     pixalGuidance: 8.0,
-    // false skips the voxel remesh that otherwise smooths fine facial
-    // geometry at export — flip back on if rigging ever rejects the mesh
-    pixalRemesh: false,
+    // Stay on: without the voxel remesh the unwelded raw mesh fragments
+    // the UV unwrap into ~23k charts (vs ~3k) — measured 11.8% seam jumps
+    // close-up and 28.7% at mip2 (vs 4.5% / 9.3% with remesh) = visible
+    // distance shimmer. The ~2mm smoothing cost is not worth that.
+    pixalRemesh: true,
+    hunyuanViewSize: 1024,
+    hunyuanTextureSize: 4096,
+    hunyuanPaintSteps: 40,
+    hunyuanGuidance: 5.0,
+    ultrashapeOctree: 512,
+    ultrashapeSteps: 30,
+    ultrashapeGuidance: 5,
+    ultrashapeNumChunks: 8000,
+    ultrashapeNumLatents: 16384,
   },
 }
 
@@ -79,6 +113,14 @@ const THREE_D_FIELDS = {
   pixalUpscaleModel: 'string',
   // Face fix: source-image enhance + front-view paint refine (threed.js)
   faceFix: 'boolean',
+  // Hunyuan3D paint (Skin button) — quality presets set these too
+  hunyuanPaintModel: 'string',
+  hunyuanViewSize: [128, 1024],
+  hunyuanTextureSize: [256, 8192],
+  hunyuanPaintSteps: [1, 100],
+  hunyuanGuidance: [0, 20],
+  hunyuanSkinBlend: 'boolean',
+  hunyuanViewUpscale: 'boolean',
   // UltraShape 1.0 mesh upscale (local refine)
   ultrashapeCheckpoint: 'string',
   ultrashapeDtype: new Set(['float16', 'bfloat16', 'float32']),
@@ -127,14 +169,14 @@ const MODE_SETTING_FIELDS = {
     steps: [1, 100],
     cfg: [0, 30],
   },
-  // musicSettings: no `duration` — the length slider was removed; the
-  // model's structure planner decides the length (max_duration cap in
-  // buildMusicWorkflow).
+  // musicSettings: `duration` is the planner cap (10–360s, default 300) —
+  // the model sizes the song itself; whitelist it so the knob syncs.
   musicSettings: {
     seed: 'number',
     steps: [1, 100],
     cfgScale: [0, 10],
     quality: new Set(['wav', '320k', 'V0', '128k']),
+    duration: [10, 360],
   },
 }
 
@@ -273,8 +315,8 @@ export function configFromState(state) {
     models: JSON.parse(JSON.stringify(state.models || {})),
     threeD: JSON.parse(JSON.stringify(state.threeD || {})),
     // Per-mode generation settings — flat objects of primitives, so a
-    // shallow spread is enough (old localStorage may carry a stale
-    // `duration` key on musicSettings; the sanitizer drops it).
+    // shallow spread is enough (the sanitizer in applyServerConfig clamps
+    // each field against MODE_SETTING_FIELDS).
     imageSettings: { ...(state.imageSettings || {}) },
     videoSettings: { ...(state.videoSettings || {}) },
     editSettings: { ...(state.editSettings || {}) },

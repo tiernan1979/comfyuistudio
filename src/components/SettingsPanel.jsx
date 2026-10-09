@@ -1,5 +1,8 @@
 import { motion } from 'framer-motion'
+import { useRef } from 'react'
+import { Music, X } from 'lucide-react'
 import useStore from '../store/useStore'
+import { isAceStepModel } from '../lib/workflows'
 import clsx from 'clsx'
 
 const ASPECT_RATIOS = ['1:1', '16:9', '9:16', '4:3', '3:4', '3:2', '2:3']
@@ -30,12 +33,27 @@ function Toggle({ label, value, onChange, disabled }) {
   )
 }
 
-function Slider({ label, value, onChange, min, max, step = 1, disabled, suffix = '' }) {
+function Slider({ label, value, onChange, min, max, step = 1, disabled, suffix = '', unit = '' }) {
   return (
     <div className="space-y-1">
       <div className="flex items-center justify-between">
         <span className="text-xs text-text-secondary">{label}</span>
-        <span className="text-xs text-accent font-mono">{value}{suffix}</span>
+        <div className="flex items-center gap-1.5">
+          <input
+            type="number"
+            min={min}
+            max={max}
+            step={step}
+            value={value}
+            onChange={(e) => {
+              const v = Number(e.target.value)
+              if (!Number.isNaN(v) && v >= min && v <= max) onChange(v)
+            }}
+            disabled={disabled}
+            className="w-16 px-1.5 py-0.5 text-right text-xs font-mono text-accent bg-bg-hover border border-border rounded focus:outline-none focus:border-accent/50 disabled:opacity-50"
+          />
+          {unit && <span className="text-xs text-text-muted">{unit}</span>}
+        </div>
       </div>
       <input
         type="range"
@@ -47,6 +65,7 @@ function Slider({ label, value, onChange, min, max, step = 1, disabled, suffix =
         disabled={disabled}
         className="w-full h-1.5 rounded-full appearance-none bg-bg-hover accent-accent disabled:opacity-50 cursor-pointer"
       />
+      {suffix && <p className="text-[10px] text-text-muted/60 leading-snug">{suffix}</p>}
     </div>
   )
 }
@@ -64,6 +83,10 @@ export default function SettingsPanel() {
   const lyrics = useStore((s) => s.lyrics)
   const setLyrics = useStore((s) => s.setLyrics)
   const generating = useStore((s) => s.generating)
+  const musicUnet = useStore((s) => s.models.music?.unet || '')
+  const referenceAudio = useStore((s) => s.referenceAudio)
+  const setReferenceAudio = useStore((s) => s.setReferenceAudio)
+  const refAudioInputRef = useRef(null)
 
   if (mode === 'edit') {
     return (
@@ -94,7 +117,7 @@ export default function SettingsPanel() {
           min={-1}
           max={2 ** 48}
           disabled={generating}
-          suffix={editSettings.seed === -1 ? ' (random)' : ''}
+         
         />
       </div>
     )
@@ -116,6 +139,68 @@ export default function SettingsPanel() {
             className="w-full px-3 py-2 rounded-xl bg-bg-card border border-border text-text-primary placeholder:text-text-muted resize-y min-h-20 text-xs leading-relaxed focus:outline-none focus:ring-2 focus:ring-accent disabled:opacity-50"
           />
         </div>
+
+        {/* ACE-Step reference audio — timbre/style source. Only the ACE 1.5
+            graph has ReferenceTimbreAudio; MiniMax has no such node, so the
+            picker is hidden unless an ACE unet is selected. */}
+        {isAceStepModel(musicUnet) && (
+          <div>
+            <label className="text-xs text-text-muted mb-1.5 block">
+              Reference audio <span className="text-text-muted/60">(optional — borrows the sound of a track)</span>
+            </label>
+            <input
+              ref={refAudioInputRef}
+              type="file"
+              accept="audio/*,.wav,.mp3,.flac,.ogg,.m4a"
+              className="hidden"
+              onChange={(e) => {
+                const f = e.target.files?.[0]
+                if (f) setReferenceAudio({ file: f, name: f.name })
+                e.target.value = ''
+              }}
+            />
+            {referenceAudio ? (
+              <div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-bg-card border border-border">
+                <Music size={14} className="text-accent shrink-0" />
+                <span className="text-xs text-text-primary truncate flex-1">{referenceAudio.name}</span>
+                <button
+                  onClick={() => setReferenceAudio(null)}
+                  disabled={generating}
+                  className="p-1 rounded-md text-text-muted hover:text-red-400 hover:bg-bg-hover transition-colors"
+                  title="Remove reference audio"
+                >
+                  <X size={12} />
+                </button>
+              </div>
+            ) : (
+              <button
+                onClick={() => refAudioInputRef.current?.click()}
+                disabled={generating}
+                className={clsx(
+                  'w-full px-3 py-2 rounded-xl border border-dashed border-border text-xs text-text-muted',
+                  'hover:border-accent/50 hover:text-text-secondary transition-colors',
+                  generating && 'opacity-50'
+                )}
+              >
+                + Add a reference track (mp3/wav — e.g. a clip from YouTube)
+              </button>
+            )}
+            <p className="text-[10px] text-text-muted/60 mt-1 leading-snug">
+              Borrows the reference's synth tones, vocal timbre and mix character — not its melody or structure. Works best for matching a sonic palette; for "similar vibe" a detailed caption alone often does more.
+            </p>
+          </div>
+        )}
+
+        <Slider
+          label="Max length"
+          value={musicSettings.duration}
+          onChange={(v) => setMusicSettings({ duration: v })}
+          min={10}
+          max={360}
+          disabled={generating}
+          unit="sec"
+          suffix="The song ends earlier when the music does."
+        />
 
         <Slider
           label="Steps"
@@ -172,7 +257,7 @@ export default function SettingsPanel() {
           min={-1}
           max={2 ** 48}
           disabled={generating}
-          suffix={musicSettings.seed === -1 ? ' (random)' : ''}
+         
         />
       </div>
     )
@@ -231,7 +316,7 @@ export default function SettingsPanel() {
           min={-1}
           max={2 ** 48}
           disabled={generating}
-          suffix={imageSettings.seed === -1 ? ' (random)' : ''}
+         
         />
 
         <Toggle
@@ -329,7 +414,7 @@ export default function SettingsPanel() {
         min={-1}
         max={2 ** 48}
         disabled={generating}
-        suffix={videoSettings.seed === -1 ? ' (random)' : ''}
+       
       />
     </div>
   )

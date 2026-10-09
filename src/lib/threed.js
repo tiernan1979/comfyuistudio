@@ -29,6 +29,7 @@ import {
   buildPaintWorkflow,
   buildFaceEnhanceWorkflow,
 } from './workflows.js'
+import { hybridSkinBlend } from './hybridSkin.js'
 
 // High-quality runs take a while: shape→upsample→texture plus remesh,
 // unwrap and PBR baking can legitimately run 15–30 min on a mid GPU.
@@ -962,7 +963,7 @@ export async function runPaintSkin(
   const outputName = `painted_${Date.now().toString(36)}`
 
   // Face fix, paint side: refine the face on the front view before the bake.
-  // views 768px / texture 4096 put ~4x more texels on the face than the old
+  // views 1024px / texture 4096 put ~6x more texels on the face than the old
   // 512/1024 defaults — the bake is where small faces used to mush out.
   const wantFaceFix = cfg.faceFix !== false && !!editModels
   let faceFix = null
@@ -970,7 +971,11 @@ export async function runPaintSkin(
     const models = await resolveEditModels(base, editModels)
     const faceModelName = await detectFaceModel(base)
     if (models) {
-      faceFix = { faceModelName, editModels: models, denoise: faceModelName ? 0.5 : 0.35 }
+      // 0.55 was re-generating the painted eyes away (blank sockets after
+      // the fix). The paint model already renders the face from the source
+      // image — the fix should clean up, not redraw. Light touch preserves
+      // iris/pupil detail the paint model put down.
+      faceFix = { faceModelName, editModels: models, denoise: 0.3 }
     } else {
       onStatus?.('Face pass skipped (no Qwen edit model on the server)…')
     }
@@ -981,22 +986,24 @@ export async function runPaintSkin(
       meshPath: `3d/${stored}`,
       imageName: up.name,
       paintModel: cfg.hunyuanPaintModel || 'hunyuan3d-paintpbr-v2-1',
-      viewSize: cfg.hunyuanViewSize ?? 768,
+      viewSize: cfg.hunyuanViewSize ?? 1024,
       steps: cfg.hunyuanPaintSteps ?? 10,
       guidance: cfg.hunyuanGuidance ?? 3,
       textureSize: cfg.hunyuanTextureSize ?? 4096,
       outputName,
       faceFix: fix,
+      viewUpscale: up,
     })
 
-  const runOnce = async (fix) => {
-    const wf = buildWf(fix)
+  const runOnce = async (fix, up) => {
+    const wf = buildWf(fix, up)
     await assertWorkflowNodes(base, wf, { label: 'Hunyuan3D-Paint skinning', describe: describeNode })
     onStatus?.('Unloading previous models…')
     await freeLoadedModels(base)
+    const extras = [fix ? 'face pass' : null, up ? 'detail views' : null].filter(Boolean)
     onStatus?.(
-      fix
-        ? 'Queued — face pass first, then multiview texture diffusion…'
+      extras.length
+        ? `Queued — ${extras.join(' + ')}, then multiview texture diffusion…`
         : 'Queued — multiview texture diffusion takes a couple of minutes…'
     )
     const id = await queuePrompt(base, wf)
@@ -1008,22 +1015,39 @@ export async function runPaintSkin(
     })
   }
 
+  // Degrade one feature at a time so a face-pass or upscale-stage failure
+  // (missing node, OOM, no face found) never loses the whole paint run.
+  const wantUpscale = cfg.hunyuanViewUpscale !== false
+  const plan = []
+  const pushPlan = (fix, up) => {
+    const k = `${fix ? 'f' : 'n'}${up ? 'u' : '-'}`
+    if (!plan.some((p) => p.k === k)) plan.push({ k, fix, up })
+  }
+  pushPlan(faceFix, wantUpscale)
+  pushPlan(null, wantUpscale)
+  pushPlan(faceFix, false)
+  pushPlan(null, false)
+
   let entry
-  try {
-    if (faceFix) {
+  for (let i = 0; i < plan.length; i++) {
+    const { fix, up } = plan[i]
+    try {
+      if (fix) {
+        onStatus?.(
+          fix.faceModelName
+            ? 'Face pass · precise face mask on the front view…'
+            : 'Face pass · refining the face in the front view…'
+        )
+      }
+      entry = await runOnce(fix, up)
+      break
+    } catch (err) {
+      if (i === plan.length - 1) throw err
+      // Same recoverable pattern as UltraShape.
       onStatus?.(
-        faceFix.faceModelName
-          ? 'Face pass · precise face mask on the front view…'
-          : 'Face pass · refining the face in the front view…'
+        `Attempt failed (${(err && err.message) || err}) — retrying with a simpler pipeline…`
       )
     }
-    entry = await runOnce(faceFix)
-  } catch (err) {
-    if (!faceFix) throw err
-    // Same recoverable pattern as UltraShape: a face-pass failure (missing
-    // node, OOM, no face found) must not lose the whole paint run.
-    onStatus?.(`Face pass failed (${(err && err.message) || err}) — retrying without it…`)
-    entry = await runOnce(null)
   }
 
   // History first in case a ComfyUI version records the file entry, then
@@ -1042,7 +1066,20 @@ export async function runPaintSkin(
       onStatus?.('Downloading painted mesh…')
       const blob = await fetchOutputBlob(base, f)
       const baseName = String(meshName).replace(/\.[^.]+$/, '')
-      return { entry: f, blob, name: `${baseName}_painted.glb` }
+      let outBlob = blob
+      if (cfg.hunyuanSkinBlend !== false && (srcBlob || meshEntry)) {
+        try {
+          onStatus?.('Face blend · keeping your generated hair and clothes…')
+          const blended = await hybridSkinBlend(srcBlob, blob, onStatus)
+          outBlob = blended.blob
+          onStatus?.('Face blend done — paint details on the face, generated texture elsewhere')
+        } catch (err) {
+          onStatus?.(
+            `Face blend skipped (${(err && err.message) || 'error'}) — using the painted texture as-is`
+          )
+        }
+      }
+      return { entry: f, blob: outBlob, name: `${baseName}_painted.glb` }
     } catch {
       // probed name didn't exist — try the next counter
     }

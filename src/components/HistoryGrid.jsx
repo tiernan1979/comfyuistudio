@@ -1,5 +1,5 @@
 import { motion } from 'framer-motion'
-import { Image, Film, Music, Trash2 } from 'lucide-react'
+import { Image, Film, Music, Box, Trash2 } from 'lucide-react'
 import useStore from '../store/useStore'
 import clsx from 'clsx'
 
@@ -22,7 +22,10 @@ export default function HistoryGrid() {
 
   return (
     <div className="grid grid-cols-2 gap-1.5">
-      {history.map((entry, i) => (
+      {history.map((entry, i) => {
+        // stills (and 'edit' results) can be dragged into the 3D box
+        const canDrag = (entry.type === 'image' || entry.type === 'edit') && !!entry.data
+        return (
         <motion.button
           key={entry.id}
           initial={{ opacity: 0, scale: 0.8 }}
@@ -31,11 +34,18 @@ export default function HistoryGrid() {
           whileHover={{ scale: 1.05 }}
           whileTap={{ scale: 0.95 }}
           onClick={() => selectHistory(entry.id)}
+          draggable={canDrag}
+          onDragStart={(e) => {
+            if (!canDrag) return
+            e.dataTransfer.setData('application/x-generated-image', entry.data)
+            e.dataTransfer.setData('text/plain', entry.data)
+          }}
           className={clsx(
             'relative aspect-square rounded-lg overflow-hidden border transition-all group',
             selectedHistoryId === entry.id
               ? 'border-accent ring-1 ring-accent/50'
-              : 'border-transparent hover:border-border'
+              : 'border-transparent hover:border-border',
+            canDrag && 'cursor-grab active:cursor-grabbing'
           )}
         >
           <span
@@ -49,12 +59,26 @@ export default function HistoryGrid() {
             <Trash2 size={10} />
           </span>
           {/* Music entries are audio URLs — no thumbnail, show a tile.
+              3D entries are GLB URLs — same, a Box tile; click opens the
+              interactive viewer modal.
               mp4/webm videos need <video preload> for a first-frame poster;
               animated webp only renders in <img>. */}
           {entry.type === 'music' ? (
             <span className="absolute inset-0 flex items-center justify-center bg-gradient-to-br from-purple-500/30 to-accent/20">
               <Music size={22} className="text-white/80" />
             </span>
+          ) : entry.type === '3d' ? (
+            entry.thumbnail ? (
+              <img
+                src={entry.thumbnail}
+                alt={entry.prompt}
+                className="w-full h-full object-cover"
+              />
+            ) : (
+              <span className="absolute inset-0 flex items-center justify-center bg-gradient-to-br from-emerald-500/30 to-accent/20">
+                <Box size={22} className="text-white/80" />
+              </span>
+            )
           ) : entry.type === 'video' && /\.(mp4|webm|mov)\b/i.test(entry.data || '') ? (
             <video
               src={entry.data}
@@ -82,12 +106,15 @@ export default function HistoryGrid() {
               <Film size={10} className="text-white/70" />
             ) : entry.type === 'music' ? (
               <Music size={10} className="text-white/70" />
+            ) : entry.type === '3d' ? (
+              <Box size={10} className="text-white/70" />
             ) : (
               <Image size={10} className="text-white/70" />
             )}
           </div>
         </motion.button>
-      ))}
+        )
+      })}
     </div>
   )
 }

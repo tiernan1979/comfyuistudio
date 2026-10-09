@@ -20,6 +20,7 @@ const API_URL = (process.env.STUDIO_API_URL || process.env.COMFYUI_STUDIO_API ||
 const API_KEY = process.env.STUDIO_API_KEY || process.env.COMFYUI_STUDIO_API_KEY || ''
 
 const GENERATE_TIMEOUT_MS = 16 * 60 * 1000 // just over the API's 15min default
+const FLOW_TIMEOUT_MS = 50 * 60 * 1000 // 3D flows: mesh 30min / paint 25min / ultrashape 45min
 const SHORT_TIMEOUT_MS = 30 * 1000
 
 async function api(pathname, { method = 'GET', body, timeoutMs = SHORT_TIMEOUT_MS } = {}) {
@@ -69,15 +70,36 @@ const waitSchema = z
   .optional()
   .describe('true (default) = block until the generation finishes; false = return the promptId immediately')
 
-async function generate(mode, args) {
+// Fields the API reads from the request ROOT; everything else is a per-mode
+// generation setting (steps, cfg, resolution, duration, upscale, 3D knobs…)
+// and must travel under body.settings — root-level extras are ignored.
+const ROOT_KEYS = new Set([
+  'prompt',
+  'negativePrompt',
+  'lyrics',
+  'imageBase64',
+  'mesh',
+  'meshBase64',
+  'wait',
+  'timeoutSec',
+])
+
+async function generate(mode, args, timeoutMs) {
   const { video_lora, ...rest } = args
-  const body = { mode, ...rest }
+  const body = { mode }
+  const settings = {}
+  for (const [k, v] of Object.entries(rest)) {
+    if (v === undefined) continue
+    if (ROOT_KEYS.has(k)) body[k] = v
+    else settings[k] = v
+  }
+  if (Object.keys(settings).length) body.settings = settings
   // Optional H3 turbo LoRA → model override (file must be in models/loras).
   if (video_lora) body.models = { video: { lora: video_lora } }
   const out = await api('/api/generate', {
     method: 'POST',
     body,
-    timeoutMs: args.wait === false ? SHORT_TIMEOUT_MS : GENERATE_TIMEOUT_MS,
+    timeoutMs: timeoutMs || (args.wait === false ? SHORT_TIMEOUT_MS : GENERATE_TIMEOUT_MS),
   })
   if (args.wait === false) return out
   const files = (out.outputs || []).map((o) => ({
@@ -111,6 +133,12 @@ tool(
     cfg: z.number().min(0).max(20).optional(),
     seed: z.number().int().optional().describe('-1 (default) = random'),
     turboMode: z.boolean().optional().describe('Faster/fewer-step sampling when supported'),
+    upscale: z
+      .string()
+      .optional()
+      .describe(
+        "Detail upscale after generation: 'auto' (picks 4x-UltraSharp if installed) or an exact model filename from the server's models/upscale_models/, e.g. '4x-UltraSharp.pth'",
+      ),
     wait: waitSchema,
   },
   (args) => generate('image', args),
@@ -153,7 +181,7 @@ tool(
 
 tool(
   'generate_music',
-  'Generate music (MiniMax Music 3 on the ComfyUI server). Instrumental unless lyrics are given — vocals are always excluded when lyrics is empty. Blocks until finished.',
+  'Generate music (MiniMax Music 3 or ACE-Step 1.5 on the ComfyUI server — the server picks per the selected model). Instrumental unless lyrics are given — vocals are always excluded when lyrics is empty. Blocks until finished.',
   {
     prompt: z
       .string()
@@ -162,7 +190,13 @@ tool(
       .string()
       .optional()
       .describe('Sung lyrics; omit or empty for purely instrumental music'),
-    duration: z.number().int().min(10).max(300).optional().describe('Seconds (default 30)'),
+    duration: z
+      .number()
+      .int()
+      .min(10)
+      .max(360)
+      .optional()
+      .describe('Seconds — track-length cap (planner may end the song earlier when the music does). Default 300'),
     steps: z.number().int().min(1).max(60).optional(),
     cfgScale: z.number().min(0).max(10).optional().describe('Guidance (default 1.5)'),
     quality: z.enum(['wav', '320k', 'V0', '128k']).optional().describe('MP3 quality / wav lossless (default 320k)'),
@@ -170,6 +204,82 @@ tool(
     wait: waitSchema,
   },
   (args) => generate('music', args),
+)
+
+const meshRefSchema = z
+  .object({
+    filename: z.string().describe('GLB filename, e.g. outputs[0].filename from a prior generate_3d run'),
+    subfolder: z.string().optional().describe('Output subfolder (e.g. "3d")'),
+    type: z.enum(['output', 'input']).optional().describe('default output'),
+  })
+  .optional()
+  .describe('A GLB already on the ComfyUI server (preferred for big meshes)')
+
+const meshBytesSchema = z
+  .string()
+  .optional()
+  .describe('Raw GLB bytes as data URL / base64 — keep ≤45MB (larger: use mesh.filename instead)')
+
+tool(
+  'generate_3d',
+  'Generate a 3D mesh (GLB) from a picture with the local Pixal3D/TRELLIS.2 pipeline on the ComfyUI server. Blocks until the mesh is ready (5–30 min). Returns the GLB URL.',
+  {
+    imageBase64: z.string().describe('Source picture as data URL (data:image/png;base64,…) or raw base64'),
+    meshMode: z.enum(['pixal3d', 'trellis2']).optional().describe('default pixal3d'),
+    pixalSteps: z.number().int().min(1).max(100).optional().describe('shape sampler steps (default 20)'),
+    pixalGuidance: z.number().min(0).max(20).optional().describe('shape guidance (default 7.5)'),
+    pixalTextureSize: z.number().int().min(512).max(8192).optional().describe('UV atlas px (default 4096)'),
+    pixalDecimation: z
+      .number()
+      .int()
+      .min(5000)
+      .max(5000000)
+      .optional()
+      .describe('triangle budget (default 300000)'),
+    faceFix: z.boolean().optional().describe('face-focused enhance of the source picture first (default true)'),
+  },
+  (args) => generate('3d', args, FLOW_TIMEOUT_MS),
+)
+
+tool(
+  'skin_mesh',
+  'Skin an existing 3D mesh (GLB) from a picture with Hunyuan3D-Paint (PBR baseColor + metallic/roughness). Standalone — mesh comes from a prior generate_3d run or meshBase64. Blocks until the painted mesh is ready (2–10 min).',
+  {
+    imageBase64: z.string().describe('Source picture the texture is painted from (data URL or raw base64)'),
+    mesh: meshRefSchema,
+    meshBase64: meshBytesSchema,
+    hunyuanViewSize: z
+      .number()
+      .int()
+      .min(512)
+      .max(1024)
+      .optional()
+      .describe('per-view render px: 512 standard / 768 high / 1024 ultra (default 768)'),
+    hunyuanTextureSize: z.number().int().min(512).max(8192).optional().describe('paint atlas px (default 4096)'),
+    hunyuanPaintSteps: z.number().int().min(1).max(100).optional().describe('paint diffusion steps (default 12)'),
+    hunyuanGuidance: z.number().min(0).max(20).optional().describe('photo adherence (default 3)'),
+  },
+  (args) => generate('skin', args, FLOW_TIMEOUT_MS),
+)
+
+tool(
+  'upscale_mesh',
+  'Refine/upscale an existing 3D mesh (GLB) with UltraShape 1.0 — guided by the source picture (local, free). Blocks until the refined mesh is ready (5–45 min).',
+  {
+    imageBase64: z.string().describe('The original source picture (data URL or raw base64)'),
+    mesh: meshRefSchema,
+    meshBase64: meshBytesSchema,
+    ultrashapeSteps: z.number().int().min(10).max(200).optional().describe('diffusion steps (default 20)'),
+    ultrashapeGuidance: z.number().min(1).max(15).optional().describe('image conditioning strength (default 5)'),
+    ultrashapeOctree: z
+      .number()
+      .int()
+      .min(256)
+      .max(2048)
+      .optional()
+      .describe('detail resolution — 384 ≈ 8GB VRAM, 512 ≈ 16GB (default 384)'),
+  },
+  (args) => generate('meshupscale', args, FLOW_TIMEOUT_MS),
 )
 
 tool(

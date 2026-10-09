@@ -961,7 +961,7 @@ export default function SettingsModal() {
                         ['ultra', 'Ultra — 8k texture, maximum detail'],
                         ['custom', 'Custom — use the values below as-is'],
                       ]}
-                      hint="Presets stay file-size friendly (~40 MB GLBs): 8k textures triple the file for no visible gain, and past ~30 sampling steps the distilled sampler just burns time. Ultra is the only preset that pushes texture to 8192. Editing any field below switches to Custom."
+                      hint="One pick sets the whole pipeline — mesh generation, Skin (paint) and Upscale (UltraShape) — so every stage stays matched and file-size friendly (~40 MB GLBs): texture 4096 (8192 on Ultra), VRAM-safe upscaler values for 16GB cards. Past ~30 sampling steps the distilled sampler just burns time. Editing any field below switches to Custom."
                     />
                     <SelectField
                       label="Face fix"
@@ -971,7 +971,27 @@ export default function SettingsModal() {
                         ['true', 'On — sharpen the face before mesh gen and during Skin'],
                         ['false', 'Off — use the picture as-is'],
                       ]}
-                      hint="Faces get ~1-2% of the texture, so this runs a face-focused Qwen edit on your picture before generation, then refines the face on the front paint view (views 768px, texture 4096). Precise face masking switches on automatically when models/detection/mediapipe_face_fp32.safetensors is installed (restart ComfyUI after adding it); until then a low-strength whole-image face pass is used. Any failure falls back to your original picture."
+                      hint="Faces get ~1-2% of the texture, so this runs a face-focused Qwen edit on your picture before generation, then refines the face on the front paint view to photoreal quality (views 1024px default, texture 4096). Precise face masking switches on automatically when models/detection/mediapipe_face_fp32.safetensors is installed (restart ComfyUI after adding it); until then a low-strength whole-image face pass is used. Any failure falls back to your original picture."
+                    />
+                    <SelectField
+                      label="Skin face blend"
+                      value={String(localThreeD.hunyuanSkinBlend ?? true)}
+                      onChange={(v) => setLocalThreeD((t) => ({ ...t, hunyuanSkinBlend: v === 'true' }))}
+                      options={[
+                        ['true', 'On — paint only the face, keep generated hair/clothes'],
+                        ['false', 'Off — use the painted texture as-is'],
+                      ]}
+                      hint="Hybrid skin: after Skin finishes, the painted face (eyes, lips, skin detail) is blended back into your generated texture, so the paint pass can't blotch the crown hair or orange-tint the neck. Fails safe — on any mismatch it keeps the painted texture unchanged."
+                    />
+                    <SelectField
+                      label="Skin detail views"
+                      value={String(localThreeD.hunyuanViewUpscale ?? true)}
+                      onChange={(v) => setLocalThreeD((t) => ({ ...t, hunyuanViewUpscale: v === 'true' }))}
+                      options={[
+                        ['true', 'On — sharpen views before bake (much crisper faces)'],
+                        ['false', 'Off — bake from the raw views'],
+                      ]}
+                      hint="The face only gets ~2.5% of the texture atlas, so Skin detail views upscales the front view with a local 4x detail model (and feeds the bake views at 2× size) to fill the atlas's real face density instead of upsampling a soft view. Adds a few seconds; free and local."
                     />
                     <SelectField
                       label="Source pre-enhance"
@@ -1050,9 +1070,47 @@ export default function SettingsModal() {
                       }
                       options={[
                         ['true', 'On — cleans topology for rigging (smooths fine detail)'],
-                        ['false', 'Off — keeps every bit of geometry detail (Ultra)'],
+                        ['false', 'Off — keeps raw geometry but fragments the UV atlas (distance shimmer)'],
                       ]}
-                      hint="Ultra turns this off: voxel remesh is safe for rigging but softens facial geometry. Switch back to On if rigging ever fails"
+                      hint="On for every preset: without the remesh the unwelded mesh breaks the UV unwrap into ~23k tiny charts, and texture mip-mapping then bleeds across them (measured 29% seam jumps at distance vs 9% with remesh). Off only if you need maximum micro-geometry and can accept the shimmer"
+                    />
+                    <p className="text-[11px] font-medium text-text-secondary pt-1">
+                      Hunyuan3D paint — Skin button (texture refine)
+                    </p>
+                    <NumberField
+                      label="View render size (px)"
+                      value={localThreeD.hunyuanViewSize ?? 1024}
+                      onChange={(n) => setLocalThreeD((t) => ({ ...t, hunyuanViewSize: n, qualityPreset: 'custom' }))}
+                      min={128}
+                      max={1024}
+                      step={64}
+                      hint="Per-view repaint resolution — 512 standard / 1024 high+ultra; higher = sharper face and texture, slower Skin. Node caps at 1024."
+                    />
+                    <NumberField
+                      label="Paint texture (px)"
+                      value={localThreeD.hunyuanTextureSize ?? 4096}
+                      onChange={(n) => setLocalThreeD((t) => ({ ...t, hunyuanTextureSize: n, qualityPreset: 'custom' }))}
+                      min={256}
+                      max={8192}
+                      step={512}
+                      hint="Atlas the Skin pass writes — 4096 recommended (same as generation, keeps the file lean)"
+                    />
+                    <NumberField
+                      label="Paint steps"
+                      value={localThreeD.hunyuanPaintSteps ?? 10}
+                      onChange={(n) => setLocalThreeD((t) => ({ ...t, hunyuanPaintSteps: n, qualityPreset: 'custom' }))}
+                      min={1}
+                      max={100}
+                      hint="10 default — Skin is a light refinement pass, returns diminish past ~20 and it just burns time"
+                    />
+                    <NumberField
+                      label="Paint guidance"
+                      value={localThreeD.hunyuanGuidance ?? 3}
+                      onChange={(n) => setLocalThreeD((t) => ({ ...t, hunyuanGuidance: n, qualityPreset: 'custom' }))}
+                      min={0}
+                      max={20}
+                      step={0.1}
+                      hint="How hard the repaint follows your photo (3 default; too high copies source-image artifacts into the texture)"
                     />
                     <SelectField
                       label="MIA precision"
@@ -1102,7 +1160,7 @@ export default function SettingsModal() {
                     <NumberField
                       label="Detail tokens (VRAM)"
                       value={localThreeD.ultrashapeNumLatents ?? 16384}
-                      onChange={(n) => setLocalThreeD((t) => ({ ...t, ultrashapeNumLatents: n }))}
+                      onChange={(n) => setLocalThreeD((t) => ({ ...t, ultrashapeNumLatents: n, qualityPreset: 'custom' }))}
                       min={0}
                       max={131072}
                       step={1024}
@@ -1111,7 +1169,7 @@ export default function SettingsModal() {
                     <NumberField
                       label="Refine steps"
                       value={localThreeD.ultrashapeSteps ?? 20}
-                      onChange={(n) => setLocalThreeD((t) => ({ ...t, ultrashapeSteps: n }))}
+                      onChange={(n) => setLocalThreeD((t) => ({ ...t, ultrashapeSteps: n, qualityPreset: 'custom' }))}
                       min={10}
                       max={200}
                       step={5}
@@ -1120,7 +1178,7 @@ export default function SettingsModal() {
                     <NumberField
                       label="Guidance scale"
                       value={localThreeD.ultrashapeGuidance ?? 5}
-                      onChange={(n) => setLocalThreeD((t) => ({ ...t, ultrashapeGuidance: n }))}
+                      onChange={(n) => setLocalThreeD((t) => ({ ...t, ultrashapeGuidance: n, qualityPreset: 'custom' }))}
                       min={1}
                       max={15}
                       step={0.5}
@@ -1129,7 +1187,7 @@ export default function SettingsModal() {
                     <NumberField
                       label="Detail resolution (octree)"
                       value={localThreeD.ultrashapeOctree ?? 384}
-                      onChange={(n) => setLocalThreeD((t) => ({ ...t, ultrashapeOctree: n }))}
+                      onChange={(n) => setLocalThreeD((t) => ({ ...t, ultrashapeOctree: n, qualityPreset: 'custom' }))}
                       min={256}
                       max={2048}
                       step={64}
@@ -1138,7 +1196,7 @@ export default function SettingsModal() {
                     <NumberField
                       label="Decode chunks"
                       value={localThreeD.ultrashapeNumChunks ?? 8000}
-                      onChange={(n) => setLocalThreeD((t) => ({ ...t, ultrashapeNumChunks: n }))}
+                      onChange={(n) => setLocalThreeD((t) => ({ ...t, ultrashapeNumChunks: n, qualityPreset: 'custom' }))}
                       min={1000}
                       max={50000}
                       step={1000}
@@ -1384,15 +1442,16 @@ export default function SettingsModal() {
           <div className="space-y-3">
             <h3 className="text-sm font-semibold flex items-center gap-2">
               <HardDrive size={14} className="text-pink-400" />
-              Music Models (MiniMax Music 3)
+              Music Models
             </h3>
             <p className="text-[11px] leading-relaxed text-text-muted rounded-lg bg-bg-card border border-border px-3 py-2">
               Music mode generates full songs (style + optional sung lyrics) locally on your
-              ComfyUI. It needs the three MiniMax Music 3 files: the DiT diffusion model, the
-              Music3 text encoder (loaded with CLIP type <span className="font-mono">minimax</span>),
-              and the <span className="font-mono">dav</span> audio VAE. YuE-2 works too — pick its
-              files here. Generated tracks open in the built-in Studio editor for multi-track
-              arrangement (split, trim, fades, layers, WAV export).
+              ComfyUI. Either pick the MiniMax Music 3 set (DiT + text encoder +{' '}
+              <span className="font-mono">dav</span> audio VAE), or select an ACE-Step 1.5
+              unet in the first field — its text-encoder/VAE assets resolve automatically
+              (single AIO checkpoint, or split qwen encoders + ACE VAE). YuE-2 works too —
+              pick its files here. Generated tracks open in the built-in Studio editor for
+              multi-track arrangement (split, trim, fades, layers, WAV export).
             </p>
             <ModelField
               label="Music Diffusion Model (UNET)"

@@ -1,10 +1,10 @@
 import { useEffect, useRef, useCallback } from 'react'
-import useStore from '../store/useStore'
 import {
   queuePrompt,
   getHistory,
   getServerHistory,
   getViewUrl,
+  rebuildViewUrl,
   uploadImage,
   setProgressCallback,
   setPhaseCallback,
@@ -14,21 +14,31 @@ import {
   assertModelsAvailable,
   freeLoadedModels,
   getModelLists,
+  resolveAceStepModels,
+  hasAudioTailTrim,
+  hasReferenceAudioPrep,
+  uploadAudioFile,
 } from '../lib/comfyui'
+import useStore, { pushHistoryEntries } from '../store/useStore'
 import {
   buildImageWorkflow,
   buildVideoWorkflow,
   buildEditWorkflow,
   buildMusicWorkflow,
   isMiniMaxH3,
+  isAceStepModel,
 } from '../lib/workflows'
 
-// Pull ComfyUI's own /history into the store. Outputs live on the
-// server, so every machine pointed at the same ComfyUI sees the same
-// generations — localStorage only holds this browser's own entries.
+// Pull the shared generation history into the store. Primary source is
+// the app's own API (/api/history) — a durable, origin-neutral store that
+// merges live ComfyUI entries with ones pushed by other browsers, so
+// every origin (http://host:5555, https://host, …) converges on the same
+// list even after ComfyUI restarts or clears its in-memory history.
+// Falls back to a direct ComfyUI /history read when the API is offline.
 // Local entries win on id conflict; deleted ones stay hidden.
 export async function syncServerHistory() {
   const st = useStore.getState()
+  const apiBase = resolveApiBase(st.serverUrl, st.useProxy)
   try {
     // Fold in deletions made on other browsers/machines first, so they
     // drop locally before the fresh server list is merged. Best-effort —
@@ -42,9 +52,43 @@ export async function syncServerHistory() {
     } catch {
       /* API offline — nothing to sync */
     }
-    const entries = await getServerHistory(resolveApiBase(st.serverUrl, st.useProxy), 60)
-    st.mergeServerHistory(entries)
-    return { ok: true, count: entries.length }
+    let entries = null
+    let viaApi = false
+    try {
+      const r = await fetch('/api/history?limit=200')
+      if (r.ok) {
+        const data = await r.json()
+        if (Array.isArray(data?.entries)) {
+          entries = data.entries
+          viaApi = true
+        }
+      }
+    } catch {
+      /* API offline — direct ComfyUI read below */
+    }
+    if (!entries) entries = await getServerHistory(apiBase, 60)
+    // Rebuild output URLs against THIS origin: entries recorded elsewhere
+    // point at that origin's proxy (or at direct http:// ComfyUI URLs,
+    // which https pages refuse to load) — both are dead links here.
+    entries = entries.map((e) => {
+      if (!e?.data) return e
+      const url = rebuildViewUrl(e, apiBase)
+      return url && url !== e.data ? { ...e, data: url } : e
+    })
+    // Catch-up: push entries only this browser has (e.g. localStorage
+    // accumulated before history became shared) so other origins see
+    // them too. Ids already in the shared store are skipped, so this
+    // fires once per entry, not on every sync.
+    if (viaApi) {
+      const fetched = new Set(entries.map((e) => String(e.id)))
+      const hidden = new Set(useStore.getState().hiddenHistoryIds.map(String))
+      const localOnly = useStore.getState().history.filter(
+        (h) => h?.id && h?.data && !fetched.has(String(h.id)) && !hidden.has(String(h.id)),
+      )
+      if (localOnly.length) pushHistoryEntries(localOnly)
+    }
+    useStore.getState().mergeServerHistory(entries)
+    return { ok: true, count: entries.length, source: viaApi ? 'shared' : 'server' }
   } catch (err) {
     return { ok: false, error: err.message }
   }
@@ -340,8 +384,36 @@ export function useComfyUI() {
         // Music loads an 8.7 GB text encoder + DIT + audio VAE back-to-back;
         // leftover image/video models push the final VAE decode into OOM
         // (tiled-decode fallback + minutes of retries), so always start
-        // clean regardless of the auto-unload setting.
+        // clean regardless of the auto-unload setting — freed just before
+        // the queue below (nothing in between touches VRAM).
+        // Trim dead-air tails when the AudioTailTrim custom node is installed
+        // (comfy_nodes/AudioTailTrim.py); graphs stay stock without it.
+        const trimAudio = await hasAudioTailTrim(base)
+        const musicModels = {
+          unet: state.models.music?.unet || 'minimax_music3_dit_int8_convrot.safetensors',
+          clip: state.models.music?.clip || 'minimax_music3_text_encoder_pruned_int8_convrot.safetensors',
+          vae: state.models.music?.vae || 'minimax_music3_dav.safetensors',
+        }
+        const aceSelected = isAceStepModel(musicModels.unet)
+        if (aceSelected) {
+          // ACE-Step: clip/vae live in the server's ACE files (AIO checkpoint
+          // or split qwen encoders), not in the MiniMax trio — resolve them
+          // here so the builder gets { ace } (throws with install guidance).
+          musicModels.ace = resolveAceStepModels(await getModelLists(base), musicModels)
+        }
+        // ACE-Step reference audio (timbre/style source): upload into input/
+        // so LoadAudio can pick it up, then thread the filename into the
+        // graph (ReferenceTimbreAudio branch). MiniMax has no such node.
+        // ReferenceAudioPrep (custom node) samples long clips server-side;
+        // probed here and threaded via models.prepReference.
+        let referenceAudioName = ''
+        if (aceSelected && state.referenceAudio?.file) {
+          state.setProgressLabel('Uploading reference audio…')
+          referenceAudioName = await uploadAudioFile(base, state.referenceAudio.file)
+          musicModels.prepReference = await hasReferenceAudioPrep(base)
+        }
         await freeLoadedModels(base)
+        musicModels.trimAudio = trimAudio
         workflow = buildMusicWorkflow({
           caption: state.prompt,
           negativePrompt: state.negativePrompt,
@@ -350,11 +422,12 @@ export function useComfyUI() {
           steps: state.musicSettings.steps,
           cfgScale: state.musicSettings.cfgScale,
           quality: state.musicSettings.quality,
-          models: {
-            unet: state.models.music?.unet || 'minimax_music3_dit_int8_convrot.safetensors',
-            clip: state.models.music?.clip || 'minimax_music3_text_encoder_pruned_int8_convrot.safetensors',
-            vae: state.models.music?.vae || 'minimax_music3_dav.safetensors',
-          },
+          // Duration = the AR planner's max_duration cap (both engines) —
+          // the model sizes the song itself and the tail trim cuts any
+          // silent pad; exact render length when no planner is available.
+          duration: state.musicSettings.duration || 300,
+          referenceAudio: referenceAudioName,
+          models: musicModels,
         })
       } else {
         let videoModels = state.models.video

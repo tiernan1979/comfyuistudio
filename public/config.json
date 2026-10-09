@@ -32,7 +32,7 @@
     "pipeline": "local",
     "pixalModelRepo": "TencentARC/Pixal3D",
     "pixalVramMode": "dynamic_vram",
-    "qualityPreset": "standard",
+    "qualityPreset": "high",
     "pixalPipeline": "1536_cascade",
     "pixalCameraRes": 1024,
     "pixalTextureSize": 4096,

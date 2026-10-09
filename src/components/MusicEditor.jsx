@@ -12,7 +12,8 @@ import {
 } from '../lib/comfyui'
 import { buildMusicWorkflow, buildPartCaption } from '../lib/workflows'
 import { clipEndT, splitClipAt, cutRange, muteRange } from '../lib/trackops'
-import { hpssSplit } from '../lib/hpss'
+import { stemBuffers as splitStemArrays, formatStemInfo } from '../lib/stems'
+import { AI_STEM_DEFS, aiStemsAvailable, separateBufferAI } from '../lib/stemsAI'
 
 // ---------------------------------------------------------------------------
 // Session-scoped project. Lives at module level so closing/reopening the
@@ -41,6 +42,11 @@ function loadBuffer(url) {
       return r.arrayBuffer()
     })
     .then((ab) => getCtx().decodeAudioData(ab))
+    .then((buf) => {
+      const origin = viewOrigin(url)
+      if (origin) bufferOrigin.set(buf, origin)
+      return buf
+    })
     .catch((err) => {
       bufferCache.delete(url) // allow a retry after transient failures
       throw err
@@ -49,107 +55,52 @@ function loadBuffer(url) {
   return p
 }
 
-const bq = (ctx, type, freq, q = 0.7071) => {
-  const f = ctx.createBiquadFilter()
-  f.type = type
-  f.frequency.value = freq
-  f.Q.value = q
-  return f
-}
+const stemCache = new WeakMap() // AudioBuffer -> { drums, bass, vocals, synth, stats }
+const aiStemCache = new WeakMap() // source AudioBuffer -> { <AI stem key>: AudioBuffer }
+// AudioBuffer -> { url, filename, subfolder, type } for buffers fetched from
+// a ComfyUI /view URL. Lets the AI split reuse the file already on the server
+// (input/ → LoadAudio directly, output/ → re-upload its original bytes)
+// instead of WAV-uploading a re-encode that can blow the 100 MB limit (413).
+const bufferOrigin = new WeakMap()
 
-// Render `buffer` through a filter graph built by build(src, ctx).
-function filteredBuffer(buffer, build) {
-  const off = new OfflineAudioContext(buffer.numberOfChannels, buffer.length, buffer.sampleRate)
-  const src = off.createBufferSource()
-  src.buffer = buffer
-  build(src, off)
-  src.start(0)
-  return off.startRendering()
-}
-
-// Sum two same-shape AudioBuffers channel-wise (for joining the synth's
-// highs with the side content of the vocal band).
-function mixBuffers(a, b) {
-  const out = getCtx().createBuffer(a.numberOfChannels, a.length, a.sampleRate)
-  for (let c = 0; c < a.numberOfChannels; c++) {
-    const x = a.getChannelData(c)
-    const y = b.getChannelData(c)
-    const o = out.getChannelData(c)
-    for (let i = 0; i < o.length; i++) o[i] = x[i] + y[i]
+function viewOrigin(url) {
+  try {
+    const u = new URL(url, window.location.origin)
+    const filename = u.searchParams.get('filename')
+    if (!filename) return null
+    return {
+      url,
+      filename,
+      subfolder: u.searchParams.get('subfolder') || '',
+      type: u.searchParams.get('type') || 'output',
+    }
+  } catch {
+    return null
   }
-  return out
 }
 
-// Approximate 4-stem split of one buffer: HPSS (harmonic/percussive
-// separation) for drums, then *complementary* frequency splits of the
-// harmonic part so muting one stem actually removes its content:
-//   Bass   = harmonic 0–150 Hz
-//   Vocals = harmonic 150–7000 Hz, center image (mid channel)
-//   Synth  = harmonic ≥7000 Hz + the SIDES of the 150–7000 band
-//            (panned instruments survive muting the vocals)
-// The four sum back to the original (bass ⊄ synth — an earlier lowpass
-// overlap made muted bass keep playing through the synth stem).
-// The server has no demucs-style nodes, so this is DSP approximation.
-const stemCache = new WeakMap() // AudioBuffer -> { drums, bass, vocals, synth }
-
+// Split a clip into 4 stems via the pure DSP module (lib/stems): HPSS with
+// center-aware band routing. Returns AudioBuffers ready for clips plus
+// per-stem composition stats for the track tooltip. Source track is muted
+// by the caller after splitting.
 async function stemBuffers(buffer) {
   let cached = stemCache.get(buffer)
   if (cached) return cached
-  const n = buffer.numberOfChannels
-  const chData = []
-  for (let c = 0; c < n; c++) {
-    const { harmonic, percussive } = hpssSplit(buffer.getChannelData(c))
-    chData.push({ harmonic, percussive })
-    // let the busy spinner paint between channels of long tracks
-    await new Promise((r) => setTimeout(r, 0))
-  }
-  const mk = (arrays) => {
-    const out = getCtx().createBuffer(arrays.length, buffer.length, buffer.sampleRate)
-    arrays.forEach((a, i) => out.copyToChannel(a, i))
+  const channels = []
+  for (let c = 0; c < buffer.numberOfChannels; c++) channels.push(buffer.getChannelData(c))
+  const res = await splitStemArrays(channels, { sampleRate: buffer.sampleRate })
+  const ab = (arrs) => {
+    const out = getCtx().createBuffer(arrs.length, buffer.length, buffer.sampleRate)
+    arrs.forEach((a, i) => out.copyToChannel(a, i))
     return out
   }
-  const drums = mk(chData.map((c) => c.percussive))
-  const harmonicBuf = mk(chData.map((c) => c.harmonic))
-  const bass = await filteredBuffer(harmonicBuf, (src, ctx) => {
-    const f = bq(ctx, 'lowpass', 150)
-    src.connect(f)
-    f.connect(ctx.destination)
-  })
-  // Center (mid) and side signals of the harmonic part.
-  const h0 = chData[0].harmonic
-  const h1 = n > 1 ? chData[1].harmonic : null
-  const mid = new Float32Array(buffer.length)
-  const side = new Float32Array(buffer.length)
-  for (let i = 0; i < mid.length; i++) {
-    mid[i] = h1 ? (h0[i] + h1[i]) * 0.5 : h0[i]
-    if (h1) side[i] = (h0[i] - h1[i]) * 0.5
+  cached = {
+    drums: ab(res.drums),
+    bass: ab(res.bass),
+    vocals: ab(res.vocals),
+    synth: ab(res.synth),
+    stats: res.stats,
   }
-  const sideNeg = new Float32Array(buffer.length)
-  for (let i = 0; i < sideNeg.length; i++) sideNeg[i] = -side[i]
-  // Vocals: center image, 150–7000 Hz (mid duplicated to both channels so
-  // it plays dead-center; approximation, not AI separation).
-  const vocals = await filteredBuffer(mk([mid, mid]), (src, ctx) => {
-    const hp = bq(ctx, 'highpass', 150)
-    const lp = bq(ctx, 'lowpass', 7000)
-    src.connect(hp)
-    hp.connect(lp)
-    lp.connect(ctx.destination)
-  })
-  // The sides of that same band (mid/side mirrored so left stays left).
-  const sideBand = await filteredBuffer(mk([side, sideNeg]), (src, ctx) => {
-    const hp = bq(ctx, 'highpass', 150)
-    const lp = bq(ctx, 'lowpass', 7000)
-    src.connect(hp)
-    hp.connect(lp)
-    lp.connect(ctx.destination)
-  })
-  const highs = await filteredBuffer(harmonicBuf, (src, ctx) => {
-    const hp = bq(ctx, 'highpass', 7000)
-    src.connect(hp)
-    hp.connect(ctx.destination)
-  })
-  const synth = mixBuffers(highs, sideBand)
-  cached = { drums, bass, vocals, synth }
   stemCache.set(buffer, cached)
   return cached
 }
@@ -190,6 +141,17 @@ function encodeWav(buf) {
     }
   }
   return new Blob([ab], { type: 'audio/wav' })
+}
+
+// The separation nodes' demixer crashes on mono audio ('DemixerDemucs'
+// object has no attribute 'ch' — verified against the live server), so
+// mono clips are upmixed to stereo before upload.
+function toStereoWav(buf) {
+  if (buf.numberOfChannels >= 2) return encodeWav(buf)
+  const st = getCtx().createBuffer(2, buf.length, buf.sampleRate)
+  st.copyToChannel(buf.getChannelData(0), 0)
+  st.copyToChannel(buf.getChannelData(0), 1)
+  return encodeWav(st)
 }
 
 const COLORS = ['#818cf8', '#34d399', '#f472b6', '#fbbf24', '#60a5fa', '#a78bfa', '#2dd4bf', '#fb923c']
@@ -363,6 +325,8 @@ export default function MusicEditor() {
   const outputAudio = useStore((s) => s.outputAudio)
   const history = useStore((s) => s.history)
   const deletedUrls = useStore((s) => s.deletedUrls)
+  const serverUrl = useStore((s) => s.serverUrl)
+  const useProxy = useStore((s) => s.useProxy)
 
   const [tracks, setTracks] = useState(project.tracks)
   const [selected, setSelected] = useState(null) // { trackId, clipId }
@@ -375,6 +339,7 @@ export default function MusicEditor() {
   const [masterVol, setMasterVol] = useState(1)
   const [busy, setBusy] = useState('')
   const [err, setErr] = useState('')
+  const [aiSplit, setAiSplit] = useState(null) // null = checking, else { ok, missing, unreachable }
   const [showHistory, setShowHistory] = useState(false)
   const [showPart, setShowPart] = useState(false)
   const [partPrompt, setPartPrompt] = useState('')
@@ -402,6 +367,23 @@ export default function MusicEditor() {
 
   const dur = durationOf(tracks)
   const contentW = Math.max((dur + 3) * zoom, 10 * zoom)
+
+  // Probe for the server-side separation node packs whenever the server
+  // changes — only drives the AI button's tooltip; the click handler
+  // re-checks anyway, so a stale probe can never hard-block the feature.
+  useEffect(() => {
+    let alive = true
+    aiStemsAvailable(resolveApiBase(serverUrl, useProxy))
+      .then((r) => {
+        if (alive) setAiSplit(r)
+      })
+      .catch(() => {
+        if (alive) setAiSplit({ ok: false, missing: [], unreachable: true })
+      })
+    return () => {
+      alive = false
+    }
+  }, [serverUrl, useProxy])
 
   // Keep imperative mirrors in sync
   useEffect(() => {
@@ -745,13 +727,31 @@ export default function MusicEditor() {
     [addTrackFromBuffer]
   )
 
-  // When opened from the player, pull the current output into the project
+  // When opened from the player, pull the current output into the project.
+  // The session arrangement is per-song: if the target audio isn't in the
+  // current project, reset first — open for track A, close, open for track
+  // B and you get B's clean timeline instead of A's (re-opening the SAME
+  // song keeps your arrangement, edits and stem tracks).
   useEffect(() => {
     if (!open || !outputAudio) return
-    if (!project.tracks.some((t) => t.clips.some((c) => c.url === outputAudio))) {
-      addFromUrl(outputAudio, filenameFromViewUrl(outputAudio))
+    if (project.tracks.some((t) => t.clips.some((c) => c.url === outputAudio))) return
+    if (project.tracks.length > 0) {
+      if (playingRef.current) pause()
+      stopSources()
+      project.tracks = []
+      project.nextTrack = 1
+      project.nextClip = 1
+      undoRef.current = []
+      redoRef.current = []
+      tracksRef.current = []
+      setTracks([])
+      setSelected(null)
+      setRangeSel(null)
+      setPosition(0)
+      setErr('')
     }
-  }, [open, outputAudio, addFromUrl])
+    addFromUrl(outputAudio, filenameFromViewUrl(outputAudio))
+  }, [open, outputAudio, addFromUrl, pause, stopSources])
 
   // Stop playback when the editor closes
   useEffect(() => {
@@ -889,8 +889,8 @@ export default function MusicEditor() {
     if (mid) setSelected({ trackId: track.id, clipId: mid.id })
   }
 
-  // Approximate drum/bass/vocals/synth split (HPSS + bands — the server
-  // has no AI stem-separation nodes). Source track is muted after splitting.
+  // Drum/bass/vocals/synth split (fast DSP: HPSS + center-aware bands).
+  // Source track is muted after.
   const splitIntoStems = async () => {
     if (!selected) {
       setErr('Select a clip first, then split it into stems.')
@@ -904,8 +904,10 @@ export default function MusicEditor() {
     try {
       const baseIdx = tracksRef.current.indexOf(track)
       const perStem = STEM_DEFS.map(() => [])
+      let stemStats = null
       for (const c of track.clips) {
         const st = await stemBuffers(c.buffer)
+        if (!stemStats) stemStats = st.stats
         STEM_DEFS.forEach((def, i) => {
           perStem[i].push({ ...c, id: project.nextClip++, buffer: st[def.key] })
         })
@@ -919,6 +921,7 @@ export default function MusicEditor() {
         mute: false,
         solo: false,
         clips: perStem[i],
+        stemInfo: stemStats ? formatStemInfo(stemStats[def.key]) : '',
       }))
       const next = [
         ...tracksRef.current.slice(0, baseIdx + 1),
@@ -930,6 +933,104 @@ export default function MusicEditor() {
       setRangeSel(null)
     } catch (e) {
       setErr(`Stem split failed: ${e.message}`)
+    } finally {
+      setBusy('')
+    }
+  }
+
+  // Server-side AI split: htdemucs 6-source → UVR Karaoke lead/backing +
+  // FoxJoy Reverb dry/reverb of demucs "other". Slow (~1–2 min per clip) so
+  // per-clip results are cached; falls back with an install hint when the
+  // node packs are missing.
+  const splitIntoStemsAI = async () => {
+    if (!selected) {
+      setErr('Select a clip first, then split it into stems.')
+      return
+    }
+    const track = tracksRef.current.find((t) => t.id === selected.trackId)
+    if (!track) return
+    setErr('')
+    const st = useStore.getState()
+    const base = resolveApiBase(st.serverUrl, st.useProxy)
+    setBusy('AI split: checking server nodes…')
+    await new Promise((r) => setTimeout(r, 40)) // paint the spinner first
+    try {
+      const avail = await aiStemsAvailable(base)
+      setAiSplit(avail)
+      if (!avail.ok) {
+        throw new Error(
+          avail.unreachable
+            ? 'could not reach ComfyUI to verify separation nodes — check the server URL in Settings.'
+            : `node pack(s) not installed on the server: ${avail.missing.join(', ')} — install set-soft/AudioSeparation (cd ComfyUI/custom_nodes && git clone https://github.com/set-soft/AudioSeparation && pip install seconohe), then restart ComfyUI. The fast DSP split still works.`
+        )
+      }
+      const baseIdx = tracksRef.current.indexOf(track)
+      const perStem = AI_STEM_DEFS.map(() => [])
+      for (const c of track.clips) {
+        let stems = aiStemCache.get(c.buffer)
+        if (!stems) {
+          // Prefer the file already on the server over a WAV re-upload:
+          // input/ files go straight to LoadAudio, output/ files get their
+          // original bytes (mp3) copied into input/. WAV upload is only the
+          // fallback for clips added from the local disk.
+          const origin = bufferOrigin.get(c.buffer)
+          let src
+          if (origin && origin.type === 'input') {
+            src = {
+              inputName: origin.subfolder ? `${origin.subfolder}/${origin.filename}` : origin.filename,
+            }
+          } else if (origin) {
+            src = { originUrl: origin.url }
+          } else {
+            src = { wavBlob: toStereoWav(c.buffer) }
+          }
+          const tag = `${Date.now().toString(36)}-${c.id}`
+          const blobs = await separateBufferAI({ base, ...src, tag, onPhase: setBusy })
+          // MP3 padding makes files slightly longer than the clip — trim to
+          // the source duration so timeline offsets stay exact. All stems
+          // share one encoder delay, so they stay mutually aligned.
+          const wantDur = c.buffer.length / c.buffer.sampleRate
+          stems = {}
+          for (const def of AI_STEM_DEFS) {
+            const ab = await blobs.get(def.key).arrayBuffer()
+            let decoded = await getCtx().decodeAudioData(ab)
+            const want = Math.round(decoded.sampleRate * wantDur)
+            if (decoded.length > want) {
+              const trimmed = getCtx().createBuffer(decoded.numberOfChannels, want, decoded.sampleRate)
+              for (let ch = 0; ch < decoded.numberOfChannels; ch++) {
+                trimmed.copyToChannel(decoded.getChannelData(ch).subarray(0, want), ch)
+              }
+              decoded = trimmed
+            }
+            stems[def.key] = decoded
+          }
+          aiStemCache.set(c.buffer, stems)
+        }
+        AI_STEM_DEFS.forEach((def, i) => {
+          perStem[i].push({ ...c, id: project.nextClip++, buffer: stems[def.key] })
+        })
+      }
+      const newTracks = AI_STEM_DEFS.map((def, i) => ({
+        id: project.nextTrack++,
+        name: `${track.name} · ${def.name}`,
+        color: def.color,
+        gain: 1,
+        pan: 0,
+        mute: false,
+        solo: false,
+        clips: perStem[i],
+        stemInfo: '',
+      }))
+      const next = [
+        ...tracksRef.current.slice(0, baseIdx + 1),
+        ...newTracks,
+        ...tracksRef.current.slice(baseIdx + 1),
+      ].map((t) => (t.id === track.id ? { ...t, mute: true } : t))
+      pushUndoNow()
+      commit(next)
+      setRangeSel(null)
+    } catch (e) {
+      setErr(`AI stem split failed: ${e.message}`)
     } finally {
       setBusy('')
     }
@@ -1437,9 +1538,22 @@ export default function MusicEditor() {
               disabled={!selected || !!busy}
               data-testid="stems-button"
               className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs bg-purple-500/15 text-purple-300 hover:bg-purple-500/25 disabled:opacity-40"
-              title="Split the selected clip into drums / bass / vocals / synth (HPSS approximation — no AI stem model on the server)"
+              title="Fast DSP split (HPSS + center-aware bands): drums / bass / vocals / synth — instant, no models needed"
             >
               <Layers size={13} /> Stems
+            </button>
+            <button
+              onClick={splitIntoStemsAI}
+              disabled={!selected || !!busy}
+              data-testid="ai-stems-button"
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25 disabled:opacity-40"
+              title={
+                aiSplit && !aiSplit.ok
+                  ? 'AI separation is not available: the set-soft/AudioSeparation node pack is not installed on the ComfyUI server — the fast DSP Stems button still works'
+                  : "Server AI split (htdemucs 6-source): drums / bass / guitar / piano / other / reverb + lead / backing — accurate, ~1–2 min per clip"
+              }
+            >
+              <Sparkles size={13} /> AI Stems
             </button>
 
             <span className="w-px h-6 bg-border mx-1" />
@@ -1734,7 +1848,7 @@ export default function MusicEditor() {
                         <span className="w-2 h-2 rounded-full shrink-0" style={{ background: track.color }} />
                         <span
                           className="text-[11px] text-text-secondary truncate flex-1 cursor-text hover:text-text-primary"
-                          title={`${track.name} — double-click to rename`}
+                          title={`${track.name}${track.stemInfo ? ` — ${track.stemInfo}` : ''} — double-click to rename`}
                           onDoubleClick={() => renameTrack(track)}
                         >
                           {track.name}

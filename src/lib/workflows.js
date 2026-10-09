@@ -26,6 +26,7 @@ export function buildImageWorkflow({
   cfg = 4,
   turboMode = false,
   models,
+  upscaleModel = '', // models/upscale_models/*.pth — 4x detail upscale after decode
 }) {
   const { width, height } = ASPECT_RATIOS[aspectRatio] || ASPECT_RATIOS['1:1']
   const actualSeed = seed === -1 ? Math.floor(Math.random() * 2 ** 48) : seed
@@ -132,6 +133,18 @@ export function buildImageWorkflow({
       },
     }
     workflow['3'].inputs.model = ['66', 0]
+  }
+
+  // Optional post-decode detail upscale (API settings.upscale, e.g.
+  // 4x-UltraSharp.pth) — same UpscaleModelLoader + ImageUpscaleWithModel
+  // pair the video 1080p-fast preset uses.
+  if (upscaleModel) {
+    workflow['9'] = { class_type: 'UpscaleModelLoader', inputs: { model_name: upscaleModel } }
+    workflow['10'] = {
+      class_type: 'ImageUpscaleWithModel',
+      inputs: { upscale_model: ['9', 0], image: ['8', 0] },
+    }
+    workflow['60'].inputs.images = ['10', 0]
   }
 
   return workflow
@@ -270,11 +283,29 @@ export const FACE_ENHANCE_NEG =
   'changed background, blurry, low quality'
 
 const FACE_PAINT_PROMPT =
-  'Fix and sharpen the face in this rendered character view: crisp eyes with clear irises and ' +
-  'eyelids, defined eyelashes, natural skin detail, clean lips. Keep the pose, outfit, colors, ' +
-  'lighting and background exactly the same — no style change.'
+  'Refine the face in this rendered character view to photoreal quality: crisp detailed eyes ' +
+  'with clear dark irises, visible pupils, defined eyelids, eyelashes and subtle catchlights, ' +
+  'natural skin pores and fine skin texture, defined lips, realistic stubble or beard hair ' +
+  'detail where present. Reduce hair and skin glossiness — matte natural finish, not plastic ' +
+  'or shiny. Keep the identity, pose, expression, outfit, colors, lighting and background ' +
+  'exactly the same — photoreal skin and features only, not a cartoon, painting or illustration.'
 const FACE_PAINT_NEG =
-  'deformed face, melted features, warped eyes, plastic skin, changed outfit, changed pose, blur'
+  'deformed face, melted features, warped eyes, blank eyes, empty eyes, no iris, no pupil, ' +
+  'plastic or waxy skin, overly shiny hair, glossy hair, cartoon, anime, painting, ' +
+  'illustration, doll-like, airbrushed, changed outfit, changed pose, blur'
+
+// Full-view cleanup for paint-model artifacts: dark speckles, discolored
+// fingertips, blotches. Runs as ONE batched img2img across all 6 views
+// (KSampler denoises each batch item independently) before the face fix.
+// Light denoise — cleans artifacts without redrawing the view.
+const VIEW_CLEANUP_PROMPT =
+  'Remove dark speckles, spots, dirt marks, blotches and rendering artifacts from this ' +
+  '3D model texture view. Restore clean even skin tone on hands and fingers including ' +
+  'fingertips, clean natural fabric. Keep the character, clothing, colors, pose and ' +
+  'composition exactly the same — artifact removal only.'
+const VIEW_CLEANUP_NEG =
+  'dark spots, speckles, dirt, blotches, discoloration, artifacts, dark fingertips, ' +
+  'stains, changed colors, changed outfit, changed pose, blur, style change'
 
 // Shared face-mask softening: MediaPipeFaceMask is a hard-edged polygon fill,
 // which would leave a visible seam where the edit meets the untouched image.
@@ -1395,6 +1426,7 @@ export function buildPaintWorkflow({
   seed = 42,
   outputName = 'painted',
   faceFix = null, // { faceModelName, editModels, denoise } | null
+  viewUpscale = true, // detail-upscale views before the bake (face sharpness)
 }) {
   const wf = {
     '1': { class_type: 'MeshToolsLoad', inputs: { mesh_path: meshPath } },
@@ -1445,8 +1477,106 @@ export function buildPaintWorkflow({
       },
     },
   }
-  if (faceFix) applyPaintFaceFix(wf, faceFix)
+  // Full-view artifact cleanup (speckles, dark fingertips): one batched
+  // img2img across all 6 views. Requires the Qwen edit models, same as the
+  // face fix. Chained before the face fix so both read/write the same batch.
+  let albedoSrc = ['4', 1]
+  if (faceFix?.editModels) {
+    const cleaned = applyViewCleanup(wf, { editModels: faceFix.editModels })
+    albedoSrc = [cleaned, 0]
+    wf['5'].inputs.albedo = albedoSrc
+  }
+  if (faceFix) applyPaintFaceFix(wf, { ...faceFix, albedoSrc })
+  if (viewUpscale) applyViewUpscale(wf, viewSize)
   return wf
+}
+
+// Detail-upscale of the baked views. The atlas only gives the face ~2.5% of
+// 4096² (≈650² texels, fragmented islands), while the front view's face is
+// ~300² px at view_size 768 — so the bake upsampled a soft view into a
+// higher-density atlas and the face came out mushy. Feeding the bake views
+// at 2× size with the face view sharpened by 4x-UltraSharp (local model)
+// fills the atlas's real face density. The UltraSharp pass only runs for
+// views ≤768px (its 4× output stays ≤3072² — larger inputs would OOM the
+// conv); bigger views just get a lanczos 2× (they already carry the pixels).
+function applyViewUpscale(wf, viewSize) {
+  const target = Math.min(Math.max(viewSize * 2, 1024), 2048)
+  const albedoSrc = wf['5'].inputs.albedo // ['4',1] or the faceFix-refined batch
+  // Node ids: 7-9 + 17-21 — 10-16 belong to faceFix (13-16 = mediapipe mask).
+  if (viewSize <= 768) {
+    wf['7'] = { class_type: 'UpscaleModelLoader', inputs: { model_name: '4x-UltraSharp.pth' } }
+    wf['8'] = { class_type: 'ImageFromBatch', inputs: { image: albedoSrc, batch_index: 0, length: 1 } }
+    wf['9'] = { class_type: 'ImageUpscaleWithModel', inputs: { upscale_model: ['7', 0], image: ['8', 0] } }
+    wf['17'] = {
+      class_type: 'ImageScale',
+      inputs: { image: ['9', 0], upscale_method: 'lanczos', width: target, height: target, crop: 'disabled' },
+    }
+    wf['18'] = { class_type: 'ImageFromBatch', inputs: { image: albedoSrc, batch_index: 1, length: 5 } }
+    wf['19'] = {
+      class_type: 'ImageScale',
+      inputs: { image: ['18', 0], upscale_method: 'lanczos', width: target, height: target, crop: 'disabled' },
+    }
+    wf['20'] = { class_type: 'ImageBatch', inputs: { image1: ['17', 0], image2: ['19', 0] } }
+    wf['5'].inputs.albedo = ['20', 0]
+  } else {
+    wf['20'] = {
+      class_type: 'ImageScale',
+      inputs: { image: albedoSrc, upscale_method: 'lanczos', width: target, height: target, crop: 'disabled' },
+    }
+    wf['5'].inputs.albedo = ['20', 0]
+  }
+  wf['21'] = {
+    class_type: 'ImageScale',
+    inputs: { image: ['4', 2], upscale_method: 'lanczos', width: target, height: target, crop: 'disabled' },
+  }
+  wf['5'].inputs.mr = ['21', 0]
+}
+
+// Batched full-view artifact cleanup: one KSampler pass over the whole
+// 6-view albedo batch. Returns the node ID of the cleaned batch so the
+// face fix and bake can read from it instead of the raw paint output.
+function applyViewCleanup(wf, { editModels }) {
+  // Reuse the Qwen loaders the face fix installs (37/38/39).
+  wf['37'] = { class_type: 'UNETLoader', inputs: { unet_name: editModels.unet, weight_dtype: 'default' } }
+  wf['38'] = {
+    class_type: 'CLIPLoader',
+    inputs: { clip_name: editModels.clip, type: 'qwen_image', device: 'default' },
+  }
+  wf['39'] = { class_type: 'VAELoader', inputs: { vae_name: editModels.vae } }
+  // Conditioning from view 0 only (text encoders are not guaranteed to take
+  // a batch); the latent encodes the full 6-view batch and KSampler
+  // broadcasts the conditioning across it.
+  wf['197'] = { class_type: 'ImageFromBatch', inputs: { image: ['4', 1], batch_index: 0, length: 1 } }
+  wf['190'] = {
+    class_type: 'TextEncodeQwenImageEdit',
+    inputs: { clip: ['38', 0], vae: ['39', 0], image: ['197', 0], prompt: VIEW_CLEANUP_PROMPT },
+  }
+  wf['191'] = {
+    class_type: 'TextEncodeQwenImageEdit',
+    inputs: { clip: ['38', 0], vae: ['39', 0], image: ['197', 0], prompt: VIEW_CLEANUP_NEG },
+  }
+  wf['192'] = { class_type: 'VAEEncode', inputs: { pixels: ['4', 1], vae: ['39', 0] } }
+  wf['193'] = { class_type: 'ModelSamplingAuraFlow', inputs: { model: ['37', 0], shift: 3 } }
+  wf['194'] = { class_type: 'CFGNorm', inputs: { model: ['193', 0], strength: 1 } }
+  wf['195'] = {
+    class_type: 'KSampler',
+    inputs: {
+      model: ['194', 0],
+      positive: ['190', 0],
+      negative: ['191', 0],
+      latent_image: ['192', 0],
+      seed: 1234,
+      control_after_generate: 'fixed',
+      steps: 12,
+      cfg: 2.5,
+      sampler_name: 'euler',
+      scheduler: 'simple',
+      // Low denoise: only redraws artifact pixels; structure stays intact.
+      denoise: 0.25,
+    },
+  }
+  wf['196'] = { class_type: 'VAEDecode', inputs: { samples: ['195', 0], vae: ['39', 0] } }
+  return '196'
 }
 
 // Face pass inside the paint run: after the 6 views are generated (node 4)
@@ -1456,8 +1586,9 @@ export function buildPaintWorkflow({
 // untouched. With a MediaPipe model the edit is confined to a blurred face
 // mask; without one it's a low-denoise global refine of the front view
 // (the front view dominates the bake at view weight 1.0).
-function applyPaintFaceFix(wf, { faceModelName = '', editModels, denoise = 0.35 }) {
-  wf['10'] = { class_type: 'ImageFromBatch', inputs: { image: ['4', 1], batch_index: 0, length: 1 } }
+// `albedoSrc` lets the caller chain after a view-cleanup pass.
+function applyPaintFaceFix(wf, { faceModelName = '', editModels, denoise = 0.45, albedoSrc = ['4', 1] }) {
+  wf['10'] = { class_type: 'ImageFromBatch', inputs: { image: albedoSrc, batch_index: 0, length: 1 } }
 
   let refined = ['78', 0]
   if (faceModelName) {
@@ -1522,7 +1653,7 @@ function applyPaintFaceFix(wf, { faceModelName = '', editModels, denoise = 0.35 
       latent_image: ['88', 0],
       seed: 1234,
       control_after_generate: 'fixed',
-      steps: 14,
+      steps: 18,
       cfg: 2.5,
       sampler_name: 'euler',
       scheduler: 'simple',
@@ -1531,8 +1662,9 @@ function applyPaintFaceFix(wf, { faceModelName = '', editModels, denoise = 0.35 
   }
   wf['78'] = { class_type: 'VAEDecode', inputs: { samples: ['73', 0], vae: ['39', 0] } }
 
-  // Rebuild the 6-view albedo batch: refined front + views 1..5 untouched.
-  wf['62'] = { class_type: 'ImageFromBatch', inputs: { image: ['4', 1], batch_index: 1, length: 5 } }
+  // Rebuild the 6-view albedo batch: refined front + views 1..5 from the
+  // same source the front view came from (raw paint or post-cleanup).
+  wf['62'] = { class_type: 'ImageFromBatch', inputs: { image: albedoSrc, batch_index: 1, length: 5 } }
   wf['63'] = { class_type: 'ImageBatch', inputs: { image1: refined, image2: ['62', 0] } }
   wf['5'].inputs.albedo = ['63', 0]
 }
@@ -1619,14 +1751,17 @@ export function buildMusicWorkflow({
   negativePrompt = '', // merged into an in-caption "no X, no Y" ban clause
   lyrics = '', // sung lyrics; '' = default section map (instrumental)
   structure = true, // inject STRUCTURE_TAGS when lyrics are empty
-  // Cap in seconds for the AR structure planner (node's own default).
-  // No UI control anymore — the planner ends the song when it wants to
-  // (`<|audio_end|>`); this only bounds how long it may keep planning.
-  duration = 120,
+  // Cap in seconds for the AR structure planner (the music "Max length"
+  // knob, 10–360). The planner ends the song when the music is done —
+  // this only bounds how long it may keep planning (default 5 minutes).
+  // Part/stem generation passes its own short duration explicitly.
+  duration = 300,
   seed = -1,
   steps = 30, // official template default
   cfgScale = 1.7, // MiniMaxMusic3TextEncode.cfg_scale (official template)
   quality = '320k', // 'wav' | '320k' | 'V0' | '128k'
+  // ACE-Step only: uploaded reference-audio filename (timbre/style source).
+  referenceAudio = '',
   models,
 }) {
   const actualSeed = seed === -1 ? Math.floor(Math.random() * 2 ** 48) : seed
@@ -1648,6 +1783,24 @@ export function buildMusicWorkflow({
     ...(negativePrompt || '').split(/[,;\n]+/).map((x) => x.trim().replace(/[.\s]+$/, '')).filter(Boolean),
   ]
   const fullCaption = baseCaption + bannedClause(negItems, baseCaption)
+
+  // ACE-Step 1.5 (ComfyUI-ACE-Step) shares the MiniMax music slot but has a
+  // completely different stack (qwen ACE text encoders / AIO checkpoint, its
+  // own latent + encoder). Detect it and build its graph from the resolved
+  // { ace } assets instead of the MiniMax trio.
+  if (isAceStepModel(models.unet) || models.ace) {
+    if (!models.ace) {
+      throw new Error(
+        `ACE-Step music model "${models.unet}" needs its text encoder/VAE resolved on the ComfyUI server — ` +
+          'either the AIO checkpoint (ace_step_1.5_*_aio*.safetensors) or the split set ' +
+          '(qwen_0.6b_ace15 + qwen_1.7b_ace15 text encoders + ace_1.5_vae). ' +
+          'Install the missing files or pick MiniMax Music 3 in Settings → Music Models.',
+      )
+    }
+    return buildAceStepWorkflow({
+      caption: fullCaption, lyrics: lyricText, duration, seed: actualSeed, quality, cfgScale, referenceAudio, models,
+    })
+  }
 
   const wf = {
     '37': {
@@ -1742,11 +1895,24 @@ export function buildMusicWorkflow({
     },
   }
 
+  // Dead-air trim (custom node comfy_nodes/AudioTailTrim.py): MiniMax fills
+  // the planned length exactly, so when the song is musically done early
+  // the tail is silence codes (measured up to 7.5s on a 30s track). Trim
+  // before save so the stored mp3 every client downloads is clean.
+  let saveAudio = ['8', 0]
+  if (models.trimAudio) {
+    wf['55'] = {
+      class_type: 'AudioTailTrim',
+      inputs: { audio: ['8', 0], threshold_db: -50, min_silence: 0.4, keep_tail: 0.3 },
+    }
+    saveAudio = ['55', 0]
+  }
+
   if (quality === 'wav') {
     wf['60'] = {
       class_type: 'SaveAudio',
       inputs: {
-        audio: ['8', 0],
+        audio: saveAudio,
         filename_prefix: 'music/track',
       },
     }
@@ -1754,13 +1920,213 @@ export function buildMusicWorkflow({
     wf['60'] = {
       class_type: 'SaveAudioMP3',
       inputs: {
-        audio: ['8', 0],
+        audio: saveAudio,
         filename_prefix: 'music/track',
         quality: quality === 'V0' || quality === '128k' || quality === '320k' ? quality : '320k',
       },
     }
   }
 
+  return wf
+}
+
+// ACE-Step 1.5 family (ComfyUI-ACE-Step pack) — the other music model that
+// lives in ComfyUI/models/unet (or diffusion_models) and is selected via
+// Settings → Music Models. Kept in sync with looksLikeMusicModel in
+// comfyui.js (suite test asserts the families agree).
+export const ACE_STEP_RE = /(^|[^a-z])(ace[-_ ]?step|acestep)([^a-z]|$)/i
+export function isAceStepModel(name) {
+  return ACE_STEP_RE.test(String(name || ''))
+}
+
+// ACE-Step 1.5 graph — mirrors the official workflow templates
+// (audio_ace_step_1_5_split / _checkpoint): loader → ModelSamplingAuraFlow(3)
+// → TextEncodeAceStepAudio1.5 → ConditioningZeroOut → EmptyAceStep1.5LatentAudio
+// → KSampler (8 / euler / simple / cfg 1) → VAEDecodeAudio → SaveAudio*.
+// Two shapes:
+//   { kind: 'split', unet, clip1, clip2, vae }  — UNETLoader + DualCLIPLoader(type 'ace')
+//   { kind: 'aio', checkpoint }                 — CheckpointLoaderSimple carries all three
+// Optional `ace.plannerClip` (MiniMax music3 text encoder, resolved by
+// resolveAceStepModels when the server has it) adds the MiniMax AR structure
+// planner node — it outputs a planned length, auto-sizing the track like
+// MiniMax (no hard-set time). `duration` then becomes the planner's
+// max_duration CAP; without the planner node it stays the exact render length.
+export function buildAceStepWorkflow({
+  caption = '',
+  lyrics = '',
+  // Planned-length cap in seconds when the AR planner node is present
+  // (MiniMax semantics — model may end earlier, e.g. 24s for a two-line
+  // lyric); exact render length otherwise. TE duration and the latent
+  // window stay linked either way (official templates wire both from one
+  // PrimitiveNode). Default 300 = 5-minute app default; non-positive
+  // values (e.g. the -1 auto-sentinel, which ComfyUI's schema rejects at
+  // min 0 anyway) fall back to 300.
+  duration = 300,
+  seed = -1,
+  quality = '320k',
+  // Planning CFG for the MiniMax AR structure planner (matches the MiniMax
+  // path's TE cfg; ACE's own sampler cfg stays distilled at 1).
+  cfgScale = 1.7,
+  // Uploaded reference-audio filename (LoadAudio combo value in input/).
+  // When set, the graph encodes it with the ACE VAE and injects it as
+  // timbre conditioning (ReferenceTimbreAudio) — the model uses it as a
+  // style/voice reference while still following the caption + lyrics.
+  referenceAudio = '',
+  models = {},
+}) {
+  const ace = models.ace
+  if (!ace) throw new Error('buildAceStepWorkflow needs models.ace — resolve the ACE assets first')
+  const actualSeed = seed === -1 ? Math.floor(Math.random() * 2 ** 48) : seed
+  const dur = Number(duration) > 0 ? Number(duration) : 300
+  const hasPlanner = !!ace.plannerClip
+  // AR planner length (node a11 output 1: FLOAT seconds) drives both the
+  // TE duration and the latent window; static `dur` otherwise.
+  const planned = hasPlanner ? ['a11', 1] : dur
+  const wf = {}
+  let modelSrc, clipSrc, vaeSrc
+  if (ace.kind === 'aio') {
+    wf['a1'] = { class_type: 'CheckpointLoaderSimple', inputs: { ckpt_name: ace.checkpoint } }
+    modelSrc = ['a1', 0]
+    clipSrc = ['a1', 1]
+    vaeSrc = ['a1', 2]
+  } else {
+    wf['a1'] = { class_type: 'UNETLoader', inputs: { unet_name: ace.unet, weight_dtype: 'default' } }
+    wf['a2'] = {
+      class_type: 'DualCLIPLoader',
+      inputs: { clip_name1: ace.clip1, clip_name2: ace.clip2, type: 'ace', device: 'default' },
+    }
+    wf['a3'] = { class_type: 'VAELoader', inputs: { vae_name: ace.vae } }
+    modelSrc = ['a1', 0]
+    clipSrc = ['a2', 0]
+    vaeSrc = ['a3', 0]
+  }
+  wf['a4'] = { class_type: 'ModelSamplingAuraFlow', inputs: { model: modelSrc, shift: 3 } }
+  if (hasPlanner) {
+    // MiniMax AR structure planner (same node the MiniMax music path uses):
+    // output 1 is a planned FLOAT length. Live probe: tiny lyric → 24s,
+    // full song → 151s, both from one 360s cap. The planner's output feeds
+    // ONLY a5.duration + a7.seconds — conditioning stays on the ACE chain.
+    wf['a10'] = {
+      class_type: 'CLIPLoader',
+      inputs: { clip_name: ace.plannerClip, type: 'minimax', device: 'default' },
+    }
+    wf['a11'] = {
+      class_type: 'MiniMaxMusic3TextEncode',
+      inputs: {
+        clip: ['a10', 0],
+        caption,
+        lyrics,
+        seed: actualSeed,
+        max_duration: dur,
+        cfg_scale: cfgScale,
+        top_k: 50,
+      },
+    }
+  }
+  wf['a5'] = {
+    class_type: 'TextEncodeAceStepAudio1.5',
+    inputs: {
+      clip: clipSrc,
+      tags: caption,
+      lyrics,
+      seed: actualSeed,
+      bpm: 120,
+      duration: planned,
+      timesignature: '4',
+      language: 'en',
+      keyscale: 'C major',
+      // With a reference latent wired the LLM's audio codes are discarded
+      // server-side anyway (pass_audio_codes=False) — skip generating them.
+      generate_audio_codes: !referenceAudio,
+      // Official template: TE cfg 2 (independent of KSampler cfg below).
+      cfg_scale: 2,
+      temperature: 0.85,
+      top_p: 0.9,
+      top_k: 0,
+      min_p: 0,
+    },
+  }
+  wf['a6'] = { class_type: 'ConditioningZeroOut', inputs: { conditioning: ['a5', 0] } }
+  wf['a7'] = {
+    class_type: 'EmptyAceStep1.5LatentAudio',
+    inputs: { seconds: planned, batch_size: 1 },
+  }
+  // Reference-timbre branch (ACE 1.5 only): LoadAudio → [ReferenceAudioPrep]
+  // → VAEEncodeAudio → ReferenceTimbreAudio. The encoded latent is attached
+  // to the positive conditioning; the sampler then uses it as timbre/structure
+  // context while the caption + lyrics still steer content. Experimental native
+  // node (ReferenceTimbreAudio) — present in ComfyUI ≥ 0.39 built-ins.
+  // ReferenceAudioPrep (custom, comfy_nodes/ReferenceAudioPrep.py) samples
+  // three windows from long clips so the whole track's timbre is captured;
+  // without it the full file is encoded and truncated to the generation length.
+  let positiveSrc = ['a5', 0]
+  if (referenceAudio) {
+    wf['a12'] = { class_type: 'LoadAudio', inputs: { audio: referenceAudio } }
+    const encodeSrc = models.prepReference ? ['a12b', 0] : ['a12', 0]
+    if (models.prepReference) {
+      wf['a12b'] = {
+        class_type: 'ReferenceAudioPrep',
+        inputs: { audio: ['a12', 0], window_seconds: 10.0 },
+      }
+    }
+    wf['a13'] = { class_type: 'VAEEncodeAudio', inputs: { audio: encodeSrc, vae: vaeSrc } }
+    wf['a14'] = {
+      class_type: 'ReferenceTimbreAudio',
+      inputs: { conditioning: ['a5', 0], latent: ['a13', 0] },
+    }
+    positiveSrc = ['a14', 0]
+  }
+  wf['a8'] = {
+    class_type: 'KSampler',
+    inputs: {
+      model: ['a4', 0],
+      positive: positiveSrc,
+      negative: ['a6', 0],
+      latent_image: ['a7', 0],
+      seed: actualSeed,
+      control_after_generate: 'randomize',
+      // Official ACE-Step 1.5 templates (turbo family): 8 steps, cfg 1 —
+      // CFG is baked into the distilled model; MiniMax's steps/cfg knobs
+      // don't apply.
+      steps: 8,
+      cfg: 1,
+      sampler_name: 'euler',
+      scheduler: 'simple',
+      denoise: 1,
+    },
+  }
+  wf['a9'] = {
+    // Tiled like the MiniMax path (node 8): plain VAEDecodeAudio on a 16 GB
+    // card OOMs/aborts at the final decode when decoding a long track with
+    // TE + DIT still resident — a 360s ACE render hard-crashed the Windows
+    // prompt worker (Fatal Python error in the audio VAE conv). Same
+    // 1536/64 tiling as the MiniMax template.
+    class_type: 'VAEDecodeAudioTiled',
+    inputs: { samples: ['a8', 0], vae: vaeSrc, tile_size: 1536, overlap: 64 },
+  }
+  // Dead-air trim (custom node comfy_nodes/AudioTailTrim.py): the LM is
+  // force-filled to the planned length, so when the song ends early the
+  // tail is silence codes. Trim before save → stored mp3 ends with music.
+  let saveAudio = ['a9', 0]
+  if (models.trimAudio) {
+    wf['a95'] = {
+      class_type: 'AudioTailTrim',
+      inputs: { audio: ['a9', 0], threshold_db: -50, min_silence: 0.4, keep_tail: 0.3 },
+    }
+    saveAudio = ['a95', 0]
+  }
+  if (quality === 'wav') {
+    wf['60'] = { class_type: 'SaveAudio', inputs: { audio: saveAudio, filename_prefix: 'music/track' } }
+  } else {
+    wf['60'] = {
+      class_type: 'SaveAudioMP3',
+      inputs: {
+        audio: saveAudio,
+        filename_prefix: 'music/track',
+        quality: quality === 'V0' || quality === '128k' || quality === '320k' ? quality : '320k',
+      },
+    }
+  }
   return wf
 }
 

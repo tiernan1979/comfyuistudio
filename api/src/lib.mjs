@@ -8,9 +8,15 @@ import {
   buildVideoWorkflow,
   buildMusicWorkflow,
   isMiniMaxH3,
+  isAceStepModel,
 } from '../../src/lib/workflows.js'
+import { resolveAceStepModels } from '../../src/lib/comfyui.js'
 
-export const MODES = ['image', 'edit', 'video', 'music']
+export const MODES = ['image', 'edit', 'video', 'music', '3d', 'skin', 'meshupscale']
+
+// Flow modes run long-lived multi-prompt pipelines (threed.js) instead of a
+// single workflow graph — they always block until done and take no `prompt`.
+export const FLOW_MODES = ['3d', 'skin', 'meshupscale']
 
 export const DEFAULT_MODELS = {
   image: {
@@ -36,13 +42,55 @@ export const DEFAULT_MODELS = {
     clip: 'minimax_music3_text_encoder_pruned_int8_convrot.safetensors',
     vae: 'minimax_music3_dav.safetensors',
   },
+  // Flow modes: node/model availability is validated by the pipeline itself
+  // (assertWorkflowNodes); nothing to resolve up front.
+  '3d': {},
+  skin: {},
+  meshupscale: {},
 }
 
 export const DEFAULT_SETTINGS = {
-  image: { aspectRatio: '1:1', turboMode: false, seed: -1, steps: 20, cfg: 4 },
+  image: { aspectRatio: '1:1', turboMode: false, seed: -1, steps: 20, cfg: 4, upscale: '' },
   edit: { seed: -1, steps: 20, cfg: 2.5 },
   video: { resolution: '480p', frames: 33, fps: 16, seed: -1, steps: 20, cfg: 6 },
-  music: { duration: 30, seed: -1, steps: 30, cfgScale: 1.7, quality: '320k' },
+  // duration: planner cap for both engines (MiniMax max_duration / ACE
+  // planner max_duration; exact render length when no planner is
+  // available). Default 300 = 5 minutes; range 10–360.
+  music: { duration: 300, seed: -1, steps: 30, cfgScale: 1.7, quality: '320k' },
+  // 3D flow defaults mirror src/store/useStore.js (threeD).
+  '3d': {
+    meshMode: 'pixal3d',
+    pixalSteps: 20,
+    pixalGuidance: 7.5,
+    pixalCameraRes: 1024,
+    pixalTextureSize: 4096,
+    pixalDecimation: 300000,
+    pixalRemesh: true,
+    pixalEnhance: 'sharpen',
+    pixalUpscaleModel: '',
+    faceFix: true,
+  },
+  skin: {
+    hunyuanPaintModel: 'hunyuan3d-paintpbr-v2-1',
+    hunyuanViewSize: 768,
+    hunyuanTextureSize: 4096,
+    hunyuanPaintSteps: 12,
+    hunyuanGuidance: 3,
+    hunyuanViewUpscale: true,
+    // Browser-only canvas blend — keep off server-side (the pipeline skips
+    // it gracefully if a Node canvas ever becomes available).
+    hunyuanSkinBlend: false,
+  },
+  meshupscale: {
+    ultrashapeCheckpoint: 'ultrashape_v1.pt',
+    ultrashapeDtype: 'bfloat16',
+    ultrashapeLowVram: true,
+    ultrashapeSteps: 20,
+    ultrashapeGuidance: 5,
+    ultrashapeOctree: 384,
+    ultrashapeNumChunks: 8000,
+    ultrashapeNumLatents: 16384,
+  },
 }
 
 // Preference order when the exact default file isn't on the server —
@@ -110,6 +158,13 @@ export function resolveModels(lists, mode, overrides = {}) {
       out.lora = overrides.lora !== undefined ? overrides.lora : base.lora
       continue
     }
+    // ACE-Step music: clip/vae ride inside the ACE assets (AIO checkpoint or
+    // split qwen encoders) — resolved below, so don't force the MiniMax
+    // defaults to exist on the server (an ACE-only install has no MiniMax).
+    if (mode === 'music' && group !== 'unet' && out.unet && isAceStepModel(out.unet)) {
+      out[group] = overrides[group] || base[group]
+      continue
+    }
     if (overrides[group]) {
       const arr = Array.isArray(lists?.[group]) ? lists[group] : []
       const hit = arr.find((m) => m === overrides[group]) || arr.find((m) => stem(m) === stem(overrides[group]))
@@ -130,6 +185,17 @@ export function resolveModels(lists, mode, overrides = {}) {
     }
     out[group] = picked
   }
+  // ACE-Step music: attach the resolved asset set (AIO checkpoint or split
+  // encoders) the workflow builder needs; split also corrects clip/vae.
+  if (mode === 'music' && isAceStepModel(out.unet)) {
+    const ace = resolveAceStepModels(lists, out)
+    if (ace.kind === 'split') {
+      out.clip = ace.clip2
+      out.vae = ace.vae
+      out.clip1 = ace.clip1
+    }
+    out.ace = ace
+  }
   // MiniMax H3 video additionally needs the H3 audio VAE (AV latent decode).
   // Not a settings group — resolve it straight from the server's VAE list.
   if (mode === 'video' && isMiniMaxH3(out.unet)) {
@@ -143,6 +209,45 @@ export function resolveModels(lists, mode, overrides = {}) {
     out.vaeAudio = audio
   }
   return out
+}
+
+// Body `models` overrides accept both shapes: flat ({ unet, clip, vae, lora })
+// and mode-nested ({ music: { unet } } — what the MCP server sends, e.g.
+// video turbo LoRA). Nested wins when the mode key is present, so a flat
+// { video: { lora } } maps correctly for mode 'video'.
+export function pickModelOverrides(mode, bodyModels) {
+  if (!bodyModels || typeof bodyModels !== 'object') return {}
+  const nested = bodyModels[mode]
+  return nested && typeof nested === 'object' ? nested : bodyModels
+}
+
+// Resolve settings.upscale against the server's UpscaleModelLoader list.
+// Accepts ''/false/'none' (off), true/'auto'/'4x' (pick 4x-UltraSharp or any
+// ESRGAN), or an exact/fuzzy filename. Throws readable on misses.
+export function resolveUpscaleModel(lists, want) {
+  if (want === undefined || want === null || want === '' || want === false || want === 'none') return ''
+  const list = Array.isArray(lists?.upscale) ? lists.upscale : []
+  if (want === true || want === 'auto' || want === '4x' || want === '4x-ultrasharp') {
+    const hit =
+      list.find((m) => /ultrasharp/i.test(m)) ||
+      list.find((m) => /esrgan/i.test(m)) ||
+      list[0]
+    if (!hit) {
+      throw new Error(
+        'No upscale model on the ComfyUI server — drop a free .pth (e.g. 4x-UltraSharp.pth) into ' +
+          'ComfyUI/models/upscale_models/ and restart ComfyUI.',
+      )
+    }
+    return hit
+  }
+  const name = String(want)
+  const hit = list.find((m) => m === name) || list.find((m) => stem(m) === stem(name))
+  if (!hit) {
+    throw new Error(
+      `Upscale model not on server: ${name} (have: ${list.slice(0, 6).join(', ') || 'none'})`,
+    )
+  }
+  return hit
 }
 
 // data URL or raw base64 → bytes + mime (whitespace/newlines tolerated).
@@ -179,6 +284,7 @@ export function workflowFor(mode, { prompt, negativePrompt = '', lyrics = '', se
       steps: s.steps,
       cfg: s.cfg,
       turboMode: !!s.turboMode,
+      upscaleModel: models.upscale || '',
       models,
     })
   }
@@ -219,7 +325,11 @@ export function workflowFor(mode, { prompt, negativePrompt = '', lyrics = '', se
       models,
     })
   }
-  throw new Error(`Unsupported mode "${mode}" — use one of: ${MODES.join(', ')}`)
+  throw new Error(
+    FLOW_MODES.includes(mode)
+      ? `Mode "${mode}" runs as a long-lived flow (threed.js pipeline), not a single workflow graph`
+      : `Unsupported mode "${mode}" — use one of: ${MODES.join(', ')}`,
+  )
 }
 
 const OUTPUT_BUCKETS = [
@@ -227,6 +337,7 @@ const OUTPUT_BUCKETS = [
   ['video', 'gifs'],
   ['video', 'videos'],
   ['music', 'audio'],
+  ['3d', 'model_3d'],
 ]
 
 export function hasOutputs(item) {

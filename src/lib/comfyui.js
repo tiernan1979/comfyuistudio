@@ -1,3 +1,5 @@
+import { isAceStepModel } from './workflows.js'
+
 let ws = null
 let progressCallback = null
 let completionCallback = null
@@ -190,19 +192,22 @@ function positiveTextFromGraph(graph) {
 }
 
 // Caption + lyrics out of a music workflow graph (MiniMax Music 3 / YuE /
-// Sonilo / Comfy Cloud). Used for server-synced history entries whose
-// outputs are audio files instead of images.
-function musicTextFromGraph(graph) {
+// Sonilo / Comfy Cloud / ACE-Step). Used for server-synced history entries
+// whose outputs are audio files instead of images.
+export function musicTextFromGraph(graph) {
   let caption = ''
   let lyrics = ''
   const consider = (c, l) => {
     if (typeof c === 'string' && c && !caption) caption = c
-    if (typeof l === 'string' && !lyrics) lyrics = l
+    if (typeof l === 'string' && l && !lyrics) lyrics = l
   }
   for (const node of Object.values(graph || {})) {
     const t = node?.class_type
     if (t === 'MiniMaxMusic3TextEncode') {
       consider(node.inputs?.caption, node.inputs?.lyrics)
+    } else if (t === 'TextEncodeAceStepAudio1.5') {
+      // ACE carries the style/genre text in `tags`, not `caption`/`text`.
+      consider(node.inputs?.tags, node.inputs?.lyrics)
     } else if (t === 'YuE2GenerateMusic' || t === 'YuE2GenerateABC') {
       consider(node.inputs?.style, node.inputs?.lyrics)
     } else if (t === 'SoniloTextToMusic') {
@@ -219,7 +224,9 @@ function musicTextFromGraph(graph) {
 // (images live on the server — /view serves them to any browser).
 // Returns newest-first entries: { id, type, prompt, data, timestamp }.
 export async function getServerHistory(serverUrl, maxcount = 60) {
-  const res = await fetch(`${serverUrl}/history?maxcount=${maxcount}`)
+  // `max_items` is the live ComfyUI param (newest N); `maxcount` kept for
+  // older servers that used it — both are harmless when ignored.
+  const res = await fetch(`${serverUrl}/history?max_items=${maxcount}&maxcount=${maxcount}`)
   if (!res.ok) throw new Error(`ComfyUI /history returned HTTP ${res.status}`)
   const data = await res.json()
 
@@ -267,6 +274,10 @@ export async function getServerHistory(serverUrl, maxcount = 60) {
       type: kind === 'video' ? 'video' : kind === 'music' ? 'music' : isEdit ? 'edit' : 'image',
       prompt: positiveTextFromGraph(graph),
       data: await getViewUrl(serverUrl, file.filename, file.subfolder || '', file.type || 'output'),
+      // File params on their own: history is shared across origins
+      // (http://host:5555 vs https://host), and each browser rebuilds the
+      // output URL against its own origin/proxy from these.
+      view: { filename: file.filename, subfolder: file.subfolder || '', type: file.type || 'output' },
       timestamp: tsMsg?.[1]?.timestamp || 0,
       settings: {},
       fromServer: true,
@@ -285,6 +296,42 @@ export async function getServerHistory(serverUrl, maxcount = 60) {
 export async function getViewUrl(serverUrl, filename, subfolder = '', type = 'output') {
   const params = new URLSearchParams({ filename, subfolder, type })
   return `${serverUrl}/view?${params.toString()}`
+}
+
+// Parse a /view URL back into its file params. Works for any origin or
+// proxy prefix (`…/proxy/host/port/view?…`, `http://comfy:8188/view?…`);
+// returns null for anything that isn't a /view URL (blob:, data:, …).
+export function viewFromUrl(url) {
+  if (typeof url !== 'string' || !url) return null
+  try {
+    const u = new URL(url, 'http://local.invalid')
+    if (!u.pathname.endsWith('/view')) return null
+    const filename = u.searchParams.get('filename')
+    if (!filename) return null
+    return {
+      filename,
+      subfolder: u.searchParams.get('subfolder') || '',
+      type: u.searchParams.get('type') || 'output',
+    }
+  } catch {
+    return null
+  }
+}
+
+// Rebuild a history entry's output URL against THIS origin's API base.
+// Shared history entries carry URLs minted by the origin that recorded
+// them (or the API's direct ComfyUI URLs) — on another origin those are
+// dead links, and on https they're blocked as mixed content. Entries
+// store their `view` params so every browser can re-mint a working URL.
+export function rebuildViewUrl(entry, apiBase) {
+  const view = entry?.view || viewFromUrl(entry?.data)
+  if (!view || !apiBase) return entry?.data
+  const params = new URLSearchParams({
+    filename: view.filename,
+    subfolder: view.subfolder || '',
+    type: view.type || 'output',
+  })
+  return `${String(apiBase).replace(/\/+$/, '')}/view?${params.toString()}`
 }
 
 export async function downloadFile(url) {
@@ -318,6 +365,37 @@ export async function uploadImage(serverUrl, file) {
   return data
 }
 
+// Upload an audio file into input/ so LoadAudio's combo accepts the name
+// (uploadImage prefixes with "edit-" and omits type=input, which is aimed
+// at image loaders). Returns the filename for the LoadAudio `audio` socket.
+//
+// Long-reference sampling is handled server-side by the ReferenceAudioPrep
+// custom node (comfy_nodes/ReferenceAudioPrep.py) when installed — it
+// replicates ACE-Step's backend behaviour of sampling three 10 s windows
+// into a 30 s clip. Without the node the full file is uploaded and the
+// native path truncates to the generation length.
+export async function uploadAudioFile(serverUrl, file) {
+  const form = new FormData()
+  const safe = String(file.name || 'ref.wav').replace(/[^\w.\-]+/g, '_')
+  const uniqueName = `ref-${Date.now()}-${safe}`
+  form.append('image', file, uniqueName)
+  form.append('type', 'input')
+  form.append('overwrite', 'true')
+  let res
+  try {
+    res = await fetch(`${serverUrl}/upload/image`, { method: 'POST', body: form })
+  } catch (err) {
+    throw new Error(`Could not upload reference audio (${err.message})`)
+  }
+  if (!res.ok) {
+    const hint = res.status === 413 ? ' — file too large for the server limit' : ''
+    throw new Error(`Reference audio upload failed (HTTP ${res.status})${hint}`)
+  }
+  const data = await res.json()
+  if (!data.name) throw new Error('ComfyUI did not accept the audio upload.')
+  return data.name
+}
+
 // Fetch the actual model files present on the ComfyUI server.
 // /object_info/<LoaderClass> includes the valid combo values, e.g.
 // UNETLoader.input.required.unet_name[0] === ["model_a.safetensors", ...]
@@ -336,6 +414,11 @@ export async function getModelLists(base, { force = false } = {}) {
     clip: ['CLIPLoader', 'clip_name'],
     vae: ['VAELoader', 'vae_name'],
     lora: ['LoraLoaderModelOnly', 'lora_name'],
+    // AIO checkpoints (e.g. ace_step_1.5_turbo_aio) load unet+clip+vae in one
+    // file — needed to resolve ACE-Step music on servers without split encoders.
+    checkpoint: ['CheckpointLoaderSimple', 'ckpt_name'],
+    // Detail upscale models (image settings.upscale, video 1080p-fast, 3D).
+    upscale: ['UpscaleModelLoader', 'model_name'],
   }
   const entries = await Promise.all(
     Object.entries(targets).map(async ([key, [cls, field]]) => {
@@ -343,7 +426,11 @@ export async function getModelLists(base, { force = false } = {}) {
         const res = await fetch(`${base}/object_info/${cls}`)
         if (!res.ok) return [key, []]
         const data = await res.json()
-        const list = data?.[cls]?.input?.required?.[field]?.[0]
+        // Both combo spec shapes: [optionsArray, config] (CheckpointLoader…)
+        // and ["COMBO", {options}] (UpscaleModelLoader) — same handling as
+        // getNodeComboOptions below.
+        const spec = data?.[cls]?.input?.required?.[field]
+        const list = Array.isArray(spec?.[0]) ? spec[0] : Array.isArray(spec?.[1]?.options) ? spec[1].options : []
         return [key, Array.isArray(list) ? list : []]
       } catch {
         return [key, []]
@@ -378,6 +465,42 @@ export function looksLikeVideoModel(name) {
 export function looksLikeMusicModel(name) {
   return /(^|[^a-z])(minimax[-_ ]?music|music3|music[-_ ]?dit|yue[-_ ]?2?|ace[-_ ]?step|stable[-_ ]?audio|diff[-_ ]?rhythm|musicgen|stemma|inspire[-_ ]?music|music)([^a-z]|$)/i.test(
     String(name || '')
+  )
+}
+
+// Resolve the ACE-Step 1.5 assets for the selected music unet against the
+// server's file lists. Two supported graph shapes (see buildAceStepWorkflow):
+//   split — DualCLIPLoader(qwen_0.6b_ace15 + qwen_1.7b/4b_ace15, type 'ace')
+//           + UNETLoader + ace VAE
+//   aio   — CheckpointLoaderSimple(ace_step_1.5_*_aio) carries unet+clip+vae
+// Prefers split (the official template) when the full encoder set exists;
+// falls back to the AIO checkpoint — the only shape runnable on servers that
+// only have the 1.7B encoder (single-clip split fails server-side with
+// "'NoneType' object has no attribute 'shape'").
+export function resolveAceStepModels(lists, selected = {}) {
+  const clips = Array.isArray(lists?.clip) ? lists.clip : []
+  const ckpts = Array.isArray(lists?.checkpoint) ? lists.checkpoint : []
+  const vaes = Array.isArray(lists?.vae) ? lists.vae : []
+  const enc06 = clips.find((m) => /qwen[^/]*0\.6b[^/]*ace|qwen[^/]*ace[^/]*0\.6b/i.test(m))
+  const encBig = clips.find((m) => /qwen[^/]*(?:1\.7b|4b)[^/]*ace|qwen[^/]*ace[^/]*(?:1\.7b|4b)/i.test(m))
+  const aceVae = vaes.find((m) => /ace[^/]*vae/i.test(m))
+  // Optional: the MiniMax music3 text encoder doubles as the AR structure
+  // planner that auto-sizes ACE track length (buildAceStepWorkflow adds the
+  // planner node only when this is present; absent → exact-duration mode).
+  const plannerClip = clips.find((m) => /minimax[^/]*music3[^/]*text/i.test(m))
+  const planner = plannerClip ? { plannerClip } : {}
+  if (enc06 && encBig && aceVae && selected.unet) {
+    return { kind: 'split', unet: selected.unet, clip1: enc06, clip2: encBig, vae: aceVae, ...planner }
+  }
+  const aio = ckpts.find((m) => /ace[^/]*aio/i.test(m))
+  if (aio) return { kind: 'aio', checkpoint: aio, ...planner }
+  throw new Error(
+    'ACE-Step music needs ACE text-encoder/VAE files on the ComfyUI server: either the AIO ' +
+      'checkpoint (models/checkpoints/ace_step_1.5_*_aio*.safetensors) or the split set ' +
+      '(qwen_0.6b_ace15 + qwen_1.7b_ace15/4b text encoders + ace_1.5_vae). ' +
+      `This server has — ACE checkpoints: ${ckpts.filter((m) => /ace/i.test(m)).join(', ') || 'none'}; ` +
+      `ACE encoders: ${clips.filter((m) => /ace/i.test(m)).join(', ') || 'none'}; ` +
+      `ACE VAE: ${aceVae || 'none'}.`
   )
 }
 
@@ -417,8 +540,13 @@ export async function assertModelsAvailable(base, mode, models) {
     if (mode === 'music') {
       // Fall back to the MiniMax Music 3 defaults when the store predates
       // the group (migrate fills them, this covers direct calls too).
+      const unet = models.music?.unet || 'minimax_music3_dit_int8_convrot.safetensors'
+      // ACE-Step carries clip/vae inside its own assets (AIO checkpoint or
+      // split qwen encoders) — resolveAceStepModels checks those below
+      // instead of requiring the MiniMax trio.
+      if (isAceStepModel(unet)) return [['unet', unet, 'Music model']]
       return [
-        ['unet', models.music?.unet || 'minimax_music3_dit_int8_convrot.safetensors', 'Music model'],
+        ['unet', unet, 'Music model'],
         ['clip', models.music?.clip || 'minimax_music3_text_encoder_pruned_int8_convrot.safetensors', 'Music text encoder'],
         ['vae', models.music?.vae || 'minimax_music3_dav.safetensors', 'Music VAE'],
       ]
@@ -457,7 +585,15 @@ export async function assertModelsAvailable(base, mode, models) {
 
   if (mode === 'music') {
     const unet = String(models.music?.unet || 'minimax_music3_dit_int8_convrot.safetensors')
-    if (!looksLikeMusicModel(unet)) {
+    if (isAceStepModel(unet)) {
+      // The unet file itself is validated by `wants` above; also require a
+      // runnable ACE text-encoder/VAE set (same resolver the builder uses).
+      try {
+        resolveAceStepModels(lists, { unet })
+      } catch (err) {
+        missing.push(err.message)
+      }
+    } else if (!looksLikeMusicModel(unet)) {
       missing.push(
         `"${unet}" is not a music model — music needs a MUSIC diffusion model ` +
           `(MiniMax Music 3, YuE, ACE-Step, Stable Audio, …). ` +
@@ -532,6 +668,49 @@ export async function assertNodes(base, classTypes, { label = 'This feature', de
         '. Install them in custom_nodes/ (then restart ComfyUI), or pick a different pipeline in Settings → 3D.'
     )
   }
+}
+
+// Is the AudioTailTrim custom node installed? (comfy_nodes/AudioTailTrim.py —
+// trims the dead-air tail ACE/MiniMax leave when the song ends before the
+// planned duration; the music builders wire it between decode and save).
+// Memoized per server for 60s — checked on every music generation.
+const trimNodeCache = new Map()
+export async function hasAudioTailTrim(base) {
+  const hit = trimNodeCache.get(base)
+  if (hit && Date.now() - hit.t < 60000) return hit.v
+  let v = false
+  try {
+    const res = await fetch(`${base}/object_info/AudioTailTrim`)
+    if (res.ok) {
+      const data = await res.json()
+      v = !!data?.AudioTailTrim
+    }
+  } catch {
+    // unreachable → keep false; generation will surface connectivity itself
+  }
+  trimNodeCache.set(base, { t: Date.now(), v })
+  return v
+}
+
+// Is the ReferenceAudioPrep custom node installed? (comfy_nodes/ReferenceAudioPrep.py —
+// samples three windows from a long reference clip so the whole track's
+// timbre is captured; without it the full file is encoded and truncated).
+const refPrepNodeCache = new Map()
+export async function hasReferenceAudioPrep(base) {
+  const hit = refPrepNodeCache.get(base)
+  if (hit && Date.now() - hit.t < 60000) return hit.v
+  let v = false
+  try {
+    const res = await fetch(`${base}/object_info/ReferenceAudioPrep`)
+    if (res.ok) {
+      const data = await res.json()
+      v = !!data?.ReferenceAudioPrep
+    }
+  } catch {
+    // unreachable → keep false
+  }
+  refPrepNodeCache.set(base, { t: Date.now(), v })
+  return v
 }
 
 // Verify every node class used by a built workflow exists on the server

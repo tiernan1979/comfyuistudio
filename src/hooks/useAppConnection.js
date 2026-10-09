@@ -5,8 +5,11 @@ import {
   connectWebSocket,
   disconnectWebSocket,
   resolveApiBase,
+  addExecutionListener,
 } from '../lib/comfyui'
 import { syncServerHistory } from './useComfyUI'
+
+const STORAGE_KEY = 'comfyui-studio-storage'
 
 // App-lifetime services: connection health, the shared WebSocket, the
 // server-history refresh, and the idle model-unload timer.
@@ -23,6 +26,49 @@ export function useAppConnection() {
   const apiBase = resolveApiBase(serverUrl, useProxy)
   const wasConnectedRef = useRef(false)
   const lastSyncRef = useRef(0)
+  const liveSyncTimerRef = useRef(null)
+
+  // Live shared history — every browser/window holds its own websocket to
+  // ComfyUI, so a job finishing anywhere fires `executing{node:null}` in
+  // every session: refresh the shared server history right away instead of
+  // waiting for the polling throttle. Debounced so a queue draining in a
+  // burst costs one GET /history, not one per prompt.
+  useEffect(() => {
+    const off = addExecutionListener((msg) => {
+      const finished =
+        (msg?.type === 'executing' && msg.data?.node === null && !!msg.data?.prompt_id) ||
+        msg?.type === 'execution_error'
+      if (!finished || liveSyncTimerRef.current) return
+      liveSyncTimerRef.current = setTimeout(() => {
+        liveSyncTimerRef.current = null
+        lastSyncRef.current = Date.now()
+        syncServerHistory()
+      }, 1200)
+    })
+    return () => {
+      off()
+      if (liveSyncTimerRef.current) {
+        clearTimeout(liveSyncTimerRef.current)
+        liveSyncTimerRef.current = null
+      }
+    }
+  }, [])
+
+  // Same-browser, other tabs: localStorage is shared but each tab loads its
+  // snapshot once — a `storage` event in another tab rehydrates the store so
+  // deletes / new entries / setting changes land instantly without reload.
+  useEffect(() => {
+    const onStorage = (e) => {
+      if (e.key && e.key !== STORAGE_KEY) return
+      try {
+        useStore.persist.rehydrate()
+      } catch {
+        /* stale or foreign payload — keep current state */
+      }
+    }
+    window.addEventListener('storage', onStorage)
+    return () => window.removeEventListener('storage', onStorage)
+  }, [])
 
   // Check connection on mount and periodically
   useEffect(() => {
@@ -33,11 +79,25 @@ export function useAppConnection() {
       useStore.getState().setConnected(ok)
       if (ok) {
         connectWebSocket(apiBase)
+        // Shared deletes: pull the hidden-ids list every tick (tiny GET) so
+        // history removed on another browser/device disappears here too,
+        // even when no new generations are happening. The Studio API
+        // service is optional — offline just keeps deletes local.
+        try {
+          const h = await fetch('/api/hidden-ids')
+          if (h.ok) {
+            const data = await h.json()
+            useStore.getState().mergeHiddenIds(data?.ids || [])
+          }
+        } catch {
+          /* API service not running — nothing to merge */
+        }
         // Load/refresh the shared server-side history: on first contact
-        // and then every ~45s while connected, so generations made from
-        // other machines show up without a reload.
+        // and then every ~20s while connected, so generations made from
+        // other machines show up without a reload (the websocket listener
+        // above covers the instant case).
         const now = Date.now()
-        if (!wasConnectedRef.current || now - lastSyncRef.current > 45000) {
+        if (!wasConnectedRef.current || now - lastSyncRef.current > 20000) {
           lastSyncRef.current = now
           syncServerHistory()
         }
