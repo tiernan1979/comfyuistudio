@@ -38,7 +38,7 @@ const TIMEOUTS = {
   mia: 20 * 60 * 1000,
   tripo: 15 * 60 * 1000,
   ultrashape: 45 * 60 * 1000,
-  paint: 25 * 60 * 1000,
+  paint: 50 * 60 * 1000,
   enhance: 12 * 60 * 1000,
 }
 
@@ -242,7 +242,7 @@ export const PIPELINE_NODES = {
     // rig tail
     'MIALoadModel',
     'MIAAutoRig',
-    'UniRigLoadMesh',
+    'MeshToolsLoad',
     'UniRigPreviewRiggedMesh',
   ],
   tripo: ['TripoImageToModelNode', 'TripoRigNode', 'TripoRetargetNode'],
@@ -325,15 +325,55 @@ function createMeshProgress() {
   }
 }
 
-// Fixed name for the mesh handed to UniRigLoadMesh. Its file dropdown is
-// cached at ComfyUI startup, so a fixed name only needs ONE ComfyUI restart
-// ever — after that every rig run overwrites the same indexed entry.
+// Legacy fixed upload name from when UniRigLoadMesh's startup-cached
+// dropdown forced one indexed filename. MeshToolsLoad takes any string path,
+// so uploads now use unique names — kept exported for compatibility.
 export const RIG_INPUT_NAME = 'studio_rig_input.glb'
 
 // Animation options for the local pipeline (UniRigApplyAnimation's
 // animation_file dropdown — Mixamo FBX files shipped with the node).
 export function listLocalAnimations(base) {
   return getNodeComboOptions(base, 'UniRigApplyAnimation', 'animation_file')
+}
+
+// Upload Mixamo animation FBXs into input/animation_templates/mixamo/ so
+// UniRigApplyAnimation can retarget them. Returns the stored filenames.
+// Note: the animation_file dropdown is cached at ComfyUI startup — files
+// uploaded here work immediately in the workflow (MeshToolsLoad-style free
+// paths don't apply; this node reads a startup-cached combo), so the caller
+// should tell the user to restart ComfyUI once after uploading.
+export async function uploadAnimationFiles(base, files, onStatus) {
+  const stored = []
+  for (const file of files) {
+    const name = String(file.name || '').trim()
+    if (!/\.fbx$/i.test(name)) continue
+    const blob = file instanceof Blob ? file : new Blob([file])
+    onStatus?.(`Uploading ${name}…`)
+    const form = new FormData()
+    form.append('image', blob, name)
+    form.append('subfolder', 'animation_templates/mixamo')
+    form.append('type', 'input')
+    form.append('overwrite', 'true')
+    let res
+    try {
+      res = await fetch(`${base}/upload/image`, { method: 'POST', body: form })
+    } catch (err) {
+      throw new Error(`could not upload ${name} (${err.message})`)
+    }
+    if (!res.ok) {
+      const detail = (await res.text().catch(() => '')).slice(0, 160)
+      const hint =
+        res.status === 413
+          ? " — file exceeds ComfyUI's request-body limit; restart ComfyUI with --max-upload-size 400"
+          : ''
+      throw new Error(`upload failed for ${name} (HTTP ${res.status}${hint})${detail ? `: ${detail}` : ''}`)
+    }
+    const data = await res.json()
+    if (!data.name) throw new Error(`ComfyUI did not accept ${name}`)
+    stored.push(data.name)
+  }
+  if (stored.length === 0) throw new Error('No .fbx files in that selection — Mixamo downloads are .fbx')
+  return stored
 }
 
 // Animation presets for the Tripo pipeline (TripoRetargetNode's animation
@@ -358,6 +398,85 @@ export async function fetchOutputBlob(base, file) {
   const blob = await res.blob()
   await assertMeshBytes(blob, file.filename)
   return blob
+}
+
+// Does this input/ file exist on the server? Tries the path as typed, then
+// input/3d/<name> for bare filenames. HEAD first (no bytes moved), ranged
+// GET fallback. Returns { filename, subfolder, meshPath } or null.
+export async function probeServerFile(base, serverPath) {
+  const clean = String(serverPath || '').trim().replace(/^\/+/, '')
+  if (!clean) return null
+  const split = (p) => {
+    const i = p.lastIndexOf('/')
+    return i < 0 ? { filename: p, subfolder: '' } : { filename: p.slice(i + 1), subfolder: p.slice(0, i) }
+  }
+  const tries = [split(clean)]
+  if (!clean.includes('/')) tries.push({ filename: clean, subfolder: '3d' })
+  for (const { filename, subfolder } of tries) {
+    if (!filename) continue
+    if (await probeInputFile(base, filename, subfolder)) {
+      return { filename, subfolder, meshPath: subfolder ? `${subfolder}/${filename}` : filename }
+    }
+  }
+  return null
+}
+
+// Which of these animation files are REALLY on disk? The animation_file
+// dropdown is startup-cached, so it lists ghosts after input cleanups —
+// probe input/animation_templates/<type>/ per file. { missing, available }.
+export async function probeAnimationFiles(base, files, animationType = 'mixamo') {
+  const names = [].concat(files || []).map((a) => String(a || '').trim()).filter(Boolean)
+  const missing = []
+  const available = []
+  for (const name of names) {
+    if (await probeInputFile(base, name, `animation_templates/${animationType}`)) available.push(name)
+    else missing.push(name)
+  }
+  return { missing, available }
+}
+
+// UniRigApplyAnimation.animation_file is a COMBO validated server-side against
+// the list cached at ComfyUI startup. A file can be sitting on disk and still
+// be rejected at queue time because the node never saw it. Returns the subset
+// of `files` that are on disk but not in that cached dropdown.
+export async function animationsNeedingRestart(base, files, animationType = 'mixamo') {
+  const names = [].concat(files || []).map((a) => String(a || '').trim()).filter(Boolean)
+  if (names.length === 0) return []
+  let combo
+  try {
+    combo = await getNodeComboOptions(base, 'UniRigApplyAnimation', 'animation_file')
+  } catch {
+    return [] // node pack absent — can't judge, let the queue-time check speak
+  }
+  if (!Array.isArray(combo) || combo.length === 0) return []
+  const { available } = await probeAnimationFiles(base, names, animationType)
+  return available.filter((name) => !combo.includes(name))
+}
+
+// HEAD/ranged-GET probe of one input/ file. Returns true when the server
+// serves real bytes (not an HTML error page).
+async function probeInputFile(base, filename, subfolder) {
+  let url = null
+  try {
+    url = await getViewUrl(base, filename, subfolder, 'input')
+  } catch {
+    return false
+  }
+  try {
+    const head = await fetch(url, { method: 'HEAD', cache: 'no-store' }).catch(() => null)
+    if (head?.ok && !(head.headers.get('content-type') || '').toLowerCase().includes('text/html')) return true
+  } catch {
+    /* fall through to ranged GET */
+  }
+  try {
+    const res = await fetch(url, { cache: 'no-store', headers: { Range: 'bytes=0-0' } }).catch(() => null)
+    if (!res) return false
+    const ok = res.ok || res.status === 206
+    try { await res.blob() } catch { /* body discarded */ }
+    return ok && !(res.headers.get('content-type') || '').toLowerCase().includes('text/html')
+  } catch {
+    return false
+  }
 }
 
 // The MediaPipe face model list comes from ComfyUI/models/detection/, which
@@ -501,61 +620,125 @@ export async function runGenerateMesh(base, file, cfg, onStatus, editModels = nu
   return glb
 }
 
-// Local pipeline, step 2: download the generated mesh, then rig it.
-// Returns downloadable result files: [{ filename, subfolder, type, key, blob? }]
-export async function runRigMesh(base, glbFile, cfg, animationFile, onStatus) {
+// Rig a mesh the app just generated (server output file): download it,
+// re-upload under a unique name, run MIA (+ optional animations).
+export async function runRigMesh(base, glbFile, cfg, animationFiles, onStatus) {
   onStatus?.('Downloading generated mesh…')
   const blob = await fetchOutputBlob(base, glbFile)
-  return runRigFromBlob(base, blob, cfg, animationFile, onStatus)
+  return runRigFromBlob(base, blob, glbFile.filename, cfg, animationFiles, onStatus)
 }
 
 // Rig a .glb the user already has — skips Generate entirely.
-export async function runRigImported(base, file, cfg, animationFile, onStatus) {
+export async function runRigImported(base, file, cfg, animationFiles, onStatus) {
   onStatus?.(`Validating ${file.name || 'mesh'}…`)
   // Force the GLB magic check even if the picked name lacks the extension.
-  await assertMeshBytes(file, /\.glb$/i.test(file.name || '') ? file.name : RIG_INPUT_NAME)
+  await assertMeshBytes(file, /\.glb$/i.test(file.name || '') ? file.name : 'mesh.glb')
   if (file.size > 64 * 1024 * 1024) {
     throw new Error(`"${file.name}" is ${(file.size / 1048576).toFixed(0)} MB — keep imported meshes under 64 MB`)
   }
-  return runRigFromBlob(base, file, cfg, animationFile, onStatus)
+  return runRigFromBlob(base, file, file.name || 'mesh.glb', cfg, animationFiles, onStatus)
 }
 
-// Shared tail of both rig paths: upload under the fixed indexed name,
-// verify UniRigLoadMesh's dropdown knows it, run MIA (+ optional animation).
-async function runRigFromBlob(base, blob, cfg, animationFile, onStatus) {
-  onStatus?.('Uploading mesh to ComfyUI input/3d…')
-  // Fixed name: the dropdown is cached at startup, so one ComfyUI restart
-  // indexes this name forever and every future rig works without restarts.
-  const stored = await uploadMeshFile(base, RIG_INPUT_NAME, blob)
-
-  // UniRigLoadMesh's file list is cached at ComfyUI startup. If our fixed
-  // name isn't in it yet, fail with instructions instead of queueing a
-  // prompt that would die on "Value not in list".
-  onStatus?.('Checking ComfyUI mesh index…')
-  const opts = await getNodeComboOptions(base, 'UniRigLoadMesh', 'file_path')
-  if (opts.length > 0 && !opts.includes(`3d/${stored}`)) {
+// Rig a mesh file that already sits on the ComfyUI server — no upload at
+// all. serverPath like '3d/hero.glb' (input/3d/) or a bare name in input/.
+// Great for re-rigging earlier uploads without moving bytes again.
+export async function runRigServerFile(base, serverPath, cfg, animationFiles, onStatus) {
+  const clean = String(serverPath || '').trim().replace(/^\/+/, '')
+  if (!clean) throw new Error('Type a server file path first, e.g. 3d/hero_character.glb')
+  if (!/\.(glb|obj|fbx)$/i.test(clean)) {
+    throw new Error(`"${clean}" doesn't look like a mesh — point at a .glb, .obj or .fbx on the server`)
+  }
+  onStatus?.(`Checking ${clean} on the server…`)
+  const probe = await probeServerFile(base, clean)
+  if (!probe) {
     throw new Error(
-      `One-time setup: ComfyUI only builds its mesh dropdown at startup, so it doesn't know ` +
-        `"3d/${stored}" yet (the file is uploaded and ready). Restart ComfyUI once, then Rig again — ` +
-        `the fixed name stays indexed forever, no more restarts needed after that.`
+      `"${clean}" isn't on the ComfyUI server (looked in input/ and input/3d/) — ` +
+        `upload the .glb with the file picker instead, or fix the path`
     )
   }
+  return runRigWorkflow(base, probe.meshPath, cfg, animationFiles, onStatus)
+}
 
+// Unique upload name per run — MeshToolsLoad takes a free string path, so
+// no fixed indexed name and no ComfyUI restart is ever needed.
+function uniqueRigName(original) {
+  const safe = String(original || 'mesh.glb')
+    .split('/').pop()
+    .replace(/[^A-Za-z0-9._-]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 60) || 'mesh.glb'
+  const withExt = /\.glb$/i.test(safe) ? safe : `${safe}.glb`
+  return `rig_${Date.now().toString(36)}_${withExt}`
+}
+
+// Shared tail of the upload rig paths: upload under a unique name, run MIA
+// (+ optional animations). No dropdown to satisfy — MeshToolsLoad reads any
+// path, so this never needs a ComfyUI restart.
+async function runRigFromBlob(base, blob, originalName, cfg, animationFiles, onStatus) {
+  onStatus?.('Uploading mesh to ComfyUI input/3d…')
+  const stored = await uploadMeshFile(base, uniqueRigName(originalName), blob)
+  return runRigWorkflow(base, `3d/${stored}`, cfg, animationFiles, onStatus)
+}
+
+function normalizeAnimations(animationFiles) {
+  return [].concat(animationFiles || []).map((a) => String(a || '').trim()).filter(Boolean)
+}
+
+async function runRigWorkflow(base, meshPath, cfg, animationFiles, onStatus) {
+  const anims = normalizeAnimations(animationFiles)
+  const animationType = cfg.animationType || 'mixamo'
+  if (anims.length > 0) {
+    // The animation picker is startup-cached, so it can list files that
+    // were wiped from disk since — verify before queueing a doomed run.
+    onStatus?.('Checking animation files on the server…')
+    const { missing, available } = await probeAnimationFiles(base, anims, animationType)
+    if (missing.length > 0) {
+      throw new Error(
+        `${missing.join(', ')} ${missing.length > 1 ? 'are' : 'is'} selected but missing on disk ` +
+          `(input/animation_templates/${animationType}/) — upload again via "Add animations…" or untick ` +
+          `${missing.length > 1 ? 'them' : 'it'}.` +
+          (available.length > 0 ? ` Available right now: ${available.join(', ')}.` : ' No animation files are on the server right now.')
+      )
+    }
+    // Files uploaded since ComfyUI last started are on disk but not yet in the
+    // node's animation dropdown, so the server would reject them at queue time.
+    onStatus?.('Checking the animation list ComfyUI started with…')
+    const needsRestart = await animationsNeedingRestart(base, anims, animationType)
+    if (needsRestart.length > 0) {
+      throw new Error(
+        `${needsRestart.join(', ')} ${needsRestart.length > 1 ? 'were' : 'was'} uploaded but ComfyUI ` +
+          `hasn't been restarted since, so the animation node doesn't offer ${needsRestart.length > 1 ? 'them' : 'it'} yet. ` +
+          `Restart ComfyUI once, then re-run — the files are already in place.`
+      )
+    }
+  }
+  // torch_cluster's farthest-point-sampling kernel has no bf16/fp16 support
+  // ("_ not implemented for 'BFloat16'"), and 'auto' resolves to bf16 on this
+  // GPU — fp32 is the only precision the MIA coarse stage survives.
+  const precision = 'fp32'
+  if (cfg.miaPrecision && cfg.miaPrecision !== 'fp32') {
+    onStatus?.(`Using fp32 precision — ${cfg.miaPrecision} crashes the rig's FPS kernel (saved setting overridden)…`)
+  }
   const wf = buildMiaRigWorkflow({
-    meshName: stored,
-    precision: cfg.miaPrecision,
-    animationFile,
+    meshPath,
+    precision,
+    animationFiles: anims,
+    animationType,
   })
   await assertWorkflowNodes(base, wf, { label: 'MIA auto-rig', describe: describeNode })
   onStatus?.('Unloading previous models…')
   await freeLoadedModels(base)
-  onStatus?.('Queued — MIA auto-rig takes a few minutes…')
+  onStatus?.(
+    anims.length > 0
+      ? `Queued — MIA auto-rig + ${anims.length} animation${anims.length > 1 ? 's' : ''} (takes a few minutes)…`
+      : 'Queued — MIA auto-rig takes a few minutes…'
+  )
   const id = await queuePrompt(base, wf)
   const entry = await pollHistory(base, id, {
     timeoutMs: TIMEOUTS.mia,
     label: 'MIA rig',
     nodes: nodeLabels(wf),
-    onTick: (s, info) => onStatus?.(statusLine(animationFile ? 'rigging + animating' : 'rigging', s, info)),
+    onTick: (s, info) => onStatus?.(statusLine(anims.length > 0 ? 'rigging + animating' : 'rigging', s, info)),
   })
 
   const files = collectOutputFiles(entry).filter((f) => /\.(fbx|glb)$/i.test(f.filename))
@@ -563,9 +746,9 @@ async function runRigFromBlob(base, blob, cfg, animationFile, onStatus) {
   // ComfyUI v0.37 doesn't record string outputs in history, and MIA's
   // Preview node writes the FBX to output/ without a file entry — fall
   // back to the names the nodes construct (same as homeclaw does).
-  const meshBase = stored.replace(/\.[^.]+$/, '')
-  const candidates = animationFile
-    ? [`${meshBase}_${animationFile.replace(/\.[^.]+$/, '')}.fbx`]
+  const meshBase = meshPath.split('/').pop().replace(/\.[^.]+$/, '')
+  const candidates = anims.length > 0
+    ? anims.map((a) => `${meshBase}_${String(a).replace(/\.[^.]+$/, '')}.fbx`)
     : [`mia_${meshBase}_mia.fbx`, `mia_${meshBase}.fbx`, `${meshBase}.fbx`]
   for (const name of candidates) {
     if (!files.some((f) => f.filename === name)) {
@@ -962,20 +1145,25 @@ export async function runPaintSkin(
   // this base name, so a stale skin from an earlier run can't be picked up.
   const outputName = `painted_${Date.now().toString(36)}`
 
-  // Face fix, paint side: refine the face on the front view before the bake.
-  // views 1024px / texture 4096 put ~6x more texels on the face than the old
-  // 512/1024 defaults — the bake is where small faces used to mush out.
+  // Cleanup + face pass, paint side: ONE Qwen refine of the front view
+  // before the bake — full view, no face mask, so paint-model artifacts
+  // (dark speckles, discolored fingertips) are cleaned along with the face.
+  // A separate per-view cleanup pass was tried and removed: 6 extra sampler
+  // passes crashed ComfyUI on this 16GB box. views 1024px / texture 4096
+  // put ~6x more texels on the face than the old 512/1024 defaults — the
+  // bake is where small faces used to mush out.
   const wantFaceFix = cfg.faceFix !== false && !!editModels
   let faceFix = null
   if (wantFaceFix) {
     const models = await resolveEditModels(base, editModels)
-    const faceModelName = await detectFaceModel(base)
     if (models) {
       // 0.55 was re-generating the painted eyes away (blank sockets after
       // the fix). The paint model already renders the face from the source
       // image — the fix should clean up, not redraw. Light touch preserves
-      // iris/pupil detail the paint model put down.
-      faceFix = { faceModelName, editModels: models, denoise: 0.3 }
+      // iris/pupil detail the paint model put down. faceModelName '' forces
+      // the full-view composite: a face-only mask would leave fingertips
+      // and speckles outside the face untouched.
+      faceFix = { faceModelName: '', editModels: models, denoise: 0.3 }
     } else {
       onStatus?.('Face pass skipped (no Qwen edit model on the server)…')
     }
@@ -1000,15 +1188,20 @@ export async function runPaintSkin(
     await assertWorkflowNodes(base, wf, { label: 'Hunyuan3D-Paint skinning', describe: describeNode })
     onStatus?.('Unloading previous models…')
     await freeLoadedModels(base)
-    const extras = [fix ? 'face pass' : null, up ? 'detail views' : null].filter(Boolean)
+    const extras = [fix ? 'cleanup + face pass' : null, up ? 'detail views' : null].filter(Boolean)
     onStatus?.(
       extras.length
         ? `Queued — ${extras.join(' + ')}, then multiview texture diffusion…`
         : 'Queued — multiview texture diffusion takes a couple of minutes…'
     )
     const id = await queuePrompt(base, wf)
+    // Base covers the fixed passes (6-view cleanup + face fix + bake) at
+    // default steps; each diffusion step above 10 adds ~3 min (measured:
+    // steps 25 ran ~88 min end-to-end).
+    const steps = cfg.hunyuanPaintSteps ?? 10
+    const stepBudget = Math.max(0, steps - 10) * 3 * 60 * 1000
     return pollHistory(base, id, {
-      timeoutMs: TIMEOUTS.paint,
+      timeoutMs: TIMEOUTS.paint + stepBudget,
       label: 'Hunyuan paint',
       nodes: nodeLabels(wf),
       onTick: (s, info) => onStatus?.(statusLine('skinning', s, info)),
@@ -1033,11 +1226,7 @@ export async function runPaintSkin(
     const { fix, up } = plan[i]
     try {
       if (fix) {
-        onStatus?.(
-          fix.faceModelName
-            ? 'Face pass · precise face mask on the front view…'
-            : 'Face pass · refining the face in the front view…'
-        )
+        onStatus?.('Cleanup + face pass · refining the front view…')
       }
       entry = await runOnce(fix, up)
       break

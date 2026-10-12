@@ -487,8 +487,11 @@ export function resolveAceStepModels(lists, selected = {}) {
   // Optional: the MiniMax music3 text encoder doubles as the AR structure
   // planner that auto-sizes ACE track length (buildAceStepWorkflow adds the
   // planner node only when this is present; absent → exact-duration mode).
+  // Skip the planner when duration > 360s — the planner node hard-caps
+  // max_duration at 360, so ACE's own TE (up to 2000s) is the only path
+  // for longer tracks. The caller (useComfyUI) passes forceDirect.
   const plannerClip = clips.find((m) => /minimax[^/]*music3[^/]*text/i.test(m))
-  const planner = plannerClip ? { plannerClip } : {}
+  const planner = plannerClip && !selected.forceDirect ? { plannerClip } : {}
   if (enc06 && encBig && aceVae && selected.unet) {
     return { kind: 'split', unet: selected.unet, clip1: enc06, clip2: encBig, vae: aceVae, ...planner }
   }
@@ -636,12 +639,17 @@ export async function assertModelsAvailable(base, mode, models) {
 export async function checkNodes(base, classTypes) {
   const missing = []
   let unreachable = false
+  let busy = false
   await Promise.all(
     classTypes.map(async (cls) => {
       try {
         const res = await fetch(`${base}/object_info/${cls}`)
         if (!res.ok) {
-          missing.push(cls)
+          // A wedged/busy ComfyUI answers 4xx/5xx for every node at once.
+          // Only a real 404 means "this node isn't installed" — anything
+          // else is the server failing to answer, not a missing pack.
+          if (res.status === 404) missing.push(cls)
+          else busy = true
           return
         }
         const data = await res.json()
@@ -651,7 +659,7 @@ export async function checkNodes(base, classTypes) {
       }
     })
   )
-  return { missing: [...new Set(missing)], unreachable }
+  return { missing: [...new Set(missing)], unreachable, busy }
 }
 
 // Throwing variant: used by the 3D pipelines before queueing, so a missing

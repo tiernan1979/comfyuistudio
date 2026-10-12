@@ -283,29 +283,21 @@ export const FACE_ENHANCE_NEG =
   'changed background, blurry, low quality'
 
 const FACE_PAINT_PROMPT =
-  'Refine the face in this rendered character view to photoreal quality: crisp detailed eyes ' +
-  'with clear dark irises, visible pupils, defined eyelids, eyelashes and subtle catchlights, ' +
-  'natural skin pores and fine skin texture, defined lips, realistic stubble or beard hair ' +
-  'detail where present. Reduce hair and skin glossiness — matte natural finish, not plastic ' +
-  'or shiny. Keep the identity, pose, expression, outfit, colors, lighting and background ' +
-  'exactly the same — photoreal skin and features only, not a cartoon, painting or illustration.'
+  'Refine this rendered character view: remove dark speckles, spots, blotches and rendering ' +
+  'artifacts from skin, hands and clothing — restore even natural skin tone everywhere ' +
+  'including fingertips, clean matte fabric. Photoreal face detail: crisp eyes with clear ' +
+  'dark irises, visible pupils, defined eyelids, eyelashes and subtle catchlights, natural ' +
+  'skin pores and fine skin texture, defined lips, realistic stubble or beard hair detail ' +
+  'where present. Reduce hair and skin glossiness — matte natural finish, not plastic or ' +
+  'shiny. Keep the identity, pose, expression, outfit, colors, lighting, framing and ' +
+  'background exactly the same — cleanup and photoreal skin only, not a cartoon, painting ' +
+  'or illustration.'
 const FACE_PAINT_NEG =
+  'dark spots, speckles, dirt, blotches, discoloration, dark fingertips, stains, ' +
   'deformed face, melted features, warped eyes, blank eyes, empty eyes, no iris, no pupil, ' +
   'plastic or waxy skin, overly shiny hair, glossy hair, cartoon, anime, painting, ' +
   'illustration, doll-like, airbrushed, changed outfit, changed pose, blur'
 
-// Full-view cleanup for paint-model artifacts: dark speckles, discolored
-// fingertips, blotches. Runs as ONE batched img2img across all 6 views
-// (KSampler denoises each batch item independently) before the face fix.
-// Light denoise — cleans artifacts without redrawing the view.
-const VIEW_CLEANUP_PROMPT =
-  'Remove dark speckles, spots, dirt marks, blotches and rendering artifacts from this ' +
-  '3D model texture view. Restore clean even skin tone on hands and fingers including ' +
-  'fingertips, clean natural fabric. Keep the character, clothing, colors, pose and ' +
-  'composition exactly the same — artifact removal only.'
-const VIEW_CLEANUP_NEG =
-  'dark spots, speckles, dirt, blotches, discoloration, artifacts, dark fingertips, ' +
-  'stains, changed colors, changed outfit, changed pose, blur, style change'
 
 // Shared face-mask softening: MediaPipeFaceMask is a hard-edged polygon fill,
 // which would leave a visible seam where the edit meets the untouched image.
@@ -1148,25 +1140,32 @@ export function buildMeshWorkflow({
   return wf
 }
 
-// Local pipeline, step 2: mesh in input/3d/ → MIA auto-rig (+ optional
-// Mixamo animation). UniRigLoadMesh's file_path dropdown is cached at
-// ComfyUI startup, so a freshly uploaded mesh is only listed after a
-// restart (the caller checks this before queueing).
+// Local pipeline, step 2: mesh → MIA auto-rig (+ optional Mixamo
+// animations). Loads via MeshToolsLoad's mesh_path STRING — a free path, so
+// any uploaded name or existing server file works with NO ComfyUI restart
+// (the old UniRigLoadMesh file_path dropdown was cached at startup).
 export function buildMiaRigWorkflow({
-  meshName,
+  meshPath, // '3d/foo.glb' — preferred: free string path
+  meshName, // legacy: bare name → '3d/<name>'
   precision = 'fp32',
-  animationFile = '',
+  animationFile = '', // legacy single animation
+  animationFiles = [], // multi: one UniRigApplyAnimation node each
   animationType = 'mixamo',
 }) {
-  const meshBase = String(meshName || '').replace(/\.[^.]+$/, '')
+  const path = String(meshPath || (meshName ? `3d/${meshName}` : ''))
+  const meshBase = path.split('/').pop().replace(/\.[^.]+$/, '')
+  const anims = [
+    ...[].concat(animationFiles || []),
+    ...(animationFile ? [animationFile] : []),
+  ].filter(Boolean)
   const workflow = {
     '41': {
       class_type: 'MIALoadModel',
       inputs: { precision, attn_backend: 'auto' },
     },
     '27': {
-      class_type: 'UniRigLoadMesh',
-      inputs: { source_folder: 'input', file_path: `3d/${meshName}` },
+      class_type: 'MeshToolsLoad',
+      inputs: { mesh_path: path },
     },
     '42': {
       class_type: 'MIAAutoRig',
@@ -1185,18 +1184,18 @@ export function buildMiaRigWorkflow({
     },
   }
 
-  if (animationFile) {
-    const animBase = String(animationFile).replace(/\.[^.]+$/, '')
-    workflow['50'] = {
+  anims.forEach((file, i) => {
+    const animBase = String(file).replace(/\.[^.]+$/, '')
+    workflow[String(50 + i)] = {
       class_type: 'UniRigApplyAnimation',
       inputs: {
         model_fbx_path: ['42', 0],
         animation_type: animationType,
-        animation_file: animationFile,
+        animation_file: file,
         output_name: `${meshBase}_${animBase}`,
       },
     }
-  }
+  })
 
   return workflow
 }
@@ -1477,16 +1476,7 @@ export function buildPaintWorkflow({
       },
     },
   }
-  // Full-view artifact cleanup (speckles, dark fingertips): one batched
-  // img2img across all 6 views. Requires the Qwen edit models, same as the
-  // face fix. Chained before the face fix so both read/write the same batch.
-  let albedoSrc = ['4', 1]
-  if (faceFix?.editModels) {
-    const cleaned = applyViewCleanup(wf, { editModels: faceFix.editModels })
-    albedoSrc = [cleaned, 0]
-    wf['5'].inputs.albedo = albedoSrc
-  }
-  if (faceFix) applyPaintFaceFix(wf, { ...faceFix, albedoSrc })
+  if (faceFix) applyPaintFaceFix(wf, faceFix)
   if (viewUpscale) applyViewUpscale(wf, viewSize)
   return wf
 }
@@ -1532,53 +1522,6 @@ function applyViewUpscale(wf, viewSize) {
   wf['5'].inputs.mr = ['21', 0]
 }
 
-// Batched full-view artifact cleanup: one KSampler pass over the whole
-// 6-view albedo batch. Returns the node ID of the cleaned batch so the
-// face fix and bake can read from it instead of the raw paint output.
-function applyViewCleanup(wf, { editModels }) {
-  // Reuse the Qwen loaders the face fix installs (37/38/39).
-  wf['37'] = { class_type: 'UNETLoader', inputs: { unet_name: editModels.unet, weight_dtype: 'default' } }
-  wf['38'] = {
-    class_type: 'CLIPLoader',
-    inputs: { clip_name: editModels.clip, type: 'qwen_image', device: 'default' },
-  }
-  wf['39'] = { class_type: 'VAELoader', inputs: { vae_name: editModels.vae } }
-  // Conditioning from view 0 only (text encoders are not guaranteed to take
-  // a batch); the latent encodes the full 6-view batch and KSampler
-  // broadcasts the conditioning across it.
-  wf['197'] = { class_type: 'ImageFromBatch', inputs: { image: ['4', 1], batch_index: 0, length: 1 } }
-  wf['190'] = {
-    class_type: 'TextEncodeQwenImageEdit',
-    inputs: { clip: ['38', 0], vae: ['39', 0], image: ['197', 0], prompt: VIEW_CLEANUP_PROMPT },
-  }
-  wf['191'] = {
-    class_type: 'TextEncodeQwenImageEdit',
-    inputs: { clip: ['38', 0], vae: ['39', 0], image: ['197', 0], prompt: VIEW_CLEANUP_NEG },
-  }
-  wf['192'] = { class_type: 'VAEEncode', inputs: { pixels: ['4', 1], vae: ['39', 0] } }
-  wf['193'] = { class_type: 'ModelSamplingAuraFlow', inputs: { model: ['37', 0], shift: 3 } }
-  wf['194'] = { class_type: 'CFGNorm', inputs: { model: ['193', 0], strength: 1 } }
-  wf['195'] = {
-    class_type: 'KSampler',
-    inputs: {
-      model: ['194', 0],
-      positive: ['190', 0],
-      negative: ['191', 0],
-      latent_image: ['192', 0],
-      seed: 1234,
-      control_after_generate: 'fixed',
-      steps: 12,
-      cfg: 2.5,
-      sampler_name: 'euler',
-      scheduler: 'simple',
-      // Low denoise: only redraws artifact pixels; structure stays intact.
-      denoise: 0.25,
-    },
-  }
-  wf['196'] = { class_type: 'VAEDecode', inputs: { samples: ['195', 0], vae: ['39', 0] } }
-  return '196'
-}
-
 // Face pass inside the paint run: after the 6 views are generated (node 4)
 // and before they are baked (node 5), run a Qwen-Image face refine on the
 // FRONT view only (camera azimuth list starts at 0), then rebuild the albedo
@@ -1586,9 +1529,8 @@ function applyViewCleanup(wf, { editModels }) {
 // untouched. With a MediaPipe model the edit is confined to a blurred face
 // mask; without one it's a low-denoise global refine of the front view
 // (the front view dominates the bake at view weight 1.0).
-// `albedoSrc` lets the caller chain after a view-cleanup pass.
-function applyPaintFaceFix(wf, { faceModelName = '', editModels, denoise = 0.45, albedoSrc = ['4', 1] }) {
-  wf['10'] = { class_type: 'ImageFromBatch', inputs: { image: albedoSrc, batch_index: 0, length: 1 } }
+function applyPaintFaceFix(wf, { faceModelName = '', editModels, denoise = 0.45 }) {
+  wf['10'] = { class_type: 'ImageFromBatch', inputs: { image: ['4', 1], batch_index: 0, length: 1 } }
 
   let refined = ['78', 0]
   if (faceModelName) {
@@ -1662,9 +1604,8 @@ function applyPaintFaceFix(wf, { faceModelName = '', editModels, denoise = 0.45,
   }
   wf['78'] = { class_type: 'VAEDecode', inputs: { samples: ['73', 0], vae: ['39', 0] } }
 
-  // Rebuild the 6-view albedo batch: refined front + views 1..5 from the
-  // same source the front view came from (raw paint or post-cleanup).
-  wf['62'] = { class_type: 'ImageFromBatch', inputs: { image: albedoSrc, batch_index: 1, length: 5 } }
+  // Rebuild the 6-view albedo batch: refined front + views 1..5 untouched.
+  wf['62'] = { class_type: 'ImageFromBatch', inputs: { image: ['4', 1], batch_index: 1, length: 5 } }
   wf['63'] = { class_type: 'ImageBatch', inputs: { image1: refined, image2: ['62', 0] } }
   wf['5'].inputs.albedo = ['63', 0]
 }
@@ -1731,6 +1672,8 @@ function bannedClause(items, existing) {
 // box's default text). MiniMax Music3 treats [Tag] lines as executable song
 // structure; a section map is what makes the AR planner actually USE the
 // requested duration instead of ending after 15-40s.
+import { plannerCapDuration } from './llm.js'
+
 export const STRUCTURE_TAGS = '[Intro]\n\n[Verse]\n\n[Pre-Chorus]\n\n[Chorus]\n\n[Post-Chorus]\n\n[Bridge]\n\n[Instrumental]\n\n[Solo]\n\n[Outro]'
 
 function stripStructureTags(text) {
@@ -1831,7 +1774,12 @@ export function buildMusicWorkflow({
         caption: fullCaption,
         lyrics: lyricText,
         seed: actualSeed,
-        max_duration: duration,
+        // Cap set ABOVE the requested length (see plannerCapDuration): the
+        // planner ends the song when the music is done, so a cap pinned at
+        // the request makes the cap the limiter — a 240s ask came back 2:47.
+        // The section count drives the real length; headroom just stops the
+        // ceiling from cutting it short.
+        max_duration: plannerCapDuration(duration),
         cfg_scale: cfgScale,
         top_k: 50,
       },
@@ -1978,7 +1926,11 @@ export function buildAceStepWorkflow({
   if (!ace) throw new Error('buildAceStepWorkflow needs models.ace — resolve the ACE assets first')
   const actualSeed = seed === -1 ? Math.floor(Math.random() * 2 ** 48) : seed
   const dur = Number(duration) > 0 ? Number(duration) : 300
-  const hasPlanner = !!ace.plannerClip
+  // ACE always uses its own TE for exact duration — the MiniMax AR planner
+  // cuts songs short (section-count driven, ends when the form "feels
+  // complete"). ACE's TE fills the exact duration you set; AudioTailTrim
+  // culls the silence tail when the song ends early.
+  const hasPlanner = false
   // AR planner length (node a11 output 1: FLOAT seconds) drives both the
   // TE duration and the latent window; static `dur` otherwise.
   const planned = hasPlanner ? ['a11', 1] : dur
@@ -2017,7 +1969,9 @@ export function buildAceStepWorkflow({
         caption,
         lyrics,
         seed: actualSeed,
-        max_duration: dur,
+        // Headroom cap — same as the MiniMax path. The section count drives
+        // the real length; this stops the ceiling from cutting it short.
+        max_duration: plannerCapDuration(dur),
         cfg_scale: cfgScale,
         top_k: 50,
       },

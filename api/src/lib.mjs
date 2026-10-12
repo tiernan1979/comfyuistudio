@@ -2,6 +2,8 @@
 // Defaults mirror src/store/useStore.js (DEFAULT_MODELS + *Settings) so the
 // API behaves exactly like the app's own defaults.
 
+import fs from 'node:fs'
+import fsp from 'node:fs/promises'
 import {
   buildImageWorkflow,
   buildEditWorkflow,
@@ -113,10 +115,21 @@ export const MODEL_PREFS = {
     clip: [/umt5/i, /minimax[-_ ]?h3/i, /qwen3vl.*minimax/i],
     vae: [/wan.*vae/i, /video.*vae/i, /minimax.*video/i],
   },
+// Prefer exact/unambiguous ACE asset regexes. A bare /music/i is too
+  // greedy — it matches MiniMax *and* ACE files, so an ACE-only
+  // install would pick the MiniMax default first. Keep exact ACE
+  // patterns first; /music/i stays as a last resort for installs that
+  // name ACE assets only with "music" in the filename.
   music: {
-    unet: [/minimax[-_ ]?music3[-_ ]?dit/i, /minimax.*dit/i, /music/i],
-    clip: [/minimax.*text.*encoder/i, /minimax/i],
-    vae: [/minimax[-_ ]?music3[-_ ]?dav/i, /dav/i, /music/i],
+    unet: [
+      /ace[-_ ]?step.*aio/i, /ace[-_ ]?step.*dit/i, /ace[-_ ]?step/i,
+      /minimax[-_ ]?music3[-_ ]?dit/i, /minimax.*dit/i, /music/i,
+    ],
+    clip: [
+      /ace[-_ ]?step.*qwen.*2\.5.*vl/i, /ace[-_ ]?step.*text.*encoder/i,
+      /ace[-_ ]?step/i, /minimax.*text.*encoder/i, /minimax/i,
+    ],
+    vae: [/ace[-_ ]?step.*vae/i, /ace[-_ ]?step/i, /minimax[-_ ]?music3[-_ ]?dav/i, /dav/i, /music/i],
   },
 }
 
@@ -161,19 +174,43 @@ export function resolveModels(lists, mode, overrides = {}) {
     // ACE-Step music: clip/vae ride inside the ACE assets (AIO checkpoint or
     // split qwen encoders) — resolved below, so don't force the MiniMax
     // defaults to exist on the server (an ACE-only install has no MiniMax).
+    // This must run BEFORE the override check: a config preset that selects
+    // an ACE unet still carries the flat MiniMax clip/vae in its override
+    // map, and those files won't exist on an ACE-only server.
     if (mode === 'music' && group !== 'unet' && out.unet && isAceStepModel(out.unet)) {
-      out[group] = overrides[group] || base[group]
+      out[group] = base[group]
       continue
     }
     if (overrides[group]) {
-      const arr = Array.isArray(lists?.[group]) ? lists[group] : []
-      const hit = arr.find((m) => m === overrides[group]) || arr.find((m) => stem(m) === stem(overrides[group]))
+      // Music UNET may be an ACE-Step AIO checkpoint, which lives in
+      // models/checkpoints/ (CheckpointLoaderSimple), not models/unet/
+      // (UNETLoader). An explicit override selects the engine, so accept it
+      // from either loader list — the ACE resolver below picks it up again.
+      const groups =
+        mode === 'music' && group === 'unet'
+          ? ['unet', 'checkpoint']
+          : [group]
+      const hit = groups
+        .flatMap((g) => (Array.isArray(lists?.[g]) ? lists[g] : []))
+        .find(
+          (m) => m === overrides[group] || stem(m) === stem(overrides[group]),
+        )
       if (!hit) throw new Error(`Model not on server (${group}): ${overrides[group]}`)
       out[group] = hit
       continue
     }
     const arr = Array.isArray(lists?.[group]) ? lists[group] : []
-    const picked = pickModel(arr, base[group], prefs[group])
+    let picked = pickModel(arr, base[group], prefs[group])
+    // Music UNET with no MiniMax file: fall back to an ACE AIO checkpoint.
+    // ACE-Step loads its unet+clip+vae from CheckpointLoaderSimple, so the
+    // DiT is in models/checkpoints/, not models/unet/ — search there too.
+    if (!picked && mode === 'music' && group === 'unet') {
+      picked = pickModel(
+        Array.isArray(lists?.checkpoint) ? lists.checkpoint : [],
+        base[group],
+        [/ace[-_ ]?step.*aio/i, /ace[-_ ]?step/i],
+      )
+    }
     if (!picked) {
       if (arr.length === 0) {
         throw new Error(`No ${group} models found on the ComfyUI server — is it reachable?`)
@@ -219,6 +256,141 @@ export function pickModelOverrides(mode, bodyModels) {
   if (!bodyModels || typeof bodyModels !== 'object') return {}
   const nested = bodyModels[mode]
   return nested && typeof nested === 'object' ? nested : bodyModels
+}
+
+// ---------------------------------------------------------------------------
+// Shared runtime config (config.json).
+//
+// The browser writes this via Settings → Save (WebDAV PUT to nginx, which
+// serves the studio-config volume at /configdir). The API mounts that same
+// volume read-only, so API generations follow whatever the UI is configured
+// with instead of the hardcoded MiniMax defaults in DEFAULT_MODELS.
+// Request-body `models` / `settings` still win — config is the baseline.
+// ---------------------------------------------------------------------------
+
+const CONFIG_MODES = new Set(['image', 'edit', 'video', 'music'])
+const CONFIG_MODEL_GROUPS = new Set(['unet', 'clip', 'clip1', 'clip2', 'vae', 'lora'])
+// Flat per-mode generation settings (steps, cfg, duration, quality…). The
+// model-ish keys are excluded: unet/clip/vae live under models, and upscale
+// is resolved separately against the server's UpscaleModelLoader list.
+const CONFIG_SETTING_KEYS = {
+  image: new Set(['aspectRatio', 'turboMode', 'seed', 'steps', 'cfg']),
+  edit: new Set(['seed', 'steps', 'cfg']),
+  video: new Set(['resolution', 'frames', 'fps', 'seed', 'steps', 'cfg']),
+  music: new Set(['duration', 'seed', 'steps', 'cfgScale', 'quality']),
+}
+
+function sanitizeConfigModels(raw) {
+  const out = {}
+  if (!raw || typeof raw !== 'object') return out
+  for (const [mode, group] of Object.entries(raw)) {
+    if (!CONFIG_MODES.has(mode) || !group || typeof group !== 'object') continue
+    const entries = {}
+    for (const [k, v] of Object.entries(group)) {
+      if (CONFIG_MODEL_GROUPS.has(k) && typeof v === 'string' && v) entries[k] = v
+    }
+    if (Object.keys(entries).length) out[mode] = entries
+  }
+  return out
+}
+
+function sanitizeConfigSettings(mode, raw) {
+  const out = {}
+  const keys = CONFIG_SETTING_KEYS[mode]
+  if (!keys || !raw || typeof raw !== 'object') return out
+  for (const k of keys) {
+    const v = raw[k]
+    if (v === undefined || v === null) continue
+    if (typeof v === 'number' && Number.isFinite(v)) out[k] = v
+    else if (typeof v === 'string' || typeof v === 'boolean') out[k] = v
+  }
+  return out
+}
+
+// Named model presets (multi-model picker) — same shape the browser's
+// config.js sanitizes: per-mode arrays of { name, unet, clip, vae, lora?,
+// engine? }. Plus `active`: per-mode index (or null) of the selected preset.
+function sanitizeConfigPresets(raw) {
+  const out = {}
+  if (!raw || typeof raw !== 'object') return out
+  for (const [mode, list] of Object.entries(raw)) {
+    if (!CONFIG_MODES.has(mode) || !Array.isArray(list)) continue
+    const entries = []
+    for (const p of list) {
+      if (!p || typeof p !== 'object') continue
+      const e = {}
+      if (typeof p.name === 'string') e.name = p.name.slice(0, 80)
+      for (const k of ['unet', 'clip', 'vae', 'lora']) {
+        if (typeof p[k] === 'string' && p[k]) e[k] = p[k]
+      }
+      if (typeof p.engine === 'string') e.engine = p.engine
+      if (Object.keys(e).length) entries.push(e)
+    }
+    if (entries.length) out[mode] = entries
+  }
+  return out
+}
+
+function sanitizeConfigActive(raw) {
+  const out = {}
+  if (!raw || typeof raw !== 'object') return out
+  for (const [mode, v] of Object.entries(raw)) {
+    if (!CONFIG_MODES.has(mode)) continue
+    if (v === null || Number.isInteger(v)) out[mode] = v
+  }
+  return out
+}
+
+let configCache = { at: 0, models: {}, settings: {} }
+
+// Read config.json from disk. Cached for a few seconds so a burst of API
+// calls doesn't re-read the file each time; a missing file (plain `docker
+// run` without the volume) silently falls back to the built-in defaults.
+export async function loadRuntimeConfig(configPath, { ttlMs = 3000 } = {}) {
+  const now = Date.now()
+  if (now - configCache.at < ttlMs) return configCache
+  const empty = { at: now, models: {}, settings: {} }
+  if (!configPath) {
+    configCache = empty
+    return configCache
+  }
+  let raw
+  try {
+    raw = JSON.parse(await fsp.readFile(configPath, 'utf8'))
+  } catch {
+    configCache = empty
+    return configCache
+  }
+  const models = sanitizeConfigModels(raw?.models)
+  const settings = {}
+  for (const mode of CONFIG_MODES) {
+    const s = sanitizeConfigSettings(mode, raw?.[`${mode}Settings`])
+    if (Object.keys(s).length) settings[mode] = s
+  }
+  const presets = sanitizeConfigPresets(raw?.presets)
+  const active = sanitizeConfigActive(raw?.active)
+  configCache = { at: now, models, settings, presets, active }
+  return configCache
+}
+
+// Baseline model overrides implied by the saved config. Returns the
+// mode-nested shape pickModelOverrides understands, so a request-body
+// override still wins. Honors the selected preset (config.active[mode]) —
+// the preset's unet/clip/vae/lora win over the flat models[mode] group.
+// Only model-group keys are returned (name/engine/UI metadata is dropped).
+export function configModelOverrides(config, mode) {
+  const flat = config?.models?.[mode]
+  const presets = config?.presets?.[mode]
+  const idx = config?.active?.[mode]
+  const preset = idx === null || idx === undefined ? null : presets?.[idx]
+  const src = preset ? { ...(flat || {}), ...preset } : flat
+  if (!src || typeof src !== 'object') return {}
+  const out = {}
+  for (const k of CONFIG_MODEL_GROUPS) {
+    const v = src[k]
+    if (typeof v === 'string' && v) out[k] = v
+  }
+  return out
 }
 
 // Resolve settings.upscale against the server's UpscaleModelLoader list.

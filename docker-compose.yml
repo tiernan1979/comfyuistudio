@@ -39,6 +39,9 @@ services:
     restart: unless-stopped
     volumes:
       - studio-api-data:/app/data
+      # Shared config.json (the browser's Settings → Save) — read-only, so
+      # API generations follow the same models/settings as the web app.
+      - studio-config:/configdir:ro
 
 volumes:
   studio-api-data:

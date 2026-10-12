@@ -34,6 +34,26 @@ function loadThree() {
   return threePromise
 }
 
+let fbxPromise = null
+// FBXLoader ships only as an ES module (examples/jsm), unlike GLTFLoader's
+// classic build. It bare-imports "three", so it needs the import map in
+// index.html to resolve that to the same build the UMD loader exposes.
+function loadFbxLoader() {
+  if (fbxPromise) return fbxPromise
+  fbxPromise = (async () => {
+    await loadThree()
+    if (!window.THREE) throw new Error('three.js unavailable')
+    if (!window.__fbxLoaderMod) {
+      window.__fbxLoaderMod = import(
+        'https://unpkg.com/three@0.160.0/examples/jsm/loaders/FBXLoader.js'
+      )
+    }
+    const mod = await window.__fbxLoaderMod
+    return { THREE: window.THREE, FBXLoader: mod.FBXLoader }
+  })()
+  return fbxPromise
+}
+
 // Render one frame of a GLB at `url` and return a PNG data URL (≤ size px).
 // Returns null on any failure (offline, CORS, decode error).
 export async function captureGlbSnapshot(url, { size = 512, timeoutMs = 12000 } = {}) {
@@ -90,6 +110,79 @@ export async function captureGlbSnapshot(url, { size = 512, timeoutMs = 12000 } 
     const dataUrl = renderer.domElement.toDataURL('image/png')
 
     // Cleanup.
+    model.traverse((o) => {
+      if (o.geometry) o.geometry.dispose()
+      if (o.material) {
+        const mats = Array.isArray(o.material) ? o.material : [o.material]
+        mats.forEach((m) => {
+          for (const v of Object.values(m)) if (v && v.isTexture) v.dispose()
+          m.dispose()
+        })
+      }
+    })
+    renderer.dispose()
+    renderer.forceContextLoss?.()
+    return dataUrl || null
+  } catch {
+    return null
+  } finally {
+    if (renderer?.domElement?.parentNode) renderer.domElement.parentNode.removeChild(renderer.domElement)
+    renderer?.dispose?.()
+  }
+}
+
+// Same as captureGlbSnapshot but for FBX (rigged/animated history entries).
+// FBXLoader returns a Group that may carry an AnimationClip; we render the
+// rest pose (frame 0 of whatever action came in with the file).
+export async function captureFbxSnapshot(url, { size = 512, timeoutMs = 20000 } = {}) {
+  if (!url || typeof document === 'undefined') return null
+  let renderer = null
+  try {
+    const libs = await Promise.race([
+      loadFbxLoader(),
+      new Promise((_, rej) => setTimeout(() => rej(new Error('fbx loader timeout')), 12000)),
+    ])
+    const { THREE, FBXLoader } = libs
+    if (!THREE || !FBXLoader) return null
+
+    renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true })
+    renderer.setSize(size, size)
+    renderer.setClearColor(0x000000, 0)
+    renderer.outputColorSpace = THREE.SRGBColorSpace
+    renderer.domElement.style.position = 'fixed'
+    renderer.domElement.style.left = '-99999px'
+    renderer.domElement.style.width = `${size}px`
+    renderer.domElement.style.height = `${size}px`
+    document.body.appendChild(renderer.domElement)
+
+    const scene = new THREE.Scene()
+    const camera = new THREE.PerspectiveCamera(35, 1, 0.01, 1000)
+    scene.add(new THREE.AmbientLight(0xffffff, 0.7))
+    const key = new THREE.DirectionalLight(0xffffff, 1.2)
+    key.position.set(2, 3, 4)
+    scene.add(key)
+    const fill = new THREE.DirectionalLight(0xffffff, 0.5)
+    fill.position.set(-2, -1, -3)
+    scene.add(fill)
+
+    const loader = new FBXLoader()
+    const model = await Promise.race([
+      loader.loadAsync(url),
+      new Promise((_, rej) => setTimeout(() => rej(new Error('fbx load timeout')), timeoutMs)),
+    ])
+    scene.add(model)
+
+    const box = new THREE.Box3().setFromObject(model)
+    const center = box.getCenter(new THREE.Vector3())
+    const sphere = box.getBoundingSphere(new THREE.Sphere())
+    const radius = sphere.radius || 1
+    const dist = radius / Math.tan((camera.fov * Math.PI) / 360) * 1.15
+    camera.position.set(center.x + dist * 0.55, center.y + dist * 0.25, center.z + dist * 0.8)
+    camera.lookAt(center)
+
+    renderer.render(scene, camera)
+    const dataUrl = renderer.domElement.toDataURL('image/png')
+
     model.traverse((o) => {
       if (o.geometry) o.geometry.dispose()
       if (o.material) {

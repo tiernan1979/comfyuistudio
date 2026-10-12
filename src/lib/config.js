@@ -170,13 +170,14 @@ const MODE_SETTING_FIELDS = {
     cfg: [0, 30],
   },
   // musicSettings: `duration` is the planner cap (10–360s, default 300) —
-  // the model sizes the song itself; whitelist it so the knob syncs.
+  // the MiniMax AR planner node hard-caps at 360s; the model sizes the
+  // song itself; whitelist it so the knob syncs.
   musicSettings: {
     seed: 'number',
     steps: [1, 100],
     cfgScale: [0, 10],
     quality: new Set(['wav', '320k', 'V0', '128k']),
-    duration: [10, 360],
+    duration: [10, 2000],
   },
 }
 
@@ -271,6 +272,36 @@ function sanitize(raw) {
     if (Object.keys(models).length > 0) out.models = models
   }
 
+  // Named model presets (multi-model picker): per-mode arrays of
+  // { name, unet, clip, vae, lora?, engine? }.
+  if (raw.presets && typeof raw.presets === 'object') {
+    const presets = {}
+    for (const [mode, list] of Object.entries(raw.presets)) {
+      if (!MODEL_GROUPS.has(mode) || !Array.isArray(list)) continue
+      const entries = []
+      for (const p of list) {
+        if (!p || typeof p !== 'object') continue
+        const e = {}
+        if (typeof p.name === 'string') e.name = p.name.slice(0, 80)
+        for (const k of ['unet', 'clip', 'vae', 'lora']) {
+          if (typeof p[k] === 'string') e[k] = p[k]
+        }
+        if (typeof p.engine === 'string') e.engine = p.engine
+        if (Object.keys(e).length) entries.push(e)
+      }
+      if (entries.length) presets[mode] = entries
+    }
+    if (Object.keys(presets).length > 0) out.presets = presets
+  }
+  if (raw.active && typeof raw.active === 'object') {
+    const active = {}
+    for (const [mode, v] of Object.entries(raw.active)) {
+      if (!MODEL_GROUPS.has(mode)) continue
+      if (v === null || Number.isInteger(v)) active[mode] = v
+    }
+    if (Object.keys(active).length > 0) out.active = active
+  }
+
   const threeD = sanitizeThreeD(raw.threeD)
   if (threeD) out.threeD = threeD
 
@@ -313,6 +344,8 @@ export function configFromState(state) {
     llmProvider: state.llmProvider,
     llmConfigs,
     models: JSON.parse(JSON.stringify(state.models || {})),
+    presets: JSON.parse(JSON.stringify(state.presets || {})),
+    active: JSON.parse(JSON.stringify(state.active || {})),
     threeD: JSON.parse(JSON.stringify(state.threeD || {})),
     // Per-mode generation settings — flat objects of primitives, so a
     // shallow spread is enough (the sanitizer in applyServerConfig clamps

@@ -1,7 +1,7 @@
 import { motion } from 'framer-motion'
 import { useRef } from 'react'
-import { Music, X } from 'lucide-react'
-import useStore from '../store/useStore'
+import { Music, X, Disc3, Clapperboard } from 'lucide-react'
+import useStore, { presetLabel } from '../store/useStore'
 import { isAceStepModel } from '../lib/workflows'
 import clsx from 'clsx'
 
@@ -83,7 +83,16 @@ export default function SettingsPanel() {
   const lyrics = useStore((s) => s.lyrics)
   const setLyrics = useStore((s) => s.setLyrics)
   const generating = useStore((s) => s.generating)
-  const musicUnet = useStore((s) => s.models.music?.unet || '')
+  const musicPresets = useStore((s) => s.presets?.music || [])
+  const musicActive = useStore((s) => s.active?.music)
+  const setActivePreset = useStore((s) => s.setActivePreset)
+  const titles = useStore((s) => s.titles)
+  const setTitle = useStore((s) => s.setTitle)
+  const flatMusic = useStore((s) => s.models?.music || {})
+  const musicPreset = musicActive != null ? musicPresets[musicActive] : null
+  const musicUnet = (musicPreset?.unet ?? flatMusic.unet) || ''
+  const videoPresets = useStore((s) => s.presets?.video || [])
+  const videoActive = useStore((s) => s.active?.video)
   const referenceAudio = useStore((s) => s.referenceAudio)
   const setReferenceAudio = useStore((s) => s.setReferenceAudio)
   const refAudioInputRef = useRef(null)
@@ -126,6 +135,47 @@ export default function SettingsPanel() {
   if (mode === 'music') {
     return (
       <div className="space-y-4">
+        {/* Engine / preset switcher — flip between MiniMax Music 3 and
+            ACE-Step 1.5 (or any other saved preset) in one click. */}
+        {musicPresets.length > 0 && (
+          <div>
+            <label className="text-xs text-text-muted mb-1.5 block">Music Engine</label>
+            <div className="grid grid-cols-2 gap-1.5">
+              {musicPresets.map((p, i) => {
+                const isAce = p.engine === 'ace' || isAceStepModel(p.unet || '')
+                return (
+                  <motion.button
+                    key={i}
+                    whileHover={{ scale: 1.02 }}
+                    whileTap={{ scale: 0.98 }}
+                    onClick={() => setActivePreset('music', i)}
+                    disabled={generating}
+                    className={clsx(
+                      'flex items-center gap-2 px-3 py-2 rounded-xl text-xs transition-all text-left',
+                      musicActive === i
+                        ? 'bg-accent text-white shadow-lg shadow-accent/25'
+                        : 'bg-bg-card text-text-secondary hover:bg-bg-hover border border-border',
+                      generating && 'opacity-50'
+                    )}
+                    title={presetLabel(p)}
+                  >
+                    <Disc3 size={14} className="shrink-0" />
+                    <div className="min-w-0">
+                      <p className="font-medium truncate">{p.name || `Preset ${i + 1}`}</p>
+                      <p className={clsx('text-[10px] truncate', musicActive === i ? 'text-white/70' : 'text-text-muted')}>
+                        {isAce ? 'ACE-Step 1.5' : /minimax/i.test(p.unet || '') ? 'MiniMax Music 3' : p.unet}
+                      </p>
+                    </div>
+                  </motion.button>
+                )
+              })}
+            </div>
+            <p className="text-[10px] text-text-muted/60 mt-1">
+              Add more presets in Settings → Models → Music. ACE-Step supports reference audio.
+            </p>
+          </div>
+        )}
+
         <div>
           <label className="text-xs text-text-muted mb-1.5 block">
             Lyrics <span className="text-text-muted/60">(tags = structure, no sung words = instrumental — leave the tags for a full-length track)</span>
@@ -137,6 +187,20 @@ export default function SettingsPanel() {
             rows={4}
             placeholder={'[Intro]\n\n[Verse]\n\n[Pre-Chorus]\n\n[Chorus]\n\n[Post-Chorus]\n\n[Bridge]\n\n[Instrumental]\n\n[Solo]\n\n[Outro]\n\nor your words:\nVerse 1:\n…\nChorus:\n…'}
             className="w-full px-3 py-2 rounded-xl bg-bg-card border border-border text-text-primary placeholder:text-text-muted resize-y min-h-20 text-xs leading-relaxed focus:outline-none focus:ring-2 focus:ring-accent disabled:opacity-50"
+          />
+        </div>
+
+        <div>
+          <label className="text-xs text-text-muted mb-1.5 block">
+            Title <span className="text-text-muted/60">(used for the saved filename — AI fills this in, you can edit it)</span>
+          </label>
+          <input
+            type="text"
+            value={titles?.music || ''}
+            onChange={(e) => setTitle('music', e.target.value)}
+            disabled={generating}
+            placeholder="Song title (e.g. Sunrise Overdrive)"
+            className="w-full px-3 py-2 rounded-xl bg-bg-card border border-border text-text-primary placeholder:text-text-muted text-xs focus:outline-none focus:ring-2 focus:ring-accent disabled:opacity-50"
           />
         </div>
 
@@ -196,10 +260,12 @@ export default function SettingsPanel() {
           value={musicSettings.duration}
           onChange={(v) => setMusicSettings({ duration: v })}
           min={10}
-          max={360}
+          max={isAceStepModel(musicUnet) ? 2000 : 360}
           disabled={generating}
           unit="sec"
-          suffix="The song ends earlier when the music does."
+          suffix={isAceStepModel(musicUnet)
+            ? 'ACE fills the full duration; silence tail is culled after generation.'
+            : 'MiniMax planner hard-caps at 360s.'}
         />
 
         <Slider
@@ -331,6 +397,51 @@ export default function SettingsPanel() {
 
   return (
     <div className="space-y-4">
+      {videoPresets.length > 0 && (
+        <div>
+          <label className="text-xs text-text-muted mb-1.5 block">Video Model</label>
+          <div className="grid grid-cols-2 gap-1.5">
+            {videoPresets.map((p, i) => (
+              <motion.button
+                key={i}
+                whileHover={{ scale: 1.02 }}
+                whileTap={{ scale: 0.98 }}
+                onClick={() => setActivePreset('video', i)}
+                disabled={generating}
+                className={clsx(
+                  'flex items-center gap-2 px-3 py-2 rounded-xl text-xs transition-all text-left',
+                  videoActive === i
+                    ? 'bg-accent text-white shadow-lg shadow-accent/25'
+                    : 'bg-bg-card text-text-secondary hover:bg-bg-hover border border-border',
+                  generating && 'opacity-50'
+                )}
+                title={presetLabel(p)}
+              >
+                <Clapperboard size={14} className="shrink-0" />
+                <div className="min-w-0">
+                  <p className="font-medium truncate">{p.name || `Preset ${i + 1}`}</p>
+                  <p className={clsx('text-[10px] truncate font-mono', videoActive === i ? 'text-white/70' : 'text-text-muted')}>
+                    {p.unet}
+                  </p>
+                </div>
+              </motion.button>
+            ))}
+          </div>
+        </div>
+      )}
+      <div>
+        <label className="text-xs text-text-muted mb-1.5 block">
+          Title <span className="text-text-muted/60">(used for the saved filename — AI fills this in, you can edit it)</span>
+        </label>
+        <input
+          type="text"
+          value={titles?.video || ''}
+          onChange={(e) => setTitle('video', e.target.value)}
+          disabled={generating}
+          placeholder="Video title"
+          className="w-full px-3 py-2 rounded-xl bg-bg-card border border-border text-text-primary placeholder:text-text-muted text-xs focus:outline-none focus:ring-2 focus:ring-accent disabled:opacity-50"
+        />
+      </div>
       <div>
         <label className="text-xs text-text-muted mb-1.5 block">Resolution</label>
         <div className="grid grid-cols-2 gap-1.5">

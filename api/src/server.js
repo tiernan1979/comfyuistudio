@@ -41,6 +41,8 @@ import {
   outputsOf,
   hasOutputs,
   pickModelOverrides,
+  loadRuntimeConfig,
+  configModelOverrides,
 } from './lib.mjs'
 import {
   getModelLists,
@@ -70,6 +72,9 @@ export function createApp(opts = {}) {
     comfyuiUrl: (opts.comfyuiUrl || process.env.COMFYUI_URL || 'http://10.1.1.102:8188').replace(/\/+$/, ''),
     apiKey: opts.apiKey !== undefined ? opts.apiKey : process.env.API_KEY || '',
     dataDir: opts.dataDir || process.env.DATA_DIR || path.join(__dirname, '..', 'data'),
+    // Shared config.json (the studio-config volume, read-only). Lets API
+    // generations follow the same models/settings the browser is using.
+    configPath: opts.configPath || process.env.CONFIG_PATH || '/configdir/config.json',
     timeoutMs: opts.timeoutMs || Number(process.env.GENERATE_TIMEOUT_MS || 15 * 60 * 1000),
     pollMs: opts.pollMs || 2000,
   }
@@ -239,12 +244,20 @@ export function createApp(opts = {}) {
     const negativePrompt = typeof body.negativePrompt === 'string' ? body.negativePrompt : ''
     const lyrics = typeof body.lyrics === 'string' ? body.lyrics : ''
     const settings = body.settings && typeof body.settings === 'object' ? body.settings : {}
-    const modelOverrides = pickModelOverrides(mode, body.models)
     const wait = body.wait !== false
     const timeoutMs = Math.min(
       Number(body.timeoutSec) > 0 ? Number(body.timeoutSec) * 1000 : cfg.timeoutMs,
       60 * 60 * 1000,
     )
+
+    // Baseline from shared config.json: the browser's saved models and
+    // per-mode settings. Explicit request-body `models` / `settings`
+    // still win over the config.
+    const runtimeConfig = await loadRuntimeConfig(cfg.configPath)
+    const cfgModels = configModelOverrides(runtimeConfig, mode)
+    const modelOverrides = { ...pickModelOverrides(mode, body.models), ...cfgModels }
+    const cfgSettings = runtimeConfig.settings?.[mode] || {}
+    const effSettings = { ...DEFAULT_SETTINGS[mode], ...cfgSettings, ...settings }
 
     let lists
     try {
@@ -253,7 +266,7 @@ export function createApp(opts = {}) {
       throw new HttpError(502, `Could not reach ComfyUI at ${cfg.comfyuiUrl} (${err.message})`)
     }
 
-    if (FLOW_MODES.includes(mode)) return runFlow(mode, body, settings, lists)
+    if (FLOW_MODES.includes(mode)) return runFlow(mode, body, effSettings, lists)
 
     let models
     try {
@@ -263,7 +276,7 @@ export function createApp(opts = {}) {
     }
     if (mode === 'image') {
       try {
-        models = { ...models, upscale: resolveUpscaleModel(lists, settings.upscale) }
+        models = { ...models, upscale: resolveUpscaleModel(lists, effSettings.upscale) }
       } catch (err) {
         throw new HttpError(502, err.message)
       }
@@ -295,7 +308,7 @@ export function createApp(opts = {}) {
     // pass OOMs behind other loaded models (tiled decode handles the rest).
     if (mode === 'music') await freeLoadedModels(cfg.comfyuiUrl)
 
-    const workflow = workflowFor(mode, { prompt, negativePrompt, lyrics, settings, models, imageName })
+    const workflow = workflowFor(mode, { prompt, negativePrompt, lyrics, settings: effSettings, models, imageName })
     let promptId
     try {
       promptId = await queuePrompt(cfg.comfyuiUrl, workflow)
@@ -315,7 +328,7 @@ export function createApp(opts = {}) {
       mode,
       elapsedMs: Date.now() - started,
       outputs: outputsOf(item, '/api/file', cfg.comfyuiUrl),
-      settings: { ...DEFAULT_SETTINGS[mode], ...settings },
+      settings: effSettings,
       models,
       error: extractHistoryError(item) || null,
     }

@@ -9,6 +9,7 @@ export default function VideoPlayer() {
   const videoUnet = useStore((s) => s.models?.video?.unet)
   const generating = useStore((s) => s.generating)
   const progress = useStore((s) => s.progress)
+  const title = useStore((s) => s.titles?.video)
   const [playing, setPlaying] = useState(true)
   const [fullscreen, setFullscreen] = useState(false)
   const videoRef = useRef(null)
@@ -24,9 +25,10 @@ export default function VideoPlayer() {
     const m = /[?&]filename=([^&]+)/.exec(outputVideo)
     const name = m ? decodeURIComponent(m[1]) : ''
     const ext = (name.match(/\.\w+$/) || ['.mp4'])[0]
+    const safe = title ? title.replace(/[^\w\s-]/g, '').trim().replace(/\s+/g, '_').slice(0, 60) : ''
     const a = document.createElement('a')
     a.href = url
-    a.download = `comfyui-video-${Date.now()}${ext}`
+    a.download = safe ? `${safe}${ext}` : `comfyui-video-${Date.now()}${ext}`
     a.click()
     URL.revokeObjectURL(url)
   }

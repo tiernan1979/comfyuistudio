@@ -3,7 +3,7 @@ import { motion } from 'framer-motion'
 import { Sparkles, ChevronDown, ChevronUp, Wand2, Bot, Loader2, Globe, BookmarkPlus, BookmarkCheck } from 'lucide-react'
 import useStore from '../store/useStore'
 import { STYLES, enhancePrompt } from '../lib/enhance'
-import { rewritePrompt, resolveLlmConfig, PROVIDERS } from '../lib/llm'
+import { rewritePrompt, resolveLlmConfig, PROVIDERS, padInstrumentalSections, trimVocalSections, parseVocalShare } from '../lib/llm'
 import Dropdown from './Dropdown'
 
 const EXAMPLES = [
@@ -18,9 +18,10 @@ const PLACEHOLDERS = {
   edit: "Describe the change... e.g. 'change the background to a beach at sunset, keep the person the same'",
   video: 'Describe the video... e.g. a fox running through snowy woods at sunset',
   music:
-    'Describe the song, e.g.\n' +
-    'Global Metadata: melodic trance, 126 BPM, F# minor, euphoric, clean club mix.\n' +
-    'Arrangement: atmospheric intro → rising build → soaring breakdown → big drop → stripped outro',
+    'Describe the song in plain words — the AI button turns it into a full package\n' +
+    '(metadata + arrangement + tagged lyrics + length). For example:\n' +
+    '4 min progressive trance, Avicii-style, 25% of the song for lyrics, euphoric\n' +
+    'or just: a sad piano ballad about a rainy train station, instrumental',
 }
 
 export default function PromptInput() {
@@ -40,6 +41,9 @@ export default function PromptInput() {
   const searchQuery = useStore((s) => s.searchQuery)
   const setSearchQuery = useStore((s) => s.setSearchQuery)
   const addSavedPrompt = useStore((s) => s.addSavedPrompt)
+  const setLyrics = useStore((s) => s.setLyrics)
+  const setMusicSettings = useStore((s) => s.setMusicSettings)
+  const setTitle = useStore((s) => s.setTitle)
   const [showNegative, setShowNegative] = useState(false)
   const [rewriting, setRewriting] = useState(false)
   const [savedFlash, setSavedFlash] = useState(false)
@@ -98,6 +102,23 @@ export default function PromptInput() {
       )
       setPrompt(out.prompt)
       setSearchQuery(out.searchQuery || '')
+      if (out.title && (mode === 'music' || mode === 'video')) setTitle(mode, out.title)
+      // Music mode: the AI writes the full song package — tagged lyrics
+      // fill the Lyrics box, and a stated length moves the Max length knob.
+      // Weak/local models ignore the vocal-share rule, so enforce it
+      // deterministically: trim vocal sections to the requested share,
+      // then pad instrumental sections to fill the rest of the duration.
+      if (mode === 'music') {
+        if (out.duration) setMusicSettings({ duration: out.duration })
+        if (out.lyrics) {
+          const dur = out.duration || useStore.getState().musicSettings.duration || 300
+          // When the AI returns lyrics but the user didn't state a vocal
+          // share, default to 20% so trimVocalSections still runs and
+          // expands to 2–3 verse→chorus cycles (not a single fragment).
+          const share = parseVocalShare(prompt) || 0.2
+          setLyrics(padInstrumentalSections(trimVocalSections(out.lyrics, dur, share), dur))
+        }
+      }
       if (!negativePrompt.trim() && STYLES[style]?.negative) {
         setNegativePrompt(STYLES[style].negative)
       }

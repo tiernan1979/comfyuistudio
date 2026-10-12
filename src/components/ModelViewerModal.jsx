@@ -2,15 +2,17 @@ import { useEffect, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { X, Box, Loader2 } from 'lucide-react'
 import useStore from '../store/useStore'
+import FbxViewer from './FbxViewer'
 
-// Fullscreen GLB viewer for 3D history entries. <model-viewer> is loaded
-// from the CDN on demand (same pattern as ThreeDPanel) — offline we show
-// a filename card instead of blocking.
+// Fullscreen 3D viewer for history entries. <model-viewer> renders glTF/GLB;
+// FBX (rigged/animated) routes to the three.js FbxViewer instead — passing
+// an .fbx to <model-viewer> silently renders a blank box.
 export default function ModelViewerModal() {
   const viewing3d = useStore((s) => s.viewing3d)
   const setViewing3d = useStore((s) => s.setViewing3d)
   const [mvReady, setMvReady] = useState(false)
   const [mvFailed, setMvFailed] = useState(false)
+  const isFbx = /\.fbx(\?|#|$)/i.test(viewing3d?.url || '')
 
   // Lazy-load the model-viewer custom element once.
   useEffect(() => {
@@ -71,7 +73,9 @@ export default function ModelViewerModal() {
                 <X size={16} />
               </button>
             </div>
-            {mvReady && !mvFailed ? (
+            {isFbx ? (
+              <FbxViewer url={viewing3d.url} />
+            ) : mvReady && !mvFailed ? (
               <model-viewer
                 src={viewing3d.url}
                 camera-controls

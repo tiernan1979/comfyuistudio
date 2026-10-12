@@ -30,10 +30,10 @@ export default function Layout() {
 
   const tabs = [
     { key: 'image', label: 'Image', icon: Image },
-    { key: 'edit', label: 'Edit', icon: Wand2 },
+    { key: 'edit', label: 'Image Edit', icon: Wand2 },
     { key: 'video', label: 'Video', icon: Film },
     { key: 'music', label: 'Music', icon: Music },
-    ...(threeDEnabled ? [{ key: '3d', label: '3D', icon: Box }] : []),
+    ...(threeDEnabled ? [{ key: '3d', label: '3D Image', icon: Box }] : []),
   ]
 
   return (

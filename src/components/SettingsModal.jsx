@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { X, Server, HardDrive, Save, RefreshCw, FolderSearch, Bot, Globe, Box, KeyRound } from 'lucide-react'
-import useStore from '../store/useStore'
+import { X, Server, HardDrive, Save, RefreshCw, FolderSearch, Bot, Globe, Box, KeyRound, Plus, Trash2, Pencil } from 'lucide-react'
+import useStore, { presetLabel } from '../store/useStore'
 import { getModelLists, resolveApiBase, getNodeComboOptions, checkNodes } from '../lib/comfyui'
 import { fetchLlmModels, PROVIDERS, MODEL_SUGGESTIONS } from '../lib/llm'
 import { SEARCH_ENGINES, searchEngineInfo } from '../lib/search'
@@ -83,6 +83,139 @@ function ModelField({ label, value, onChange, options = [], placeholder }) {
   )
 }
 
+// Multi-model preset editor. Presets sit ABOVE the model fields; clicking a
+// preset loads its unet/clip/vae/lora into the fields below for editing.
+// Edits go into `editDraft` (owned by the parent) and are written back to the
+// store on Save — so a half-finished edit never silently mutates a preset.
+// "Add Preset" snapshots the draft into a new named entry and selects it.
+function ModelPresets({ mode, editDraft, setEditDraft, modelLists }) {
+  const presets = useStore((s) => s.presets?.[mode] || [])
+  const active = useStore((s) => s.active?.[mode])
+  const setActivePreset = useStore((s) => s.setActivePreset)
+  const addPreset = useStore((s) => s.addPreset)
+  const removePreset = useStore((s) => s.removePreset)
+  const updatePreset = useStore((s) => s.updatePreset)
+  const [newName, setNewName] = useState('')
+  const [editingIdx, setEditingIdx] = useState(-1)
+  const [editName, setEditName] = useState('')
+
+  const handleAdd = () => {
+    const name = newName.trim() || `Preset ${presets.length + 1}`
+    addPreset(mode, { name, ...editDraft })
+    setNewName('')
+  }
+
+  const startRename = (i, currentName) => {
+    setEditingIdx(i)
+    setEditName(currentName || '')
+  }
+
+  const commitRename = () => {
+    if (editingIdx >= 0 && editName.trim()) {
+      updatePreset(mode, editingIdx, { name: editName.trim() })
+    }
+    setEditingIdx(-1)
+    setEditName('')
+  }
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between gap-2">
+        <h4 className="text-xs font-semibold text-text-secondary">Presets</h4>
+        <span className="text-[10px] text-text-muted">
+          {presets.length} saved — click one to load it into the fields below
+        </span>
+      </div>
+
+      {presets.length === 0 ? (
+        <p className="text-[11px] text-text-muted rounded-lg bg-bg-card border border-border px-3 py-2">
+          No presets yet. Set the model fields below, then <strong>Add Preset</strong> to save them under a
+          name. Add one per engine (e.g. MiniMax Music 3 and ACE-Step 1.5) and click between them any time.
+        </p>
+      ) : (
+        <div className="space-y-1.5">
+          {presets.map((p, i) => (
+            <div
+              key={i}
+              className={clsx(
+                'flex items-center gap-2 px-3 py-2 rounded-lg border cursor-pointer transition-colors',
+                active === i
+                  ? 'border-accent bg-accent/10'
+                  : 'border-border bg-bg-card hover:bg-bg-hover'
+              )}
+              onClick={() => {
+                setActivePreset(mode, i)
+                setEditDraft({ unet: '', clip: '', vae: '', lora: '', ...p })
+              }}
+            >
+              <div
+                className={clsx(
+                  'w-3 h-3 rounded-full border-2 shrink-0',
+                  active === i ? 'border-accent bg-accent' : 'border-border'
+                )}
+              />
+              <div className="flex-1 min-w-0">
+                {editingIdx === i ? (
+                  <input
+                    value={editName}
+                    onChange={(e) => setEditName(e.target.value)}
+                    onBlur={commitRename}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') commitRename()
+                      if (e.key === 'Escape') { setEditingIdx(-1); setEditName('') }
+                    }}
+                    autoFocus
+                    onClick={(e) => e.stopPropagation()}
+                    className="w-full text-xs font-medium text-text-primary bg-bg-card border border-accent rounded px-1.5 py-0.5 focus:outline-none"
+                  />
+                ) : (
+                  <p className="text-xs font-medium text-text-primary truncate">{p.name || `Preset ${i + 1}`}</p>
+                )}
+                <p className="text-[10px] text-text-muted truncate font-mono">{presetLabel(p)}</p>
+              </div>
+              {p.engine === 'ace' || /ace[-_ ]?step/i.test(p.unet || '') ? (
+                <span className="text-[9px] px-1.5 py-0.5 rounded bg-pink-500/20 text-pink-300 font-semibold shrink-0">ACE</span>
+              ) : /minimax/i.test(p.unet || '') ? (
+                <span className="text-[9px] px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-300 font-semibold shrink-0">MiniMax</span>
+              ) : null}
+              <button
+                onClick={(e) => { e.stopPropagation(); startRename(i, p.name) }}
+                className="p-1 rounded hover:bg-bg-hover text-text-muted hover:text-accent transition-colors shrink-0"
+                title="Rename preset"
+              >
+                <Pencil size={12} />
+              </button>
+              <button
+                onClick={(e) => { e.stopPropagation(); removePreset(mode, i) }}
+                className="p-1 rounded hover:bg-red-500/20 text-text-muted hover:text-red-400 transition-colors shrink-0"
+                title="Remove preset"
+              >
+                <Trash2 size={12} />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="flex items-center gap-2">
+        <input
+          value={newName}
+          onChange={(e) => setNewName(e.target.value)}
+          placeholder="Preset name (e.g. &quot;MiniMax Music 3&quot;, &quot;ACE-Step 1.5&quot;)"
+          className="flex-1 px-3 py-2 rounded-lg bg-bg-card border border-border text-text-primary text-xs placeholder:text-text-muted focus:outline-none focus:ring-1 focus:ring-accent transition-all"
+        />
+        <button
+          onClick={handleAdd}
+          className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium bg-accent/20 text-accent hover:bg-accent/30 transition-colors shrink-0"
+        >
+          <Plus size={14} />
+          Add Preset
+        </button>
+      </div>
+    </div>
+  )
+}
+
 // Select whose options come from the ComfyUI server; falls back to
 // showing the current value when the list hasn't loaded. Rendered with
 // the app's own Dropdown so every pick is readable and scrollable.
@@ -144,9 +277,37 @@ export default function SettingsModal() {
   const setUseProxy = useStore((s) => s.setUseProxy)
   const autoUnload = useStore((s) => s.autoUnload)
   const setAutoUnload = useStore((s) => s.setAutoUnload)
+  const vramGuard = useStore((s) => s.vramGuard)
+  const setVramGuard = useStore((s) => s.setVramGuard)
   const modelsUnloaded = useStore((s) => s.modelsUnloaded)
+  const presets = useStore((s) => s.presets)
+  const active = useStore((s) => s.active)
+  const updatePreset = useStore((s) => s.updatePreset)
   const [localUrl, setLocalUrl] = useState(serverUrl)
   const [localModels, setLocalModels] = useState(JSON.parse(JSON.stringify(models)))
+  // Editable copy of the selected preset's model files. Seeded from the
+  // active music/video preset; clicking a preset in ModelPresets sets
+  // `active`, this effect re-seeds the draft from it. Save writes the draft
+  // back into the store so the change is durable.
+  const [editDraft, setEditDraft] = useState(() => {
+    const src = presets?.music?.[active?.music] || models?.music || {}
+    return { unet: '', clip: '', vae: '', lora: '', ...src }
+  })
+  const [videoDraft, setVideoDraft] = useState(() => {
+    const src = presets?.video?.[active?.video] || models?.video || {}
+    return { unet: '', clip: '', vae: '', lora: '', ...src }
+  })
+  useEffect(() => {
+    setEditDraft(() => {
+      const src = presets?.music?.[active?.music] || models?.music || {}
+      return { unet: '', clip: '', vae: '', lora: '', ...src }
+    })
+    setVideoDraft(() => {
+      const src = presets?.video?.[active?.video] || models?.video || {}
+      return { unet: '', clip: '', vae: '', lora: '', ...src }
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active?.music, active?.video, presets])
   const [saved, setSaved] = useState(false)
   const [saveError, setSaveError] = useState(null)
   const [pulling, setPulling] = useState(false)
@@ -228,13 +389,15 @@ export default function SettingsModal() {
     setThreeDChecking(true)
     try {
       const base = resolveApiBase(url, useProxy)
-      const { missing, unreachable } = await checkNodes(base, requiredThreeDNodes(pipeline))
+      const { missing, unreachable, busy: serverBusy } = await checkNodes(base, requiredThreeDNodes(pipeline))
       const check =
         missing.length > 0
-          ? { ok: false, missing, unreachable }
+          ? { ok: false, missing, unreachable, busy: false }
           : unreachable
-            ? { ok: false, missing: [], unreachable: true }
-            : { ok: true, missing: [] }
+            ? { ok: false, missing: [], unreachable: true, busy: false }
+            : serverBusy
+              ? { ok: false, missing: [], unreachable: false, busy: true }
+              : { ok: true, missing: [] }
       setThreeDCheck(check)
       return check
     } catch (err) {
@@ -431,6 +594,14 @@ export default function SettingsModal() {
     setModels('video', localModels.video)
     if (localModels.edit) setModels('edit', localModels.edit)
     if (localModels.music) setModels('music', localModels.music)
+    // Write the edited model files back into the selected music preset so
+    // the picker and generation both see the change.
+    if (active?.music != null && presets?.music?.[active.music]) {
+      updatePreset('music', active.music, { ...editDraft })
+    }
+    if (active?.video != null && presets?.video?.[active.video]) {
+      updatePreset('video', active.video, { ...videoDraft })
+    }
     setLlmProvider(localProvider)
     setLlmConfigs(localConfigs)
     setSearchUrl(localSearchUrl)
@@ -547,6 +718,20 @@ export default function SettingsModal() {
                 className={`relative w-9 h-5 rounded-full transition-colors duration-200 shrink-0 ml-3 ${autoUnload ? 'bg-accent' : 'bg-bg-hover'}`}
               >
                 <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform duration-200 ${autoUnload && 'translate-x-4'}`} />
+              </button>
+            </label>
+            <label className="flex items-center justify-between cursor-pointer rounded-lg bg-bg-card border border-border px-3 py-2.5">
+              <span className="text-xs">
+                <span className="block text-text-primary font-medium">VRAM guard (AI Prompt Writer)</span>
+                <span className="block text-text-muted mt-0.5">
+                  Before generating, checks LM Studio for a big LLM sharing the GPU. If one is loaded and ComfyUI is idle, it frees ComfyUI's models first (they reload next run). If ComfyUI is busy, it blocks instead of OOMing.
+                </span>
+              </span>
+              <button
+                onClick={() => setVramGuard(!vramGuard)}
+                className={`relative w-9 h-5 rounded-full transition-colors duration-200 shrink-0 ml-3 ${vramGuard ? 'bg-accent' : 'bg-bg-hover'}`}
+              >
+                <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform duration-200 ${vramGuard && 'translate-x-4'}`} />
               </button>
             </label>
             <InputField
@@ -912,6 +1097,12 @@ export default function SettingsModal() {
                 will error out when used if the packs aren't installed.
               </p>
             )}
+            {threeDCheck && !threeDCheck.ok && threeDCheck.busy && (
+              <p className="text-[11px] text-warning">
+                ComfyUI is busy or stuck and stopped answering, so the nodes couldn't be verified — this isn't a
+                missing-pack problem. Finish or interrupt the current run there (Queue → Cancel All), then re-check.
+              </p>
+            )}
             {threeDCheck?.ok && localThreeD.enabled && (
               <p className="text-[11px] text-green-400">
                 Verified — all required nodes for the {localThreeD.pipeline === 'tripo' ? 'Tripo' : 'local'} pipeline are
@@ -1116,8 +1307,8 @@ export default function SettingsModal() {
                       label="MIA precision"
                       value={localThreeD.miaPrecision}
                       onChange={(v) => setLocalThreeD((t) => ({ ...t, miaPrecision: v }))}
-                      options={['auto', 'bf16', 'fp16', 'fp32']}
-                      hint="fp32 is the tested default"
+                      options={['fp32']}
+                      hint="fp32 only — bf16/fp16/auto crash the rig: torch_cluster's farthest-point-sampling kernel has no bf16 support ('_' not implemented for 'BFloat16'). If you have an older saved setting, it gets overridden to fp32 at queue time."
                     />
                     <SelectField
                       label="Default animation"
@@ -1203,9 +1394,9 @@ export default function SettingsModal() {
                       hint="Volume-decode chunk size — lower it to save VRAM (slower)"
                     />
                     <p className="text-[11px] leading-relaxed text-text-muted rounded-lg bg-bg-card border border-border px-3 py-2">
-                      Steps: image → mesh (Pixal3D) → mesh uploaded to input/3d → MIA auto-rig → FBX download.
-                      UniRig's file list is cached at ComfyUI startup — if a fresh mesh isn't listed yet,
-                      restart ComfyUI and rig again.
+                      Steps: image → mesh (Pixal3D) → mesh uploaded to input/3d under a unique name → MIA auto-rig → FBX download.
+                      Mesh loading uses a free path (no dropdown), so uploads and server files just work — no ComfyUI restarts.
+                      New <em>animation</em> FBX files still need one restart (their picker list is cached at startup).
                     </p>
                   </>
                 ) : (
@@ -1406,31 +1597,32 @@ export default function SettingsModal() {
               <span className="text-text-secondary">LTX-Video 13B Q4</span> (very fast). All of them need{' '}
               <span className="font-mono">umt5_xxl</span> as CLIP and <span className="font-mono">wan_2.1_vae</span>.
             </p>
+            <ModelPresets mode="video" editDraft={videoDraft} setEditDraft={setVideoDraft} modelLists={modelLists} />
             <ModelField
               label="Diffusion Model (UNET)"
-              value={localModels.video.unet}
-              onChange={(v) => setLocalModels((m) => ({ ...m, video: { ...m.video, unet: v } }))}
+              value={videoDraft.unet || ''}
+              onChange={(v) => setVideoDraft((d) => ({ ...d, unet: v }))}
               options={modelLists.unet}
               placeholder="wan2.1_t2v_1.3B_bf16.safetensors"
             />
             <ModelField
               label="Text Encoder (CLIP)"
-              value={localModels.video.clip}
-              onChange={(v) => setLocalModels((m) => ({ ...m, video: { ...m.video, clip: v } }))}
+              value={videoDraft.clip || ''}
+              onChange={(v) => setVideoDraft((d) => ({ ...d, clip: v }))}
               options={modelLists.clip}
               placeholder="umt5_xxl_fp8_e4m3fn_scaled.safetensors"
             />
             <ModelField
               label="VAE"
-              value={localModels.video.vae}
-              onChange={(v) => setLocalModels((m) => ({ ...m, video: { ...m.video, vae: v } }))}
+              value={videoDraft.vae || ''}
+              onChange={(v) => setVideoDraft((d) => ({ ...d, vae: v }))}
               options={modelLists.vae}
               placeholder="wan_2.1_vae.safetensors"
             />
             <ModelField
               label="Turbo LoRA (optional — MiniMax H3, sample at 4–8 steps)"
-              value={localModels.video.lora || ''}
-              onChange={(v) => setLocalModels((m) => ({ ...m, video: { ...m.video, lora: v } }))}
+              value={videoDraft.lora || ''}
+              onChange={(v) => setVideoDraft((d) => ({ ...d, lora: v }))}
               options={modelLists.lora}
               placeholder="minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors"
             />
@@ -1446,31 +1638,30 @@ export default function SettingsModal() {
             </h3>
             <p className="text-[11px] leading-relaxed text-text-muted rounded-lg bg-bg-card border border-border px-3 py-2">
               Music mode generates full songs (style + optional sung lyrics) locally on your
-              ComfyUI. Either pick the MiniMax Music 3 set (DiT + text encoder +{' '}
-              <span className="font-mono">dav</span> audio VAE), or select an ACE-Step 1.5
-              unet in the first field — its text-encoder/VAE assets resolve automatically
-              (single AIO checkpoint, or split qwen encoders + ACE VAE). YuE-2 works too —
-              pick its files here. Generated tracks open in the built-in Studio editor for
+              ComfyUI. Pick a preset below to load its model files into the fields, then tweak and
+              Save. ACE-Step 1.5 assets resolve automatically (single AIO checkpoint, or split
+              qwen encoders + ACE VAE). Generated tracks open in the built-in Studio editor for
               multi-track arrangement (split, trim, fades, layers, WAV export).
             </p>
+            <ModelPresets mode="music" editDraft={editDraft} setEditDraft={setEditDraft} modelLists={modelLists} />
             <ModelField
               label="Music Diffusion Model (UNET)"
-              value={localModels.music?.unet || ''}
-              onChange={(v) => setLocalModels((m) => ({ ...m, music: { ...(m.music || {}), unet: v } }))}
+              value={editDraft.unet || ''}
+              onChange={(v) => setEditDraft((d) => ({ ...d, unet: v }))}
               options={modelLists.unet}
               placeholder="minimax_music3_dit_int8_convrot.safetensors"
             />
             <ModelField
               label="Music Text Encoder (CLIP)"
-              value={localModels.music?.clip || ''}
-              onChange={(v) => setLocalModels((m) => ({ ...m, music: { ...(m.music || {}), clip: v } }))}
+              value={editDraft.clip || ''}
+              onChange={(v) => setEditDraft((d) => ({ ...d, clip: v }))}
               options={modelLists.clip}
               placeholder="minimax_music3_text_encoder_pruned_int8_convrot.safetensors"
             />
             <ModelField
               label="Audio VAE"
-              value={localModels.music?.vae || ''}
-              onChange={(v) => setLocalModels((m) => ({ ...m, music: { ...(m.music || {}), vae: v } }))}
+              value={editDraft.vae || ''}
+              onChange={(v) => setEditDraft((d) => ({ ...d, vae: v }))}
               options={modelLists.vae}
               placeholder="minimax_music3_dav.safetensors"
             />

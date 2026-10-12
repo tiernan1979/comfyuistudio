@@ -403,8 +403,23 @@ git clone https://github.com/PozzettiAndrea/ComfyUI-UniRig.git          # auto-r
 - **UltraShape1** additionally needs `pip install -r requirements.txt` inside the pack,
   and `ultrashape_v1.pt` (table above) in `models/UltraShape/`.
 - **UniRig** (MIA/UniRig rigging) pulls its rigging models from Hugging Face on first
-  run via its `install.py`, which also bundles Blender. Animation presets need Mixamo
-  FBX files in `input/animation_templates/mixamo/`.
+  run via its `install.py`, which also bundles Blender.
+
+### Rig & animation — meshes and Mixamo files
+
+- **Meshes need no restart.** Rig loads through a free path string, so anything
+  works immediately: the panel mesh (generated/imported) uploads under a unique
+  name, or type a server file (e.g. `3d/hero.glb`) to rig it in place.
+- **Tick several animations** in the Rig card — each becomes its own FBX in the
+  same run (one MIA pass, N retargets).
+- **More animations:** grab free Mixamo FBX files (mixamo.com → Characters →
+  Animations → pick walk/run/jump/punch/… → Download as **FBX without skin**),
+  drop them into your ComfyUI folder's `input/animation_templates/mixamo/`,
+  restart ComfyUI once — they appear in the Rig card automatically. (The
+  animation picker list is the one thing still cached at startup; meshes are not.)
+- Prefer built-ins? The **Tripo pipeline** ships 100+ `preset:` animations
+  (walk, run, jump, slash, …) with no files to manage — needs ComfyUI signed in
+  to comfy.org and uses Tripo credits.
 
 ### 3D generation — Paint models
 

@@ -16,6 +16,16 @@ function filenameFromViewUrl(url) {
   return `comfyui-music-${Date.now()}`
 }
 
+// Build a download filename: AI title (sanitized) + original extension,
+// falling back to the ComfyUI name (track_00001.mp3) when no title.
+function downloadName(url, title) {
+  const orig = filenameFromViewUrl(url)
+  const ext = (orig.match(/\.\w+$/) || ['.mp3'])[0]
+  if (!title) return orig
+  const safe = title.replace(/[^\w\s-]/g, '').trim().replace(/\s+/g, '_').slice(0, 60)
+  return safe ? `${safe}${ext}` : orig
+}
+
 function formatElapsed(s) {
   if (!Number.isFinite(s) || s < 0) s = 0
   const m = Math.floor(s / 60)
@@ -31,6 +41,7 @@ export default function MusicPlayer() {
   const progressLabel = useStore((s) => s.progressLabel)
   const elapsedTime = useStore((s) => s.elapsedTime)
   const setShowMusicEditor = useStore((s) => s.setShowMusicEditor)
+  const title = useStore((s) => s.titles?.music)
   const [loading, setLoading] = useState(false)
 
   // Stop the "Loading track..." state once the element can play
@@ -47,7 +58,7 @@ export default function MusicPlayer() {
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = url
-      a.download = filenameFromViewUrl(outputAudio)
+      a.download = downloadName(outputAudio, title)
       a.click()
       URL.revokeObjectURL(url)
     } catch (err) {
@@ -144,8 +155,13 @@ export default function MusicPlayer() {
               </motion.button>
             </div>
 
+            {title && (
+              <p className="text-sm font-semibold text-text-primary text-center max-w-xl truncate" title={title}>
+                {title}
+              </p>
+            )}
             <p className="text-[11px] text-text-muted font-mono text-center break-all max-w-xl">
-              {filenameFromViewUrl(outputAudio)}
+              {downloadName(outputAudio, title)}
             </p>
           </motion.div>
         ) : (

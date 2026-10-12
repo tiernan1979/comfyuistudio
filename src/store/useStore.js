@@ -37,6 +37,50 @@ const DEFAULT_MODELS = {
   },
 }
 
+// Default named presets for the multi-model pickers. `presets` (per mode)
+// is a list of { name, unet, clip, vae, lora?, engine? } saved alongside the
+// flat group; `active` picks which one generation uses (null = the flat
+// group, i.e. the old single-model behaviour).
+const DEFAULT_PRESETS = {
+  video: [
+    {
+      name: 'Wan 2.1 t2v 1.3B',
+      unet: 'wan2.1_t2v_1.3B_bf16.safetensors',
+      clip: 'umt5_xxl_fp8_e4m3fn_scaled.safetensors',
+      vae: 'wan_2.1_vae.safetensors',
+      lora: '',
+    },
+  ],
+  music: [
+    {
+      name: 'MiniMax Music 3',
+      unet: 'minimax_music3_dit_int8_convrot.safetensors',
+      clip: 'minimax_music3_text_encoder_pruned_int8_convrot.safetensors',
+      vae: 'minimax_music3_dav.safetensors',
+    },
+  ],
+}
+
+// Build a display label for a preset: engine badge + unet stem.
+export function presetLabel(p) {
+  if (!p) return '(none)'
+  const engine = p.engine === 'ace' || /ace[-_ ]?step/i.test(p.unet || '') ? 'ACE' : /minimax/i.test(p.unet || '') ? 'MiniMax' : ''
+  const stem = String(p.unet || '').replace(/\.(safetensors|ckpt|pt|sft|bin)$/i, '')
+  return engine ? `${engine} · ${stem}` : stem || p.name || '(unnamed)'
+}
+
+// Resolve the active model group for a mode. Returns the selected preset's
+// fields (unet/clip/vae/lora/engine) when one is active, else the flat group
+// (single-model, backward compatible). Callers should spread this over the
+// flat group so unset fields (e.g. lora) still fall through.
+export function resolveActiveModels(state, mode) {
+  const flat = state.models?.[mode] || {}
+  const idx = state.active?.[mode]
+  const list = state.presets?.[mode] || []
+  if (idx === null || idx === undefined || !list[idx]) return { ...flat }
+  return { ...flat, ...list[idx] }
+}
+
 // True when this browser has no saved settings yet.
 const FRESH_INSTALL = (() => {
   try {
@@ -122,6 +166,15 @@ const useStore = create(
       modelsUnloaded: false,
       autoUnload: true,
 
+      // VRAM guard ("keep the GPU free for generation"). When on, a
+      // generation first checks LM Studio for any model that is NOT the
+      // configured prompt-writer (a big LLM sharing the card). If one is
+      // loaded AND ComfyUI's queue is empty (so nothing we're running needs
+      // it), ComfyUI's models are dropped from VRAM before the run — the
+      // other model reloads itself on its next use. If ComfyUI is busy, the
+      // run is blocked with a message instead of racing it into an OOM.
+      vramGuard: false,
+
       // Prompt — `prompt`/`negativePrompt` mirror the ACTIVE mode; the
       // ByMode maps remember each tab's own text so Image / Video /
       // Edit / Music / 3D all keep separate prompts. Session-only
@@ -180,7 +233,7 @@ const useStore = create(
 
       // Music settings (MiniMax Music 3 / ACE-Step). quality: 'wav'
       // (lossless via SaveAudio) or an MP3 bitrate for SaveAudioMP3.
-      // duration: cap on track length (10–360s) — the structure planner
+      // duration: cap on track length (10–600s) — the structure planner
       // sizes the song itself and the tail trim cuts any silent pad; this
       // is the ceiling, not an exact length.
       musicSettings: {
@@ -195,6 +248,17 @@ const useStore = create(
       // visible example in the box); tag-only = instrumental at generate
       // time. Not persisted across reloads, so the default always resurfaces.
       lyrics: STRUCTURE_TAGS,
+
+      // AI-generated titles keyed by mode ('music' | 'video'). Set by the
+      // AI rewrite; consumed by the download filename + player. Session-only.
+      titles: {},
+
+      // Named model presets per mode (multi-model picker). `presets[mode]`
+      // is a list of { name, unet, clip, vae, lora?, engine? }; `active[mode]`
+      // is the index of the preset generation uses, or null for the flat
+      // group above (single-model, backward compatible).
+      presets: JSON.parse(JSON.stringify(DEFAULT_PRESETS)),
+      active: { video: 0, music: 0 },
 
       // 3D Generation (optional feature — Settings → 3D Generation).
       // local  = native Pixal3D/TRELLIS.2 (image→GLB, ComfyUI ≥ 0.39)
@@ -322,7 +386,7 @@ const useStore = create(
         if (!force && !FRESH_INSTALL && config.synced !== true) return
         set((s) => {
           const patch = {}
-          for (const key of ['serverUrl', 'useProxy', 'autoUnload', 'style', 'searchUrl', 'searchEngine', 'searchApiKey', 'searchCseId', 'llmProvider']) {
+          for (const key of ['serverUrl', 'useProxy', 'autoUnload', 'vramGuard', 'style', 'searchUrl', 'searchEngine', 'searchApiKey', 'searchCseId', 'llmProvider']) {
             if (config[key] !== undefined) patch[key] = config[key]
           }
           if (config.llmConfigs) {
@@ -339,6 +403,16 @@ const useStore = create(
               models[k] = { ...(s.models[k] || {}), ...(config.models[k] || {}) }
             }
             patch.models = models
+          }
+          if (config.presets) {
+            const presets = { ...s.presets }
+            for (const [k, v] of Object.entries(config.presets)) {
+              if (Array.isArray(v)) presets[k] = v
+            }
+            patch.presets = presets
+          }
+          if (config.active && typeof config.active === 'object') {
+            patch.active = { ...s.active, ...config.active }
           }
           // Per-mode generation settings — server wins per key.
           for (const k of ['imageSettings', 'videoSettings', 'editSettings', 'musicSettings']) {
@@ -369,6 +443,7 @@ const useStore = create(
       setLastGenAt: (lastGenAt) => set({ lastGenAt }),
       setModelsUnloaded: (modelsUnloaded) => set({ modelsUnloaded }),
       setAutoUnload: (autoUnload) => set({ autoUnload }),
+      setVramGuard: (vramGuard) => set({ vramGuard }),
       setProgress: (progress) => set({ progress }),
       setProgressLabel: (progressLabel) => set({ progressLabel }),
       setCurrentPromptId: (id) => set({ currentPromptId: id }),
@@ -393,6 +468,7 @@ const useStore = create(
       setEditSettings: (settings) => set((s) => ({ editSettings: { ...s.editSettings, ...settings } })),
       setMusicSettings: (settings) => set((s) => ({ musicSettings: { ...s.musicSettings, ...settings } })),
       setLyrics: (lyrics) => set({ lyrics }),
+      setTitle: (mode, title) => set((s) => ({ titles: { ...s.titles, [mode]: title } })),
       setShowMusicEditor: (showMusicEditor) => set({ showMusicEditor }),
       setSidebarWidth: (w) => set({ sidebarWidth: Math.max(200, Math.min(480, Math.round(w))) }),
       setControlsWidth: (w) => set({ controlsWidth: Math.max(240, Math.min(560, Math.round(w))) }),
@@ -404,6 +480,37 @@ const useStore = create(
       setModels: (mode, models) => set((s) => ({
         models: { ...s.models, [mode]: { ...s.models[mode], ...models } },
       })),
+      setPresets: (mode, presets) => set((s) => ({
+        presets: { ...s.presets, [mode]: presets },
+      })),
+      setActivePreset: (mode, index) => set((s) => ({
+        active: { ...s.active, [mode]: index },
+      })),
+      addPreset: (mode, preset) => set((s) => {
+        const list = [...(s.presets?.[mode] || []), preset]
+        return {
+          presets: { ...s.presets, [mode]: list },
+          // Select the new preset immediately.
+          active: { ...s.active, [mode]: list.length - 1 },
+        }
+      }),
+      updatePreset: (mode, index, patch) => set((s) => {
+        const list = [...(s.presets?.[mode] || [])]
+        if (!list[index]) return {}
+        list[index] = { ...list[index], ...patch }
+        return { presets: { ...s.presets, [mode]: list } }
+      }),
+      removePreset: (mode, index) => set((s) => {
+        const list = (s.presets?.[mode] || []).filter((_, i) => i !== index)
+        const cur = s.active?.[mode]
+        let next = cur
+        if (cur === index) next = list.length > 0 ? 0 : null
+        else if (cur !== null && cur !== undefined && cur > index) next = cur - 1
+        return {
+          presets: { ...s.presets, [mode]: list },
+          active: { ...s.active, [mode]: next },
+        }
+      }),
       setOutputImage: (outputImage) => set({ outputImage, outputVideo: null, outputAudio: null }),
       setOutputVideo: (outputVideo) => set({ outputVideo, outputImage: null, outputAudio: null }),
       setOutputAudio: (outputAudio) => set({ outputAudio, outputImage: null, outputVideo: null }),
@@ -607,12 +714,31 @@ const useStore = create(
           modelGroups[k] = { ...DEFAULT_MODELS[k], ...(s.models?.[k] || {}) }
         }
         s.models = modelGroups
+        // Named model presets (multi-model picker). Older saves won't have
+        // them — seed from defaults and merge any existing entries.
+        const presetGroups = {}
+        for (const k of new Set([...Object.keys(DEFAULT_PRESETS), ...Object.keys(s.presets || {})])) {
+          presetGroups[k] = s.presets?.[k]?.length ? s.presets[k] : DEFAULT_PRESETS[k]
+        }
+        s.presets = presetGroups
+        if (!s.active || typeof s.active !== 'object') {
+          s.active = { video: 0, music: 0 }
+        } else {
+          // Clamp out-of-range indices (e.g. a preset was removed elsewhere).
+          for (const k of Object.keys(DEFAULT_PRESETS)) {
+            const list = presetGroups[k] || []
+            if (s.active[k] != null && (s.active[k] < 0 || s.active[k] >= list.length)) {
+              s.active[k] = list.length > 0 ? 0 : null
+            }
+          }
+        }
         return s
       },
       partialize: (state) => ({
         serverUrl: state.serverUrl,
         useProxy: state.useProxy,
         autoUnload: state.autoUnload,
+        vramGuard: state.vramGuard,
         style: state.style,
         llmProvider: state.llmProvider,
         llmConfigs: state.llmConfigs,
@@ -621,6 +747,8 @@ const useStore = create(
         searchApiKey: state.searchApiKey,
         searchCseId: state.searchCseId,
         models: state.models,
+        presets: state.presets,
+        active: state.active,
         threeD: state.threeD,
         imageSettings: state.imageSettings,
         videoSettings: state.videoSettings,

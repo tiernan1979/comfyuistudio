@@ -13,6 +13,7 @@ export default function WebSearchPanel() {
   const searchCseId = useStore((s) => s.searchCseId)
   const prompt = useStore((s) => s.prompt)
   const searchQuery = useStore((s) => s.searchQuery)
+  const mode = useStore((s) => s.mode)
 
   const [query, setQuery] = useState('')
   const [results, setResults] = useState([])
@@ -53,7 +54,10 @@ export default function WebSearchPanel() {
   // to the prompt), then auto-search
   useEffect(() => {
     if (show) {
-      const initial = (searchQuery || prompt).trim()
+      // Only fall back to the main prompt in image mode — in edit mode the
+      // prompt is an edit instruction ("make the sky redder"), not a subject
+      // description, so copying it into the search box is wrong.
+      const initial = (searchQuery || (mode === 'image' ? prompt : '')).trim()
       queryAtOpen.current = initial
       aiPicked.current = !!searchQuery
       setQuery(initial)

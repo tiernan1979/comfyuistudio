@@ -23,16 +23,20 @@ import {
   runGenerateMesh,
   runRigMesh,
   runRigImported,
+  runRigServerFile,
+  probeAnimationFiles,
+  animationsNeedingRestart,
   runTripo,
   runMeshUpscale,
   runPaintSkin,
   listLocalAnimations,
+  uploadAnimationFiles,
   listTripoPresets,
   requiredThreeDNodes,
   describeNode,
 } from '../lib/threed'
 import { injectIdleAnimation, loadGlbGeometry } from '../lib/idleAnim'
-import { captureGlbSnapshot } from '../lib/snapshot3d'
+import { captureGlbSnapshot, captureFbxSnapshot } from '../lib/snapshot3d'
 
 const BTN = 'flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all disabled:opacity-40 disabled:cursor-not-allowed'
 const BTN_PRIMARY = `${BTN} bg-accent hover:bg-accent-hover text-white`
@@ -44,6 +48,14 @@ function StepBadge({ n }) {
       {n}
     </span>
   )
+}
+
+// 'Mma_Kick.fbx' → 'Mma Kick' — the dropdown shows names, not filenames.
+function prettyAnim(file) {
+  return String(file || '')
+    .replace(/\.(fbx|npz)$/i, '')
+    .replace(/[_-]+/g, ' ')
+    .trim()
 }
 
 export default function ThreeDPanel() {
@@ -71,7 +83,9 @@ export default function ThreeDPanel() {
       const url = await getViewUrl(base, entry.filename, entry.subfolder || '', entry.type || 'output')
       // Render a quick offscreen snapshot so the history tile shows the
       // actual model instead of a Box icon. Best-effort — null → Box fallback.
-      const thumbnail = await captureGlbSnapshot(url).catch(() => null)
+      // FBX (rigged/animated) needs its own loader; GLTFLoader can't parse it.
+      const capture = /\.fbx$/i.test(entry.filename) ? captureFbxSnapshot : captureGlbSnapshot
+      const thumbnail = await capture(url).catch(() => null)
       addToHistory({
         id: `3d-${Date.now()}-${entry.filename}`,
         type: '3d',
@@ -102,7 +116,17 @@ export default function ThreeDPanel() {
   const [importedMesh, setImportedMesh] = useState(null) // { file, name } — user-supplied .glb
   const glbRef = useRef(null)
   const [animOptions, setAnimOptions] = useState([])
-  const [animSel, setAnimSel] = useState(threeD.localAnimationFile || '')
+  const [animMissing, setAnimMissing] = useState([])
+  // Files uploaded this session — on disk but not in the dropdown ComfyUI
+  // started with, so they can't be queued until ComfyUI restarts once.
+  const [animPending, setAnimPending] = useState([])
+  const [uploadNote, setUploadNote] = useState('')
+  const animFileRef = useRef(null)
+  // Multi-select: every ticked animation becomes its own FBX in ONE rig run.
+  const [animSel, setAnimSel] = useState(threeD.localAnimationFile ? [threeD.localAnimationFile] : [])
+  // Optional override: rig a mesh file already on the server (no upload).
+  const [serverMesh, setServerMesh] = useState('')
+  const [meshHints, setMeshHints] = useState([])
   const [presets, setPresets] = useState([])
   const [presetSel, setPresetSel] = useState(threeD.tripoPreset || 'preset:walk')
   const [usCheckpoints, setUsCheckpoints] = useState([])
@@ -119,13 +143,38 @@ export default function ThreeDPanel() {
   const pickLock = pickStage != null
 
   // Dynamic option lists come from the ComfyUI server (object_info), so the
-  // UI always matches what the nodes actually accept.
+  // UI always matches what the nodes actually accept. Re-run after an
+  // upload so freshly-uploaded files land in the list immediately.
+  const refreshAnimList = async () => {
+    const list = await listLocalAnimations(base)
+    setAnimOptions(list)
+    // The picker list is startup-cached: probe what's really on disk
+    // so wiped files show as missing instead of queueing doomed runs.
+    try {
+      const { missing } = await probeAnimationFiles(base, list)
+      setAnimMissing(missing)
+      if (missing.length > 0) {
+        setAnimSel((prev) => prev.filter((a) => !missing.includes(a)))
+      }
+    } catch {
+      /* probe failed — leave the list as-is, queue-time check catches it */
+    }
+  }
+
   useEffect(() => {
     let dead = false
     ;(async () => {
       if (isLocal) {
-        const list = await listLocalAnimations(base)
-        if (!dead) setAnimOptions(list)
+        await refreshAnimList().catch(() => {})
+        if (dead) return
+        // Stale-cached UniRig mesh list — only ever used as *suggestions*
+        // for the server-path combobox (MeshToolsLoad reads any path).
+        try {
+          const hints = await getNodeComboOptions(base, 'UniRigLoadMesh', 'file_path')
+          if (!dead && Array.isArray(hints)) setMeshHints(hints)
+        } catch {
+          /* UniRig pack absent — no suggestions */
+        }
         const ck = await getNodeComboOptions(base, 'UltraShapeLoadModel', 'checkpoint')
         if (!dead) setUsCheckpoints(ck.filter((c) => c !== '(select file)'))
       } else {
@@ -151,7 +200,7 @@ export default function ThreeDPanel() {
   useEffect(() => {
     let dead = false
     ;(async () => {
-      const { missing, unreachable } = await checkNodes(base, requiredThreeDNodes(threeD.pipeline))
+      const { missing, unreachable, busy: serverBusy } = await checkNodes(base, requiredThreeDNodes(threeD.pipeline))
       if (dead) return
       if (missing.length > 0) {
         setRun({
@@ -160,6 +209,14 @@ export default function ThreeDPanel() {
           error:
             `Missing node pack(s) on the ComfyUI server: ${missing.map(describeNode).join('; ')}. ` +
             'Install them in custom_nodes/ and restart ComfyUI, or change the pipeline in Settings → 3D.',
+        })
+      } else if (serverBusy) {
+        setRun({
+          stage: 'error',
+          status: '',
+          error:
+            'ComfyUI is busy or stuck (it stopped answering) — finish or interrupt the current run there ' +
+            '(ComfyUI → Queue → Cancel All), then retry. This is not a missing-pack problem.',
         })
       } else if (unreachable) {
         setRun({
@@ -536,11 +593,14 @@ export default function ThreeDPanel() {
   })
 
   const handleRig = guard({ results: [] })(async () => {
-    if (!run.mesh && !importedMesh && !idleMesh) return
     const localSrc = idleMesh?.file || importedMesh?.file
+    const serverSrc = !localSrc && serverMesh.trim() ? serverMesh.trim() : ''
+    if (!localSrc && !serverSrc && !run.mesh) return
     const files = localSrc
       ? await runRigImported(base, localSrc, threeD, animSel, (s) => setRun({ status: s }))
-      : await runRigMesh(base, run.mesh, threeD, animSel, (s) => setRun({ status: s }))
+      : serverSrc
+        ? await runRigServerFile(base, serverSrc, threeD, animSel, (s) => setRun({ status: s }))
+        : await runRigMesh(base, run.mesh, threeD, animSel, (s) => setRun({ status: s }))
     setRun({
       stage: 'done',
       status: '',
@@ -549,6 +609,24 @@ export default function ThreeDPanel() {
     const rigged = files.find((f) => !f.blob && /\.(glb|fbx)$/i.test(f.filename))
     if (rigged) await record3dHistory(rigged, `Rigged model${srcLabel}`)
   })
+
+  const handleAnimUpload = async (e) => {
+    const files = Array.from(e.target.files || [])
+    e.target.value = ''
+    if (files.length === 0 || busy) return
+    setRun({ stage: 'working', status: 'Starting upload…', error: null })
+    try {
+      const stored = await uploadAnimationFiles(base, files, (s) => setRun({ stage: 'working', status: s }))
+      setRun({ stage: 'done', status: '', error: null })
+      await refreshAnimList()
+      setAnimSel((prev) => [...new Set([...prev, ...stored])])
+      setUploadNote(
+        `${stored.length} animation file${stored.length > 1 ? 's' : ''} uploaded. Restart ComfyUI once so the dropdown refreshes, then tick ${stored.length > 1 ? 'them' : 'it'} below.`
+      )
+    } catch (err) {
+      setRun({ stage: 'error', status: '', error: err.message || String(err) })
+    }
+  }
 
   const download = async (r) => {
     try {
@@ -828,21 +906,24 @@ export default function ThreeDPanel() {
             <div
               className={clsx(
                 'rounded-xl bg-bg-card border border-border p-4 space-y-3',
-                !run.mesh && !importedMesh && 'opacity-50'
+                !run.mesh && !importedMesh && !idleMesh && !serverMesh.trim() && 'opacity-50'
               )}
             >
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
                   <p className="text-sm font-semibold flex items-center gap-2">
                     <StepBadge n={2} />
-                    Rig {animSel ? '& animate' : ''}
+                    Rig {animSel.length > 0 ? `& ${animSel.length} anim${animSel.length > 1 ? 's' : ''}` : ''}
                   </p>
                   <p className="text-[11px] text-text-muted mt-1">
                     MIA auto-rigs the mesh
-                    {animSel ? (
+                    {animSel.length > 0 ? (
                       <>
                         {' '}
-                        and applies <span className="font-mono text-accent">{animSel}</span>
+                        and applies{' '}
+                        <span className="font-mono text-accent">
+                          {animSel.map(prettyAnim).join(', ')}
+                        </span>
                       </>
                     ) : (
                       ' (skips animation)'
@@ -852,7 +933,7 @@ export default function ThreeDPanel() {
                 </div>
                 <button
                   onClick={handleRig}
-                  disabled={(!run.mesh && !importedMesh && !idleMesh) || busy || pickLock}
+                  disabled={(!run.mesh && !importedMesh && !idleMesh && !serverMesh.trim()) || busy || pickLock}
                   className={BTN_PRIMARY}
                 >
                   {busy && !usBusy && run.stage === 'working' && (run.mesh || importedMesh) ? (
@@ -860,27 +941,113 @@ export default function ThreeDPanel() {
                   ) : (
                     <Hammer size={13} />
                   )}
-                  {animSel ? 'Rig & animate' : 'Rig only'}
+                  {animSel.length > 0 ? 'Rig & animate' : 'Rig only'}
                 </button>
               </div>
               <div className="space-y-1">
-                <label className="text-xs text-text-secondary">Animation</label>
+                <label className="text-xs text-text-secondary">Mesh</label>
                 <Dropdown
-                  value={animSel}
-                  onChange={setAnimSel}
+                  editable
+                  value={serverMesh}
+                  onChange={setServerMesh}
                   disabled={busy}
                   options={[
-                    { value: '', label: 'Rig only — no animation' },
-                    ...animOptions.map((o) => ({ value: o, label: o })),
+                    { value: '', label: 'Panel mesh (generated / imported)' },
+                    ...meshHints.map((h) => ({ value: h, label: h })),
                   ]}
-                  ariaLabel="Animation"
+                  ariaLabel="Server mesh file"
                   className="text-xs"
                 />
                 <p className="text-[10px] text-text-muted">
+                  {idleMesh?.file || importedMesh?.file
+                    ? `Using “${idleMesh?.name || importedMesh?.name}” from this panel (uploads it, no restart needed).`
+                    : serverMesh.trim()
+                      ? `Using server file “${serverMesh.trim()}” as-is — no upload, no restart.`
+                      : run.mesh?.filename
+                        ? `Using “${run.mesh.filename}” from this panel (uploads it, no restart needed).`
+                        : 'No mesh yet — generate/import one, or type a file already on the server (e.g. 3d/hero.glb).'}
+                </p>
+              </div>
+              <div className="space-y-1">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs text-text-secondary">
+                    Animations <span className="text-text-muted">— tick several, one FBX each in a single run</span>
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => !busy && animFileRef.current?.click()}
+                      disabled={busy}
+                      title="Upload new Mixamo FBXs from your computer into ComfyUI's input/animation_templates/mixamo/ — only needed to ADD files that aren't already listed below."
+                      className="text-[10px] text-accent hover:underline disabled:opacity-40"
+                    >
+                      Upload new FBXs…
+                    </button>
+                    {animOptions.length > 1 && (
+                    <button
+                      onClick={() =>
+                        setAnimSel((prev) => {
+                          const usable = animOptions.filter((o) => !animMissing.includes(o))
+                          return prev.length === usable.length && usable.length > 0 ? [] : [...usable]
+                        })
+                      }
+                      disabled={busy}
+                      className="text-[10px] text-accent hover:underline disabled:opacity-40"
+                    >
+                      {animSel.length > 0 && animSel.length === animOptions.filter((o) => !animMissing.includes(o)).length ? 'none' : 'all'}
+                    </button>
+                    )}
+                  </div>
+                </div>
+                {animOptions.length > 0 ? (
+                  <div className="max-h-36 overflow-y-auto rounded-lg border border-border divide-y divide-border">
+                    {animOptions.map((o) => {
+                      const gone = animMissing.includes(o)
+                      return (
+                        <label
+                          key={o}
+                          className={`flex items-center gap-2 px-2 py-1.5 text-xs ${
+                            gone ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer hover:bg-bg-hover'
+                          }`}
+                          title={gone ? 'Listed by ComfyUI but missing on disk — re-download it (see hint below)' : undefined}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={!gone && animSel.includes(o)}
+                            onChange={() =>
+                              setAnimSel((prev) => (prev.includes(o) ? prev.filter((a) => a !== o) : [...prev, o]))
+                            }
+                            disabled={busy || gone}
+                            className="accent-[var(--color-accent)]"
+                          />
+                          <span className="font-mono truncate">{prettyAnim(o)}</span>
+                          {gone && (
+                            <span className="ml-auto text-[10px] text-text-muted shrink-0">missing on server</span>
+                          )}
+                        </label>
+                      )
+                    })}
+                  </div>
+                ) : (
+                  <p className="text-[11px] text-text-muted">
+                    Animation file list not loaded — is the ComfyUI server reachable?
+                  </p>
+                )}
+                {uploadNote && (
+                  <p className="text-[10px] text-accent/90">{uploadNote}</p>
+                )}
+                <p className="text-[10px] text-text-muted">
                   {animOptions.length > 0
-                    ? `${animOptions.length} animation file(s) on server — add more FBX files to ComfyUI's input/animation_templates/mixamo/ and restart ComfyUI`
+                    ? `The list above is every animation already on the server — just tick the ones you want. Unticked = rig only. Want more (walk/run/jump/squat)? Download free FBXs from mixamo.com (Animations → Download as FBX, no skin) and use "Upload new FBXs…" to add them, then restart ComfyUI once so they appear in the list.`
                     : 'Animation file list not loaded — is the ComfyUI server reachable?'}
                 </p>
+                <input
+                  ref={animFileRef}
+                  type="file"
+                  accept=".fbx,application/octet-stream"
+                  multiple
+                  className="hidden"
+                  onChange={handleAnimUpload}
+                />
               </div>
             </div>
           </>

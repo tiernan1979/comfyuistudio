@@ -19,7 +19,8 @@ import {
   hasReferenceAudioPrep,
   uploadAudioFile,
 } from '../lib/comfyui'
-import useStore, { pushHistoryEntries } from '../store/useStore'
+import useStore, { pushHistoryEntries, resolveActiveModels } from '../store/useStore'
+import { checkVramGuard } from './useVramGuard'
 import {
   buildImageWorkflow,
   buildVideoWorkflow,
@@ -295,6 +296,18 @@ export function useComfyUI() {
     const state = useStore.getState()
     if (!state.prompt.trim() || state.generating) return
 
+    // VRAM guard first, while the UI still looks idle: if another LLM owns
+    // the card and ComfyUI is idle, free our weights; if a job is running,
+    // throw before we flip into the generating state (so nothing sticks).
+    if (state.vramGuard) {
+      try {
+        await checkVramGuard(state, (label) => useStore.getState().setProgressLabel(label))
+      } catch (err) {
+        useStore.getState().setError(err.message)
+        return
+      }
+    }
+
     state.setGenerating(true)
     state.setProgress({ value: 0, max: 1, step: 0, total: 1 })
     state.setProgressLabel(null)
@@ -390,16 +403,24 @@ export function useComfyUI() {
         // (comfy_nodes/AudioTailTrim.py); graphs stay stock without it.
         const trimAudio = await hasAudioTailTrim(base)
         const musicModels = {
-          unet: state.models.music?.unet || 'minimax_music3_dit_int8_convrot.safetensors',
-          clip: state.models.music?.clip || 'minimax_music3_text_encoder_pruned_int8_convrot.safetensors',
-          vae: state.models.music?.vae || 'minimax_music3_dav.safetensors',
+          unet: 'minimax_music3_dit_int8_convrot.safetensors',
+          clip: 'minimax_music3_text_encoder_pruned_int8_convrot.safetensors',
+          vae: 'minimax_music3_dav.safetensors',
+          ...resolveActiveModels(state, 'music'),
         }
         const aceSelected = isAceStepModel(musicModels.unet)
         if (aceSelected) {
           // ACE-Step: clip/vae live in the server's ACE files (AIO checkpoint
           // or split qwen encoders), not in the MiniMax trio — resolve them
           // here so the builder gets { ace } (throws with install guidance).
-          musicModels.ace = resolveAceStepModels(await getModelLists(base), musicModels)
+          // Force direct (no planner) when duration > 360s — the planner
+          // node hard-caps max_duration at 360, so ACE's own TE (up to 2000s)
+          // is the only path for longer tracks.
+          const dur = state.musicSettings.duration || 300
+          musicModels.ace = resolveAceStepModels(await getModelLists(base), {
+            ...musicModels,
+            forceDirect: dur > 360,
+          })
         }
         // ACE-Step reference audio (timbre/style source): upload into input/
         // so LoadAudio can pick it up, then thread the filename into the
@@ -430,7 +451,7 @@ export function useComfyUI() {
           models: musicModels,
         })
       } else {
-        let videoModels = state.models.video
+        let videoModels = resolveActiveModels(state, 'video')
         // MiniMax H3 decodes an AV latent — the audio VAE isn't a setting,
         // pick whatever H3 audio VAE the server has.
         if (isMiniMaxH3(videoModels?.unet)) {

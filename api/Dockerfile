@@ -11,6 +11,7 @@ COPY src/lib/workflows.js ./src/lib/workflows.js
 COPY src/lib/comfyui.js ./src/lib/comfyui.js
 COPY src/lib/threed.js ./src/lib/threed.js
 COPY src/lib/hybridSkin.js ./src/lib/hybridSkin.js
+COPY src/lib/llm.js ./src/lib/llm.js
 COPY api/src ./api/src
 
 ENV NODE_ENV=production \
