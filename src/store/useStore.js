@@ -628,6 +628,11 @@ const useStore = create(
             // also remember it as that tab's own prompt
             promptByMode: { ...st.promptByMode, [mode]: text },
             lyrics: isMusic && typeof entry.lyrics === 'string' ? entry.lyrics : st.lyrics,
+            // Restore the AI title snapshotted onto the job so the download
+            // name matches THIS song, not whatever was rewritten since.
+            titles: entry.title
+              ? { ...st.titles, [isVideo ? 'video' : 'music']: entry.title }
+              : st.titles,
             mode,
           }))
         }
@@ -756,6 +761,9 @@ const useStore = create(
         history: state.history,
         hiddenHistoryIds: state.hiddenHistoryIds,
         outputAudio: state.outputAudio,
+        // AI titles ('Platform Nine') survive reloads so the current
+        // output's download name doesn't fall back to track_00001.mp3.
+        titles: state.titles,
         // Which tab/mode you were on — a new tab (e.g. the Studio's own
         // window) should come back where you left off.
         mode: state.mode,

@@ -700,6 +700,33 @@ export async function hasAudioTailTrim(base) {
   return v
 }
 
+// Are the loudness post-processing nodes available? AudioEqualizer3Band and
+// AudioAdjustVolume ship with ComfyUI's core audio nodes (≥0.36), but a
+// stripped build may lack them — probe both so the music builders can chain
+// EQ + volume only when the server can actually run them (graphs stay stock
+// otherwise). Memoized per server for 60s, like the other music probes.
+const loudNodeCache = new Map()
+export async function hasAudioLoudnessNodes(base) {
+  const hit = loudNodeCache.get(base)
+  if (hit && Date.now() - hit.t < 60000) return hit.v
+  const probe = async (cls) => {
+    try {
+      const res = await fetch(`${base}/object_info/${cls}`)
+      if (!res.ok) return false
+      const data = await res.json()
+      return !!data?.[cls]
+    } catch {
+      return false
+    }
+  }
+  const v = {
+    eq: await probe('AudioEqualizer3Band'),
+    volume: await probe('AudioAdjustVolume'),
+  }
+  loudNodeCache.set(base, { t: Date.now(), v })
+  return v
+}
+
 // Is the ReferenceAudioPrep custom node installed? (comfy_nodes/ReferenceAudioPrep.py —
 // samples three windows from a long reference clip so the whole track's
 // timbre is captured; without it the full file is encoded and truncated).

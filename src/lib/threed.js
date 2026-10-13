@@ -332,8 +332,39 @@ export const RIG_INPUT_NAME = 'studio_rig_input.glb'
 
 // Animation options for the local pipeline (UniRigApplyAnimation's
 // animation_file dropdown — Mixamo FBX files shipped with the node).
-export function listLocalAnimations(base) {
-  return getNodeComboOptions(base, 'UniRigApplyAnimation', 'animation_file')
+// The combo is startup-cached by ComfyUI, so files added after boot don't
+// appear. Probe a known list of filenames against the server via /view
+// (which returns 200 for any file on disk) and merge with the combo.
+const KNOWN_MIXAMO_ANIMATIONS = [
+  'Breakdance.fbx',
+  'Breathing Idle.fbx',
+  'Capoeira.fbx',
+  'Crouched To Standing.fbx',
+  'Crouching Idle.fbx',
+  'Crouching.fbx',
+  'Dying.fbx',
+  'Hip_Hop_Dancing.fbx',
+  'Jumping.fbx',
+  'Mma_Kick.fbx',
+  'Running Jump.fbx',
+  'Running.fbx',
+  'Standing To Crouched.fbx',
+  'Walking.fbx',
+]
+
+export async function listLocalAnimations(base) {
+  let combo = []
+  try {
+    combo = await getNodeComboOptions(base, 'UniRigApplyAnimation', 'animation_file')
+  } catch { /* node pack absent — fall through to probe-only */ }
+  // Probe the known list so files added after ComfyUI started still show up.
+  const probed = []
+  for (const name of KNOWN_MIXAMO_ANIMATIONS) {
+    if (combo.includes(name)) continue
+    if (await probeInputFile(base, name, 'animation_templates/mixamo')) probed.push(name)
+  }
+  // Dedupe, keep combo order first, then probed additions.
+  return [...combo, ...probed.filter((n) => !combo.includes(n))]
 }
 
 // Upload Mixamo animation FBXs into input/animation_templates/mixamo/ so

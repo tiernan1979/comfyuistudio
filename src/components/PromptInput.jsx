@@ -3,7 +3,8 @@ import { motion } from 'framer-motion'
 import { Sparkles, ChevronDown, ChevronUp, Wand2, Bot, Loader2, Globe, BookmarkPlus, BookmarkCheck } from 'lucide-react'
 import useStore from '../store/useStore'
 import { STYLES, enhancePrompt } from '../lib/enhance'
-import { rewritePrompt, resolveLlmConfig, PROVIDERS, padInstrumentalSections, trimVocalSections, parseVocalShare } from '../lib/llm'
+import { rewritePrompt, resolveLlmConfig, PROVIDERS, padInstrumentalSections, trimVocalSections, trimSectionBudget, parseVocalShare, detectMusicStyle, defaultVocalShare, detectArtistRefs, stripArtistRefs, injectSignatureSounds } from '../lib/llm'
+import { searchText } from '../lib/search'
 import Dropdown from './Dropdown'
 
 const EXAMPLES = [
@@ -46,6 +47,7 @@ export default function PromptInput() {
   const setTitle = useStore((s) => s.setTitle)
   const [showNegative, setShowNegative] = useState(false)
   const [rewriting, setRewriting] = useState(false)
+  const [researching, setResearching] = useState(false)
   const [savedFlash, setSavedFlash] = useState(false)
 
   const styleOptions = Object.entries(STYLES).map(([key, s]) => ({ value: key, label: s.label }))
@@ -91,15 +93,70 @@ export default function PromptInput() {
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(), 120000)
     try {
+      // Music: an artist reference ("sounds like Avicii") triggers a quick
+      // web search so the caption is grounded in the artist's REAL sound
+      // (BPM range, era, production) instead of the LLM's memory. Best
+      // effort — any search failure (no engine configured, offline, quota)
+      // just proceeds without the research block.
+      let research = ''
+      let artistRefs = []
+      if (mode === 'music') {
+        const artists = detectArtistRefs(prompt.trim())
+        artistRefs = artists
+        if (artists.length) {
+          const s = useStore.getState()
+          const engine = s.searchEngine || 'searxng'
+          const configured = engine === 'searxng'
+            ? !!(s.searchUrl || '').trim()
+            : !!(s.searchApiKey || '').trim()
+          if (configured) {
+            setResearching(true)
+            try {
+              const results = await searchText(
+                { engine, searchUrl: s.searchUrl, apiKey: s.searchApiKey, cseId: s.searchCseId },
+                `${artists[0]} signature sound folk acoustic instruments BPM genre production`,
+                controller.signal
+              )
+              research = results
+                .map((r) => `- ${r.title}${r.snippet ? `: ${r.snippet}` : ''}`)
+                .filter((l) => l.length > 4)
+                .join('\n')
+                .slice(0, 1600)
+            } catch (err) {
+              // Best-effort — but DON'T hide it: a silently-empty research
+              // block is why "Avicii style" produced generic EDM (the LLM
+              // fell back to its own memory). Log so the user can see the
+              // search never actually reached the engine.
+              console.warn('[music research] search failed, proceeding without:', err?.message || err)
+            }
+            setResearching(false)
+          }
+        }
+      }
       const out = await rewritePrompt(
         cfg,
         {
           text: prompt.trim(),
           styleLabel: STYLES[style]?.label || 'photorealistic',
           mode,
+          research,
         },
         controller.signal
       )
+      // The system prompt forbids naming the artist in the caption/lyrics,
+      // but LLMs leak them anyway ("Avicii-style trance"). Strip detected
+      // artist refs from the generated text as a hard guarantee.
+      if (artistRefs.length) {
+        out.prompt = stripArtistRefs(out.prompt, artistRefs)
+        if (out.lyrics) out.lyrics = stripArtistRefs(out.lyrics, artistRefs)
+      }
+      // Weak LLMs ignore the research grounding and write generic genre
+      // captions ("Avicii = EDM" with zero folk/acoustic elements). Force
+      // the artist's signature instruments from the research into the
+      // caption so the music model always sees them.
+      if (mode === 'music' && research) {
+        out.prompt = injectSignatureSounds(out.prompt, research)
+      }
       setPrompt(out.prompt)
       setSearchQuery(out.searchQuery || '')
       if (out.title && (mode === 'music' || mode === 'video')) setTitle(mode, out.title)
@@ -112,11 +169,17 @@ export default function PromptInput() {
         if (out.duration) setMusicSettings({ duration: out.duration })
         if (out.lyrics) {
           const dur = out.duration || useStore.getState().musicSettings.duration || 300
-          // When the AI returns lyrics but the user didn't state a vocal
-          // share, default to 20% so trimVocalSections still runs and
-          // expands to 2–3 verse→chorus cycles (not a single fragment).
-          const share = parseVocalShare(prompt) || 0.2
-          setLyrics(padInstrumentalSections(trimVocalSections(out.lyrics, dur, share), dur))
+          // Detect the style family from the prompt: it drives the MIDDLE
+          // breakdown weight (trance/dance) AND the default vocal share —
+          // trance is instrumental-first (~15%), vocal-led styles get
+          // 35–45% so pop/ballads don't ship as lyric fragments. An
+          // explicit "25% of the song" from the user always wins.
+          const musicStyle = detectMusicStyle(out.prompt || prompt)
+          const share = parseVocalShare(prompt) || defaultVocalShare(musicStyle)
+          // Hard ceiling last: after vocal-share trim and instrumental pad,
+          // cap total sections at the measured dense-map budget so the tag
+          // count can't promise more seconds than the requested duration.
+          setLyrics(trimSectionBudget(padInstrumentalSections(trimVocalSections(out.lyrics, dur, share, musicStyle), dur, musicStyle), dur, share, musicStyle))
         }
       }
       if (!negativePrompt.trim() && STYLES[style]?.negative) {
@@ -130,6 +193,7 @@ export default function PromptInput() {
       setError(`AI rewrite failed: ${err.message}`)
     } finally {
       clearTimeout(timeout)
+      setResearching(false)
       setRewriting(false)
     }
   }
@@ -180,7 +244,7 @@ export default function PromptInput() {
                 } — configure in Settings`}
               >
                 {rewriting ? <Loader2 size={12} className="animate-spin" /> : <Bot size={12} />}
-                {rewriting ? 'Writing...' : 'AI'}
+                {rewriting ? (researching ? 'Researching…' : 'Writing...') : 'AI'}
               </motion.button>
             </div>
         )}

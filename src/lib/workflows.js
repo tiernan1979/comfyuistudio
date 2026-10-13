@@ -1689,6 +1689,43 @@ export function normalizeLyrics(lyrics, structure = true) {
   return { text, instrumental: stripStructureTags(text) === '' }
 }
 
+// Loudness post-processing: the raw decode comes out quiet and thin. When
+// the server has the core audio nodes, chain a 3-band EQ (bass boost) and a
+// volume lift between decode and save. Values are conservative — bass shelf
+// +4dB at 100Hz for depth, +2dB overall gain — enough to feel loud without
+// clipping. IDs start at 70 to clear the 55–60 save/trim nodes. Returns the
+// updated audioRef plus the next free id.
+function applyLoudness(wf, startId, audioRef, models) {
+  let id = startId
+  let ref = audioRef
+  if (models.loudEq) {
+    wf[String(id)] = {
+      class_type: 'AudioEqualizer3Band',
+      inputs: {
+        audio: ref,
+        low_gain_dB: 4.0,
+        low_freq: 100,
+        mid_gain_dB: 0.0,
+        mid_freq: 1000,
+        mid_q: 0.7,
+        high_gain_dB: 1.0,
+        high_freq: 5000,
+      },
+    }
+    ref = [String(id), 0]
+    id++
+  }
+  if (models.loudVolume) {
+    wf[String(id)] = {
+      class_type: 'AudioAdjustVolume',
+      inputs: { audio: ref, volume: 2 },
+    }
+    ref = [String(id), 0]
+    id++
+  }
+  return { audioRef: ref, nextId: id }
+}
+
 export function buildMusicWorkflow({
   caption, // style / instrumentation description (the main prompt)
   negativePrompt = '', // merged into an in-caption "no X, no Y" ban clause
@@ -1848,10 +1885,12 @@ export function buildMusicWorkflow({
   // the tail is silence codes (measured up to 7.5s on a 30s track). Trim
   // before save so the stored mp3 every client downloads is clean.
   let saveAudio = ['8', 0]
+  const loud = applyLoudness(wf, 70, saveAudio, models)
+  saveAudio = loud.audioRef
   if (models.trimAudio) {
     wf['55'] = {
       class_type: 'AudioTailTrim',
-      inputs: { audio: ['8', 0], threshold_db: -50, min_silence: 0.4, keep_tail: 0.3 },
+      inputs: { audio: saveAudio, threshold_db: -50, min_silence: 0.4, keep_tail: 0.3 },
     }
     saveAudio = ['55', 0]
   }
@@ -2061,11 +2100,11 @@ export function buildAceStepWorkflow({
   // Dead-air trim (custom node comfy_nodes/AudioTailTrim.py): the LM is
   // force-filled to the planned length, so when the song ends early the
   // tail is silence codes. Trim before save → stored mp3 ends with music.
-  let saveAudio = ['a9', 0]
+  let saveAudio = applyLoudness(wf, 'a70', ['a9', 0], models).audioRef
   if (models.trimAudio) {
     wf['a95'] = {
       class_type: 'AudioTailTrim',
-      inputs: { audio: ['a9', 0], threshold_db: -50, min_silence: 0.4, keep_tail: 0.3 },
+      inputs: { audio: saveAudio, threshold_db: -50, min_silence: 0.4, keep_tail: 0.3 },
     }
     saveAudio = ['a95', 0]
   }

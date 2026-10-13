@@ -138,7 +138,7 @@ export function createApp(opts = {}) {
     fs.writeFileSync(historyFile, JSON.stringify({ entries: entries.slice(0, HISTORY_CAP) }, null, 2))
   }
 
-  const HISTORY_FIELDS = ['type', 'prompt', 'lyrics', 'data', 'thumbnail', 'timestamp', 'settings', 'view', 'fromServer']
+  const HISTORY_FIELDS = ['type', 'prompt', 'lyrics', 'title', 'data', 'thumbnail', 'timestamp', 'settings', 'view', 'fromServer']
 
   function normalizeEntry(e) {
     if (!e || typeof e !== 'object') return null
@@ -148,6 +148,9 @@ export function createApp(opts = {}) {
       if (e[k] !== undefined && e[k] !== null) out[k] = e[k]
     }
     if (typeof out.data !== 'string') delete out.data
+    // AI-generated song/video title — short plain string.
+    if (typeof out.title === 'string') out.title = out.title.trim().slice(0, 120)
+    else delete out.title
     // Thumbnails are PNG data URLs — cap at 500 KB to keep the history file lean.
     if (typeof out.thumbnail !== 'string' || !out.thumbnail.startsWith('data:image/') || out.thumbnail.length > 500 * 1024) delete out.thumbnail
     if (typeof out.timestamp !== 'number' || !Number.isFinite(out.timestamp)) delete out.timestamp
@@ -188,6 +191,10 @@ export function createApp(opts = {}) {
       if (prompt !== undefined) merged.prompt = prompt
       if (lyrics) merged.lyrics = lyrics
       else delete merged.lyrics
+      // Title: same non-empty preference — an early live merge can miss it.
+      const title = keep.title || other.title
+      if (title) merged.title = title
+      else delete merged.title
       if (view) merged.view = view
       else delete merged.view
       merged.timestamp = Math.max(Number(prev.timestamp) || 0, Number(e.timestamp) || 0)

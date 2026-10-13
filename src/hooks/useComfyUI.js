@@ -16,6 +16,7 @@ import {
   getModelLists,
   resolveAceStepModels,
   hasAudioTailTrim,
+  hasAudioLoudnessNodes,
   hasReferenceAudioPrep,
   uploadAudioFile,
 } from '../lib/comfyui'
@@ -228,6 +229,7 @@ export function useComfyUI() {
             id: promptId,
             type: 'video',
             prompt: state.prompt,
+            title: state.titles?.video || '',
             data: url,
             timestamp: Date.now(),
             settings: { ...state.videoSettings },
@@ -246,6 +248,7 @@ export function useComfyUI() {
             id: promptId,
             type: 'video',
             prompt: state.prompt,
+            title: state.titles?.video || '',
             data: url,
             timestamp: Date.now(),
             settings: { ...state.videoSettings },
@@ -264,6 +267,10 @@ export function useComfyUI() {
             type: 'music',
             prompt: state.prompt,
             lyrics: state.lyrics,
+            // Snapshot the AI title onto the job so the download name and
+            // the history tile keep matching THIS song — regenerating or
+            // rewriting later must not rename what was already rendered.
+            title: state.titles?.music || '',
             data: url,
             timestamp: Date.now(),
             settings: { ...state.musicSettings },
@@ -402,6 +409,7 @@ export function useComfyUI() {
         // Trim dead-air tails when the AudioTailTrim custom node is installed
         // (comfy_nodes/AudioTailTrim.py); graphs stay stock without it.
         const trimAudio = await hasAudioTailTrim(base)
+        const loud = await hasAudioLoudnessNodes(base)
         const musicModels = {
           unet: 'minimax_music3_dit_int8_convrot.safetensors',
           clip: 'minimax_music3_text_encoder_pruned_int8_convrot.safetensors',
@@ -435,6 +443,8 @@ export function useComfyUI() {
         }
         await freeLoadedModels(base)
         musicModels.trimAudio = trimAudio
+        musicModels.loudEq = loud.eq
+        musicModels.loudVolume = loud.volume
         workflow = buildMusicWorkflow({
           caption: state.prompt,
           negativePrompt: state.negativePrompt,

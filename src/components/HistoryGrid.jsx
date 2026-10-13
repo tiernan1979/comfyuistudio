@@ -96,6 +96,9 @@ export default function HistoryGrid() {
           )}
           <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent opacity-0 hover:opacity-100 transition-opacity">
             <div className="absolute bottom-1 left-1 right-1">
+              {(entry.type === 'music' || entry.type === 'video') && entry.title ? (
+                <p className="text-[9px] font-medium text-white leading-tight truncate">{entry.title}</p>
+              ) : null}
               <p className="text-[9px] text-white/80 line-clamp-2 leading-tight">
                 {entry.prompt}
               </p>
