@@ -400,12 +400,15 @@ export function sectionCeiling(duration) {
 
 // Cap headroom: the planner ends the song when the music is done, so a
 // max_duration set exactly at the request makes the cap the limiter
-// (a 240s ask came back 167s). Ask for 30% more than the target so the
-// planner's own length decision — driven by the section count — is the
-// thing that ends the song.
+// (a 240s ask came back 167s). Some headroom lets the planner's own length
+// decision — driven by the section count — end the song naturally. But 1.3×
+// was too loose: a 210s (3:30) request overran to 298s (4:58) because the
+// planner ran each section ~15s and even blew past the 273s cap. padInstrumentalSections
+// now guarantees enough sections to hit the target, so the oversized headroom
+// only causes overshoot — tighten to 1.1× to bound the overrun.
 export function plannerCapDuration(duration) {
   const dur = Number(duration) > 0 ? Math.round(Number(duration)) : 300
-  return Math.min(360, Math.max(10, Math.ceil(dur * 1.3)))
+  return Math.min(360, Math.max(10, Math.ceil(dur * 1.1)))
 }
 
 // Structural tags that form the repeating "hook" of a song. Each occurrence
@@ -501,6 +504,19 @@ function trimSectionLines(section, maxLines) {
 export function trimVocalSections(lyrics, duration, share, style = 'generic') {
   if (!lyrics || !duration || !share || share <= 0 || share >= 1) return lyrics
   const sections = parseLyricSections(lyrics)
+    // Force the intro to be WORDLESS (pure instrumental). The AI often writes
+    // instrumentation prose under it ("[Intro - banjos]Banjo plucks open the
+    // track"), which makes isVocal() true — the intro then gets classified as
+    // an "extra vocal", DEMOTED to just before the outro, and the planner
+    // renders it as a rushed vocal stub instead of a real intro (the song
+    // "went straight into the verse"). The instrumentation is already carried
+    // by the tag suffix ("- banjos") and the caption, so stripping the words
+    // keeps the intro at the head as a proper instrumental section.
+    .map((s) =>
+      /\bintro\b/i.test(s.tag) && s.words
+        ? { tag: s.tag, words: '', raw: `[${s.tag}]` }
+        : s
+    )
   if (sections.length === 0) return lyrics
 
   const isVocal = (s) => s.tag !== '' && s.words !== ''
