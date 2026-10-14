@@ -69,16 +69,13 @@ body {
   text-shadow: 0 0 20px var(--color-accent-glow);
 }
 
-/* Animated gradient background */
-@keyframes gradient-shift {
-  0%, 100% { background-position: 0% 50%; }
-  50% { background-position: 100% 50%; }
-}
-
+/* Static gradient background — the previous animated version
+   (background-position shift on a 400% gradient) forced a full-viewport
+   repaint every frame forever, pegging a CPU core at ~120% when idle. */
 .animated-gradient {
   background: linear-gradient(-45deg, #0a0a0f, #1a1025, #0f1a2a, #0a0a0f);
   background-size: 400% 400%;
-  animation: gradient-shift 15s ease infinite;
+  background-position: 50% 50%;
 }
 
 /* Particle canvas */

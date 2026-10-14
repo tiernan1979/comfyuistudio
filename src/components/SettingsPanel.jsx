@@ -1,6 +1,6 @@
 import { motion } from 'framer-motion'
 import { useRef } from 'react'
-import { Music, X, Disc3, Clapperboard } from 'lucide-react'
+import { Disc3, Clapperboard } from 'lucide-react'
 import useStore, { presetLabel } from '../store/useStore'
 import { isAceStepModel } from '../lib/workflows'
 import clsx from 'clsx'
@@ -93,9 +93,6 @@ export default function SettingsPanel() {
   const musicUnet = (musicPreset?.unet ?? flatMusic.unet) || ''
   const videoPresets = useStore((s) => s.presets?.video || [])
   const videoActive = useStore((s) => s.active?.video)
-  const referenceAudio = useStore((s) => s.referenceAudio)
-  const setReferenceAudio = useStore((s) => s.setReferenceAudio)
-  const refAudioInputRef = useRef(null)
 
   if (mode === 'edit') {
     return (
@@ -171,7 +168,7 @@ export default function SettingsPanel() {
               })}
             </div>
             <p className="text-[10px] text-text-muted/60 mt-1">
-              Add more presets in Settings → Models → Music. ACE-Step supports reference audio.
+              Add more presets in Settings → Models → Music.
             </p>
           </div>
         )}
@@ -204,56 +201,10 @@ export default function SettingsPanel() {
           />
         </div>
 
-        {/* ACE-Step reference audio — timbre/style source. Only the ACE 1.5
-            graph has ReferenceTimbreAudio; MiniMax has no such node, so the
-            picker is hidden unless an ACE unet is selected. */}
-        {isAceStepModel(musicUnet) && (
-          <div>
-            <label className="text-xs text-text-muted mb-1.5 block">
-              Reference audio <span className="text-text-muted/60">(optional — borrows the sound of a track)</span>
-            </label>
-            <input
-              ref={refAudioInputRef}
-              type="file"
-              accept="audio/*,.wav,.mp3,.flac,.ogg,.m4a"
-              className="hidden"
-              onChange={(e) => {
-                const f = e.target.files?.[0]
-                if (f) setReferenceAudio({ file: f, name: f.name })
-                e.target.value = ''
-              }}
-            />
-            {referenceAudio ? (
-              <div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-bg-card border border-border">
-                <Music size={14} className="text-accent shrink-0" />
-                <span className="text-xs text-text-primary truncate flex-1">{referenceAudio.name}</span>
-                <button
-                  onClick={() => setReferenceAudio(null)}
-                  disabled={generating}
-                  className="p-1 rounded-md text-text-muted hover:text-red-400 hover:bg-bg-hover transition-colors"
-                  title="Remove reference audio"
-                >
-                  <X size={12} />
-                </button>
-              </div>
-            ) : (
-              <button
-                onClick={() => refAudioInputRef.current?.click()}
-                disabled={generating}
-                className={clsx(
-                  'w-full px-3 py-2 rounded-xl border border-dashed border-border text-xs text-text-muted',
-                  'hover:border-accent/50 hover:text-text-secondary transition-colors',
-                  generating && 'opacity-50'
-                )}
-              >
-                + Add a reference track (mp3/wav — e.g. a clip from YouTube)
-              </button>
-            )}
-            <p className="text-[10px] text-text-muted/60 mt-1 leading-snug">
-              Borrows the reference's synth tones, vocal timbre and mix character — not its melody or structure. Works best for matching a sonic palette; for "similar vibe" a detailed caption alone often does more.
-            </p>
-          </div>
-        )}
+        {/* ACE-Step reference audio picker removed: ReferenceTimbreAudio
+            consistently degraded generation quality in practice — the model
+            latched onto the reference's structure instead of just its timbre,
+            producing garbled output. A detailed caption alone does more. */}
 
         <Slider
           label="Max length"

@@ -428,9 +428,10 @@ export function sectionCeiling(duration) {
 // Hard cap on consecutive wordless (instrumental) sections anywhere in the
 // map. The AR planner reads a long wordless run as ONE groove and loops it
 // — a 15-section [Breakdown][Build][Drop][Instrumental]... run became 3+
-// minutes of identical beats. Max 2 in a row forces the planner to hit a
-// vocal or a distinct structural tag before it can repeat.
-export const MAX_CONSECUTIVE_WORDLESS = 2
+// minutes of identical beats. Even 2 in a row caused an 80-second loop
+// (Build → Instrumental interlude at 2:00-3:20). Max 1 forces the planner
+// to hit a vocal before it can repeat.
+export const MAX_CONSECUTIVE_WORDLESS = 1
 
 // Cap headroom: the planner ends the song when the music is done, so a
 // max_duration set exactly at the request makes the cap the limiter
