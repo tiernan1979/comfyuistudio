@@ -3,7 +3,7 @@ import { motion } from 'framer-motion'
 import { Sparkles, ChevronDown, ChevronUp, Wand2, Bot, Loader2, Globe, BookmarkPlus, BookmarkCheck } from 'lucide-react'
 import useStore from '../store/useStore'
 import { STYLES, enhancePrompt } from '../lib/enhance'
-import { rewritePrompt, resolveLlmConfig, PROVIDERS, padInstrumentalSections, trimVocalSections, trimSectionBudget, parseVocalShare, detectMusicStyle, defaultVocalShare, detectArtistRefs, stripArtistRefs, injectSignatureSounds } from '../lib/llm'
+import { rewritePrompt, resolveLlmConfig, PROVIDERS, padInstrumentalSections, trimVocalSections, trimSectionBudget, parseVocalShare, detectMusicStyle, defaultVocalShare, detectArtistRefs, stripArtistRefs, injectSignatureSounds, suggestDurationFromLyrics, ensureOutroLead, collapseConsecutiveWordless, sectionCeiling } from '../lib/llm'
 import { searchText } from '../lib/search'
 import Dropdown from './Dropdown'
 
@@ -166,9 +166,13 @@ export default function PromptInput() {
       // deterministically: trim vocal sections to the requested share,
       // then pad instrumental sections to fill the rest of the duration.
       if (mode === 'music') {
-        if (out.duration) setMusicSettings({ duration: out.duration })
+        // The AI now always picks a length, but weak models still return 0
+        // — which used to keep the 300s (5-min) knob default, making EVERY
+        // song 4–5 minutes. Fall back to the lyric map's section count
+        // (~10.4s/section, the planner's real sizing) instead.
+        const dur = out.duration || suggestDurationFromLyrics(out.lyrics) || useStore.getState().musicSettings.duration || 300
+        if (dur !== useStore.getState().musicSettings.duration) setMusicSettings({ duration: dur })
         if (out.lyrics) {
-          const dur = out.duration || useStore.getState().musicSettings.duration || 300
           // Detect the style family from the prompt: it drives the MIDDLE
           // breakdown weight (trance/dance) AND the default vocal share —
           // trance is instrumental-first (~15%), vocal-led styles get
@@ -176,10 +180,15 @@ export default function PromptInput() {
           // explicit "25% of the song" from the user always wins.
           const musicStyle = detectMusicStyle(out.prompt || prompt)
           const share = parseVocalShare(prompt) || defaultVocalShare(musicStyle)
-          // Hard ceiling last: after vocal-share trim and instrumental pad,
-          // cap total sections at the measured dense-map budget so the tag
-          // count can't promise more seconds than the requested duration.
-          setLyrics(trimSectionBudget(padInstrumentalSections(trimVocalSections(out.lyrics, dur, share, musicStyle), dur, musicStyle), dur, share, musicStyle))
+          // Pipeline: vocal trim → instrumental pad → section budget →
+          // collapse consecutive wordless + rebalance (AR planner loops
+          // long wordless runs; rebalance re-inserts instrumentals into
+          // vocal gaps to fill back to the ceiling) → outro lead.
+          const trimmed = trimVocalSections(out.lyrics, dur, share, musicStyle)
+          const padded = padInstrumentalSections(trimmed, dur, musicStyle)
+          const budgeted = trimSectionBudget(padded, dur, share, musicStyle)
+          const collapsed = collapseConsecutiveWordless(budgeted, sectionCeiling(dur))
+          setLyrics(ensureOutroLead(collapsed, musicStyle))
         }
       }
       if (!negativePrompt.trim() && STYLES[style]?.negative) {

@@ -14,7 +14,10 @@ import {
 } from '../../src/lib/workflows.js'
 import { resolveAceStepModels } from '../../src/lib/comfyui.js'
 
-export const MODES = ['image', 'edit', 'video', 'music', '3d', 'skin', 'meshupscale']
+export const MODES = ['image', 'edit', 'video', 'music', 'sfx', '3d', 'skin', 'meshupscale']
+
+// Music + SFX share the audio engines (ACE-Step preferred; MiniMax music-only).
+export const AUDIO_MODES = new Set(['music', 'sfx'])
 
 // Flow modes run long-lived multi-prompt pipelines (threed.js) instead of a
 // single workflow graph — they always block until done and take no `prompt`.
@@ -39,8 +42,17 @@ export const DEFAULT_MODELS = {
     vae: 'wan_2.1_vae.safetensors',
     lora: '', // optional H3 turbo LoRA (4–8 steps)
   },
+  // ACE-Step 1.5 turbo AIO is the default music engine — MiniMax Music 3
+  // remains available by overriding models.music.unet (Settings or request).
   music: {
-    unet: 'minimax_music3_dit_int8_convrot.safetensors',
+    unet: 'ace_step_1.5_turbo_aio.safetensors',
+    clip: 'minimax_music3_text_encoder_pruned_int8_convrot.safetensors',
+    vae: 'minimax_music3_dav.safetensors',
+  },
+  // SFX: ACE-Step only — short instrumental clips from a sound-effect
+  // caption. MiniMax cannot do SFX; forceAce in buildMusicWorkflow enforces.
+  sfx: {
+    unet: 'ace_step_1.5_turbo_aio.safetensors',
     clip: 'minimax_music3_text_encoder_pruned_int8_convrot.safetensors',
     vae: 'minimax_music3_dav.safetensors',
   },
@@ -59,6 +71,8 @@ export const DEFAULT_SETTINGS = {
   // planner max_duration; exact render length when no planner is
   // available). Default 300 = 5 minutes; range 10–360.
   music: { duration: 300, seed: -1, steps: 30, cfgScale: 1.7, quality: '320k' },
+  // SFX: short exact-length ACE render, WAV for game engines.
+  sfx: { duration: 6, seed: -1, quality: 'wav' },
   // 3D flow defaults mirror src/store/useStore.js (threeD).
   '3d': {
     meshMode: 'pixal3d',
@@ -131,6 +145,16 @@ export const MODEL_PREFS = {
     ],
     vae: [/ace[-_ ]?step.*vae/i, /ace[-_ ]?step/i, /minimax[-_ ]?music3[-_ ]?dav/i, /dav/i, /music/i],
   },
+  sfx: {
+    unet: [
+      /ace[-_ ]?step.*aio/i, /ace[-_ ]?step.*dit/i, /ace[-_ ]?step/i,
+    ],
+    clip: [
+      /ace[-_ ]?step.*qwen.*2\.5.*vl/i, /ace[-_ ]?step.*text.*encoder/i,
+      /ace[-_ ]?step/i,
+    ],
+    vae: [/ace[-_ ]?step.*vae/i, /ace[-_ ]?step/i],
+  },
 }
 
 const STEM_RE = /\.(safetensors|ckpt|pt|sft|bin)$/i
@@ -177,7 +201,7 @@ export function resolveModels(lists, mode, overrides = {}) {
     // This must run BEFORE the override check: a config preset that selects
     // an ACE unet still carries the flat MiniMax clip/vae in its override
     // map, and those files won't exist on an ACE-only server.
-    if (mode === 'music' && group !== 'unet' && out.unet && isAceStepModel(out.unet)) {
+    if (AUDIO_MODES.has(mode) && group !== 'unet' && out.unet && isAceStepModel(out.unet)) {
       out[group] = base[group]
       continue
     }
@@ -187,7 +211,7 @@ export function resolveModels(lists, mode, overrides = {}) {
       // (UNETLoader). An explicit override selects the engine, so accept it
       // from either loader list — the ACE resolver below picks it up again.
       const groups =
-        mode === 'music' && group === 'unet'
+        AUDIO_MODES.has(mode) && group === 'unet'
           ? ['unet', 'checkpoint']
           : [group]
       const hit = groups
@@ -204,7 +228,7 @@ export function resolveModels(lists, mode, overrides = {}) {
     // Music UNET with no MiniMax file: fall back to an ACE AIO checkpoint.
     // ACE-Step loads its unet+clip+vae from CheckpointLoaderSimple, so the
     // DiT is in models/checkpoints/, not models/unet/ — search there too.
-    if (!picked && mode === 'music' && group === 'unet') {
+    if (!picked && AUDIO_MODES.has(mode) && group === 'unet') {
       picked = pickModel(
         Array.isArray(lists?.checkpoint) ? lists.checkpoint : [],
         base[group],
@@ -224,7 +248,7 @@ export function resolveModels(lists, mode, overrides = {}) {
   }
   // ACE-Step music: attach the resolved asset set (AIO checkpoint or split
   // encoders) the workflow builder needs; split also corrects clip/vae.
-  if (mode === 'music' && isAceStepModel(out.unet)) {
+  if (AUDIO_MODES.has(mode) && isAceStepModel(out.unet)) {
     const ace = resolveAceStepModels(lists, out)
     if (ace.kind === 'split') {
       out.clip = ace.clip2
@@ -268,7 +292,7 @@ export function pickModelOverrides(mode, bodyModels) {
 // Request-body `models` / `settings` still win — config is the baseline.
 // ---------------------------------------------------------------------------
 
-const CONFIG_MODES = new Set(['image', 'edit', 'video', 'music'])
+const CONFIG_MODES = new Set(['image', 'edit', 'video', 'music', 'sfx'])
 const CONFIG_MODEL_GROUPS = new Set(['unet', 'clip', 'clip1', 'clip2', 'vae', 'lora'])
 // Flat per-mode generation settings (steps, cfg, duration, quality…). The
 // model-ish keys are excluded: unet/clip/vae live under models, and upscale
@@ -278,6 +302,7 @@ const CONFIG_SETTING_KEYS = {
   edit: new Set(['seed', 'steps', 'cfg']),
   video: new Set(['resolution', 'frames', 'fps', 'seed', 'steps', 'cfg']),
   music: new Set(['duration', 'seed', 'steps', 'cfgScale', 'quality']),
+  sfx: new Set(['duration', 'seed', 'quality']),
 }
 
 function sanitizeConfigModels(raw) {
@@ -497,6 +522,20 @@ export function workflowFor(mode, { prompt, negativePrompt = '', lyrics = '', se
       models,
     })
   }
+  if (mode === 'sfx') {
+    // Short exact-length ACE-Step clip from a sound-effect caption.
+    // forceAce: MiniMax cannot do SFX; instrumental ban pinned in the graph.
+    return buildMusicWorkflow({
+      caption: prompt,
+      negativePrompt,
+      lyrics: '[Instrumental]',
+      duration: s.duration,
+      seed: s.seed,
+      quality: s.quality || 'wav',
+      forceAce: true,
+      models,
+    })
+  }
   throw new Error(
     FLOW_MODES.includes(mode)
       ? `Mode "${mode}" runs as a long-lived flow (threed.js pipeline), not a single workflow graph`
@@ -509,6 +548,7 @@ const OUTPUT_BUCKETS = [
   ['video', 'gifs'],
   ['video', 'videos'],
   ['music', 'audio'],
+  ['sfx', 'audio'],
   ['3d', 'model_3d'],
 ]
 

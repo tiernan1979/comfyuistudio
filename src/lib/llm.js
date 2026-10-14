@@ -144,7 +144,7 @@ export function buildRewriteSystem(styleLabel, mode) {
     return (
       'You are an expert song-writer for AI text-to-music models (MiniMax Music 3 / ACE-Step in ComfyUI).\n' +
       'Turn the user\'s idea into a complete song package. Reply ONLY with a JSON object, no markdown:\n' +
-      '{"prompt":"...","lyrics":"...","duration":0,"search_query":"","title":""}\n' +
+      '{"title":"","prompt":"...","lyrics":"...","duration":0,"search_query":""}\n' +
       '\n' +
       'prompt — ONE caption, 50–120 words, plain text, two sections:\n' +
       'Global Metadata: genre, BPM, key/mode, mood, listening scenario, production profile (specific\n' +
@@ -214,14 +214,18 @@ export function buildRewriteSystem(styleLabel, mode) {
       '— Avoid adjective stacking ("neon skies, electric hearts, endless dreams") — vague filler.\n' +
       '— Tags are labels only — never "Verse 1:", no titles, no commentary. Rhyme where natural.\n' +
       '\n' +
-      'duration — total seconds as an integer, ONLY when the user states a length ("4 minutes" → 240,\n' +
-      '"3:30" → 210); otherwise 0 (keep the current setting). Clamp to 10–2000.\n' +
+      'duration — total seconds as an integer. Use the user\'s stated length when given\n' +
+      '("4 minutes" → 240, "3:30" → 210). If they give none, CHOOSE a natural length for the\n' +
+      'style and write an arrangement that fits it exactly — electronic/dance 200–240,\n' +
+      'pop/rock 195–225, ballads 210–240, hip-hop 180–210, ambient/experimental up to 300.\n' +
+      'Do NOT return 0 — 0 keeps the 5-minute default and makes every song too long.\n' +
+      'Clamp to 60–360. The arrangement time spans MUST end at this duration.\n' +
       '\n' +
       'title — a short, memorable song title (2–5 words), in Title Case, that captures the mood/theme.\n' +
       'Not the prompt, not a description — a real song name. If the user gave a title, use it as-is.\n' +
       '\n' +
       'EXAMPLE — user asks: "4 min pop ballad about a rainy train station, female vocal, 25% lyrics"\n' +
-      '{"prompt":"Global Metadata: emotional pop ballad, 78 BPM, A minor, intimate and melancholic, solo female breathy vocal, acoustic piano, soft strings, gentle brushed drums, warm reverb, building to a powerful final chorus. Arrangement: 0:00–0:25 solo piano intro with rain ambience; 0:25–0:55 verse 1 — breathy vocal over sparse piano; 0:55–1:25 chorus 1 — strings enter, drums soft; 1:25–1:50 piano interlude; 1:50–2:20 verse 2 — fuller arrangement with bass; 2:20–2:50 chorus 2 — more intense, layered harmonies; 2:50–3:10 bridge — stripped back, whispered vocal; 3:10–3:45 final chorus — full arrangement, powerful belting; 3:45–4:00 outro — piano and strings fade.","lyrics":"[Intro - piano]\\n\\n[Verse]\\nRain on the platform window pane\\nWatching the city fade in the grey\\n\\n[Chorus - anthemic]\\nIM WAITING FOR A TRAIN THAT NEVER COMES\\nHOLDING ON TO WHAT WE USED TO BE\\n\\n[Interlude - piano]\\n\\n[Verse]\\nTicket in my hand, cold as the rain\\nEvery departure feels the same\\n\\n[Chorus - anthemic]\\nIM WAITING FOR A TRAIN THAT NEVER COMES\\nHOLDING ON TO WHAT WE USED TO BE\\n\\n[Bridge - whispered]\\nIf you had stayed, maybe I would too\\n\\n[Chorus - powerful]\\nIM WAITING FOR A TRAIN THAT NEVER COMES\\nHOLDING ON TO WHAT WE USED TO BE\\n\\n[Outro - fade out]","duration":240,"search_query":"","title":"Platform Nine"}\n' +
+      '{"title":"Platform Nine","prompt":"Global Metadata: emotional pop ballad, 78 BPM, A minor, intimate and melancholic, solo female breathy vocal, acoustic piano, soft strings, gentle brushed drums, warm reverb, building to a powerful final chorus. Arrangement: 0:00–0:25 solo piano intro with rain ambience; 0:25–0:55 verse 1 — breathy vocal over sparse piano; 0:55–1:25 chorus 1 — strings enter, drums soft; 1:25–1:50 piano interlude; 1:50–2:20 verse 2 — fuller arrangement with bass; 2:20–2:50 chorus 2 — more intense, layered harmonies; 2:50–3:10 bridge — stripped back, whispered vocal; 3:10–3:45 final chorus — full arrangement, powerful belting; 3:45–4:00 outro — piano and strings fade.","lyrics":"[Intro - piano]\\n\\n[Verse]\\nRain on the platform window pane\\nWatching the city fade in the grey\\n\\n[Chorus - anthemic]\\nIM WAITING FOR A TRAIN THAT NEVER COMES\\nHOLDING ON TO WHAT WE USED TO BE\\n\\n[Interlude - piano]\\n\\n[Verse]\\nTicket in my hand, cold as the rain\\nEvery departure feels the same\\n\\n[Chorus - anthemic]\\nIM WAITING FOR A TRAIN THAT NEVER COMES\\nHOLDING ON TO WHAT WE USED TO BE\\n\\n[Bridge - whispered]\\nIf you had stayed, maybe I would too\\n\\n[Chorus - powerful]\\nIM WAITING FOR A TRAIN THAT NEVER COMES\\nHOLDING ON TO WHAT WE USED TO BE\\n\\n[Outro - fade out]","duration":240,"search_query":""}\n' +
       'Note: TWO distinct verses with different words, chorus repeats identically (UPPERCASE for\n' +
       'intensity), descriptive instrumental tags ([Interlude - piano]), time spans for EVERY section\n' +
       'including the interlude, tag modifiers for delivery, one metaphor (rain/waiting), title is a\n' +
@@ -320,6 +324,18 @@ function parseDuration(v) {
   return Math.min(2000, Math.max(10, n))
 }
 
+// Fallback duration from the lyric map when the AI returns 0. The planner
+// sizes songs from the section COUNT (~10.4s each, dense measurement), so
+// the tag count is the most honest signal of intended length. Kept for the
+// case where a weak model ignores the "always return duration" rule —
+// without this, the 300s (5-min) knob default made EVERY song 4–5 minutes.
+export function suggestDurationFromLyrics(lyrics) {
+  const sections = parseLyricSections(lyrics)
+  if (sections.length === 0) return 0
+  const est = Math.round(sections.length * DENSE_SECONDS_PER_SECTION)
+  return Math.min(360, Math.max(150, est))
+}
+
 // Decode a JSON string body without JSON.parse — the malformed-JSON
 // fallback path can capture raw newlines JSON.parse would reject.
 function unescapeJsonStr(s) {
@@ -383,20 +399,38 @@ export function plannerSectionTarget(duration) {
   return Math.max(3, Math.ceil(dur / PLANNER_SECONDS_PER_SECTION))
 }
 
-// A SPARSE map (a handful of tags, lots of air) runs ~8s per section, but a
-// DENSE one — several vocal passes plus ~30 instrumental breaks — measures
-// ~10.4s per section live (16 sections → 167s). Budgeting a dense map at 8s
-// is what let a 300s request ship 38 sections (304s "fits") and render
-// 344s+, overrunning the lyrics. Use the measured density for the hard
-// ceiling so the tag count can't promise more seconds than were asked for.
-export const DENSE_SECONDS_PER_SECTION = 10.4
+// MEASURED live pacing of the MiniMax AR structure planner: the planner
+// tracks ~5–8 distinct section concepts, then REPEATS the last groove until
+// max_duration. A 360s request with 34 sections (~10.4s each on paper)
+// rendered 33s intro → 49s verse/chorus → 28s breakdown → then LOOPED one
+// groove from 1:50 to 4:59. The planner cannot follow a 34-section map —
+// it exhausts its structural attention and repeats.
+//
+// The real pacing when the planner IS tracking: intro ~30s, verse ~20s,
+// chorus ~30s, breakdown ~28s — i.e. ~25s per section on average. Budget
+// sections at that rate so the map has FEWER, longer, well-varied sections
+// the planner can actually follow end-to-end.
+export const DENSE_SECONDS_PER_SECTION = 20
 export function sectionCeiling(duration) {
   const dur = Number(duration) || 0
   if (dur <= 0) return 3
-  // floor, not round — a rounded-up ceiling can promise a few seconds past
-  // the request (29 sections × 10.4s = 302s for a 300s ask).
-  return Math.max(4, Math.floor(dur / DENSE_SECONDS_PER_SECTION))
+  // Hard cap at 20 sections: the planner's practical tracking limit when
+  // sections are well-varied (max 2 consecutive wordless enforced
+  // separately). A 360s song with 20 sections runs ~18s each. The old
+  // 34-section maps with 15 consecutive wordless sections caused the
+  // planner to loop one groove for minutes — the cap plus the wordless
+  // run limit keep the map trackable end-to-end. Floor of 8: the vocal
+  // form (2 verse+chorus passes = 4 sections) plus a bridge and
+  // intro/outro needs at least 8 slots for ballads.
+  return Math.min(20, Math.max(8, Math.floor(dur / DENSE_SECONDS_PER_SECTION)))
 }
+
+// Hard cap on consecutive wordless (instrumental) sections anywhere in the
+// map. The AR planner reads a long wordless run as ONE groove and loops it
+// — a 15-section [Breakdown][Build][Drop][Instrumental]... run became 3+
+// minutes of identical beats. Max 2 in a row forces the planner to hit a
+// vocal or a distinct structural tag before it can repeat.
+export const MAX_CONSECUTIVE_WORDLESS = 2
 
 // Cap headroom: the planner ends the song when the music is done, so a
 // max_duration set exactly at the request makes the cap the limiter
@@ -669,16 +703,12 @@ export function trimSectionBudget(lyrics, duration, share = 0.2, style = 'generi
   const isChorus = (s) => isChorusTag(s.tag)
 
   // Ceiling adjusted for how heavy the vocal sections actually are. The
-  // dense-map constant (10.4s/section) assumes a mixed average; a 4-line
-  // vocal section needs ~14s of singing, so subtract the difference from
-  // the duration before dividing — 6 four-line vocals in a 300s song
-  // reserve 84s for lyrics and leave the rest for instrumentals, instead
-  // of promising 28×10.4s of sections on top of the singing. Light maps
-  // (2-line trance vocals) compute a negative extra → plain ceiling.
+  // dense-map constant (25s/section, the planner's real pacing) means a
+  // 4-line vocal section (~14s of singing) fits INSIDE its 25s slot — no
+  // extra reservation needed. The old 10.4s constant over-counted vocal
+  // weight and produced 30+ section maps the planner couldn't track.
   const vocalSecs = sections.filter(isVocal)
-  const sungSeconds = vocalSecs.reduce((n, s) => n + countSungLines(s) * SECONDS_PER_SUNG_LINE, 0)
-  const sungExtra = Math.max(0, sungSeconds - vocalSecs.length * DENSE_SECONDS_PER_SECTION)
-  const maxSections = Math.max(4, Math.floor((dur - sungExtra) / DENSE_SECONDS_PER_SECTION))
+  const maxSections = sectionCeiling(dur)
 
   if (sections.length <= maxSections) return text
 
@@ -743,8 +773,15 @@ export function trimSectionBudget(lyrics, duration, share = 0.2, style = 'generi
   const vocalIdxs = sections.map((s, i) => (isVocal(s) ? i : -1)).filter((i) => i >= 0)
   const outroIdx = sections.findIndex(isOutro)
   if (outroIdx > 0) {
-    for (let i = outroIdx - 1; i >= 0; i--) {
-      if (!isVocal(sections[i])) { protectedIdx.add(i); break }
+    // Protect up to 3 consecutive wordless sections before the outro — the
+    // lead-out padInstrumentalSections guarantees so the ending has room to
+    // wind down. Protecting only ONE let trimSectionBudget strip the other
+    // 1–2 right back off, returning to a stub-fade outro.
+    let protected_ = 0
+    for (let i = outroIdx - 1; i >= 0 && protected_ < 3; i--) {
+      if (isVocal(sections[i])) break
+      protectedIdx.add(i)
+      protected_++
     }
   }
   for (let k = 1; k < vocalIdxs.length; k++) {
@@ -1066,15 +1103,25 @@ export function padInstrumentalSections(lyrics, duration = 0, style = 'generic')
       ? list
       : [...list, { tag: 'Outro', words: '', raw: '[Outro]' }]
 
-  // PRESERVE a real AI arrangement. MiniMax's AR planner follows the tag
-  // map, NOT the caption prose — so when the AI already wrote instrumental
-  // sections that match its own caption (intro → verse → chorus → breakdown
-  // → build → drop → … → outro), DISCARDING them and stamping a generic
-  // trance stack is what made the song "not listen to the prompt". Only
-  // regenerate for SPARSE maps (stacked vocals + a gap), which is the
-  // original short-song bug this function was built to fix.
+  // PRESERVE a real AI arrangement — but ONLY when the map is something the
+  // AR planner can actually track. The planner follows the tag map, NOT the
+  // caption prose, and it exhausts its structural attention after ~5-8
+  // distinct sections, then REPEATS the last groove until max_duration.
+  // A map with 15+ consecutive wordless sections became 3+ minutes of
+  // identical beats. So preservation requires: (a) the map fits the
+  // section ceiling, AND (b) no run of consecutive wordless sections
+  // exceeds MAX_CONSECUTIVE_WORDLESS.
   const ceiling = sectionCeiling(dur)
   const aiInstrumentals = sections.filter(isWordless).length
+  const maxWordlessRun = (() => {
+    let run = 0
+    let max = 0
+    for (const s of sections) {
+      if (isWordless(s)) { run++; max = Math.max(max, run) }
+      else run = 0
+    }
+    return max
+  })()
   // Is every inter-chorus gap already filled with an instrumental? (A form
   // pass is verse→chorus with no break INSIDE it; the gaps that matter are
   // after each chorus except the last.)
@@ -1089,15 +1136,24 @@ export function padInstrumentalSections(lyrics, duration = 0, style = 'generic')
     const between = sections.slice(from, nextVocal != null ? nextVocal : sections.length)
     if (!between.some(isWordless)) { arranged = false; break }
   }
-  // Dense enough to fill the duration, OR a fully-arranged AI map: keep it.
-  if (sections.length >= ceiling || (arranged && aiInstrumentals >= 3)) {
-    return ensureOutro(sections).map((s) => s.raw).join('\n\n')
+  // Preserve only when the map is LONG ENOUGH to fill the duration (at
+  // least 90% of the ceiling) AND has no runaway wordless run. A 14-section
+  // map at the planner's real ~20s/section pacing renders ~280s — too short
+  // for a 360s request. Short-but-arranged maps fall through to the padding
+  // path, which adds sections to reach the ceiling.
+  const minPreserve = Math.ceil(ceiling * 0.9)
+  if (sections.length >= minPreserve && maxWordlessRun <= MAX_CONSECUTIVE_WORDLESS && arranged && aiInstrumentals >= 3) {
+    const kept = ensureOutro(sections)
+    return collapseConsecutiveWordless(kept.map((s) => s.raw).join('\n\n'))
   }
 
   // Section budget: the planner sizes the song from the section COUNT and
-  // ignores prose time spans, so a 240s request needs ~16 sections, not 10.
-  // This is a CEILING too — a map that already overshoots must not grow.
-  const total = Math.max(3, plannerSectionTarget(dur))
+  // ignores prose time spans. Use sectionCeiling (the same cap
+  // trimSectionBudget enforces) so the padding target matches what the
+  // final map can hold — the old plannerSectionTarget (8s/section) aimed
+  // for 45 sections on a 360s request, which trimSectionBudget then cut
+  // back to the ceiling, wasting the padding work.
+  const total = sectionCeiling(dur)
   const fixedSlots = 1 + (introIdx >= 0 ? 1 : 0)
   // Never add instrumentals when the map is already at/over budget.
   if (sections.length >= total) return text
@@ -1139,14 +1195,12 @@ export function padInstrumentalSections(lyrics, duration = 0, style = 'generic')
   // passes) — the emotional peak of a trance track sits there, not at the
   // end. Everything else splits the budget more evenly.
   //
-  // The middle gap is CAPPED: the old 60% hoist stacked ~20 build/drop
-  // sections in a row on a single-gap map, which pushed the second vocal
-  // pass to the very end of the song where the planner has no time left to
-  // play it (the "never got to the second chorus" failure). The uncapped
-  // remainder extends the OUTRO LEAD — trailing sections before an [Outro]
-  // tag ARE played by the planner (the outro tag signals the end) — and
-  // trimSectionBudget thins the tail to the duration ceiling.
-  const MIDDLE_GAP_CAP = { dance: 10, electronic: 8 }
+  // The middle gap is CAPPED at MAX_CONSECUTIVE_WORDLESS (2): the AR
+  // planner reads a long wordless run as ONE groove and loops it — a
+  // 10-section middle gap became 3+ minutes of identical beats. Two
+  // wordless sections between vocal passes is enough for a breakdown
+  // without triggering the loop.
+  const MIDDLE_GAP_CAP = { dance: MAX_CONSECUTIVE_WORDLESS, electronic: MAX_CONSECUTIVE_WORDLESS }
   const gaps = breakAfter.length
   const midGap = Math.floor((gaps - 1) / 2) // index of the middle gap
   const isMiddle = (k) =>
@@ -1284,6 +1338,118 @@ export function padInstrumentalSections(lyrics, duration = 0, style = 'generic')
   return [...intro, ...body, ...fillerOnly, ...outroLead, ...outro].map((s) => s.raw).join('\n\n')
 }
 
+// Final pass: guarantee 2–3 wordless sections immediately before the [Outro]
+// tag. The AI often ends a map on a vocal (bridge/chorus) straight into
+// [Outro] — the AR planner then cuts from full vocal to a stub fade, which is
+// why endings sounded abrupt. padInstrumentalSections adds an outro lead for
+// songs it processes, but it early-returns for short maps (dur < 180) and
+// trimSectionBudget can strip the tail, so this runs LAST in the pipeline as
+// the one place that always enforces the lead-out. Inserts from the style's
+// lead-gap tag pool; skips when the section before the outro is already
+// wordless (the lead exists) or there's no outro to lead into.
+export function ensureOutroLead(lyrics, style = 'generic') {
+  const sections = parseLyricSections(lyrics)
+  if (sections.length < 3) return lyrics
+  const outroIdx = sections.findIndex((s) => /outro/i.test(s.tag))
+  if (outroIdx <= 0) return lyrics
+  // Walk back over already-wordless sections (an existing lead) — if any of
+  // the last 3 before the outro is wordless, there's enough wind-down room.
+  let wordlessRun = 0
+  for (let i = outroIdx - 1; i >= 0 && wordlessRun < 3; i--) {
+    const s = sections[i]
+    if (s.words !== '' || /intro/i.test(s.tag)) break
+    wordlessRun++
+  }
+  if (wordlessRun >= 2) return lyrics // already has a lead-out
+  const need = 3 - wordlessRun
+  const pool = leadGapTags(style)
+  const lead = Array.from({ length: need }, (_, i) => {
+    const tag = pool[i % pool.length]
+    return { tag, words: '', raw: `[${tag}]` }
+  })
+  sections.splice(outroIdx, 0, ...lead)
+  return sections.map((s) => s.raw).join('\n\n')
+}
+
+// Collapse any run of more than MAX_CONSECUTIVE_WORDLESS consecutive
+// wordless (instrumental) sections down to the cap, then REBALANCE: the
+// AI often clusters vocals at the end of the map, leaving a long wordless
+// run in the middle. Collapse truncates that run (correctly — the planner
+// would loop it), but that drops below the section ceiling and the song
+// comes up short. After collapsing, re-insert wordless sections into the
+// gaps between vocal sections (max MAX_CONSECUTIVE_WORDLESS per gap) to
+// fill back up to `targetSections` without ever exceeding the run cap.
+// Intro and outro are exempt (they're bookends, not mid-song runs).
+export function collapseConsecutiveWordless(lyrics, targetSections = 0) {
+  const sections = parseLyricSections(lyrics)
+  if (sections.length === 0) return lyrics
+  const isWordless = (s) =>
+    s.tag !== '' && s.words === '' && !/intro/i.test(s.tag) && !/outro/i.test(s.tag)
+  const isVocal = (s) => s.tag !== '' && s.words !== ''
+  // Find the outro index — the trailing wordless run before it is the
+  // LEAD-OUT (wind-down before the fade), not a mid-song groove. The
+  // planner plays these because the outro tag signals the end; collapsing
+  // them to 2 would starve the ending. Only collapse MID-SONG runs.
+  const outroIdx = sections.findIndex((s) => /outro/i.test(s.tag))
+  // Walk back from the outro over wordless sections to find where the
+  // lead-out starts. Everything from there to the outro is exempt.
+  let leadOutStart = outroIdx >= 0 ? outroIdx : sections.length
+  while (leadOutStart > 0 && isWordless(sections[leadOutStart - 1])) leadOutStart--
+  // Phase 1: collapse mid-song wordless runs to the cap.
+  const collapsed = []
+  let run = 0
+  for (let i = 0; i < sections.length; i++) {
+    const s = sections[i]
+    const exempt = /intro|outro/i.test(s.tag) || (outroIdx >= 0 && i >= leadOutStart && i < outroIdx)
+    if (isWordless(s) && !exempt) {
+      run++
+      if (run > MAX_CONSECUTIVE_WORDLESS) continue // drop excess
+    } else {
+      run = 0
+    }
+    collapsed.push(s)
+  }
+  // Phase 2: rebalance — if under target, insert wordless sections into
+  // the gaps between vocals (max MAX_CONSECUTIVE_WORDLESS per gap) to
+  // fill back up. This interleaves instrumentals with vocals instead of
+  // clustering them, which is what the planner needs to keep variety.
+  if (targetSections <= 0 || collapsed.length >= targetSections) {
+    return collapsed.map((s) => s.raw).join('\n\n')
+  }
+  // Find gaps between consecutive vocal sections (excluding intro/outro/
+  // lead-out). Each gap currently has some wordless sections; we can add
+  // up to (MAX_CONSECUTIVE_WORDLESS - currentRun) more per gap.
+  const leadGapPool = leadGapTags('generic')
+  let gapCursor = 0
+  const result = [...collapsed]
+  let added = 0
+  // Iterate until we hit the target or run out of insertable gaps.
+  while (added < targetSections - collapsed.length) {
+    let inserted = false
+    for (let i = 0; i < result.length - 1 && added < targetSections - collapsed.length; i++) {
+      if (!isVocal(result[i])) continue
+      // Find the next vocal (or outro) after i
+      let next = i + 1
+      while (next < result.length && !isVocal(result[next]) && !/outro/i.test(result[next].tag)) next++
+      if (next >= result.length) break
+      // Count current wordless run in this gap
+      let gapRun = 0
+      for (let j = i + 1; j < next; j++) {
+        if (isWordless(result[j])) gapRun++
+        else break
+      }
+      if (gapRun < MAX_CONSECUTIVE_WORDLESS) {
+        const tag = leadGapPool[gapCursor++ % leadGapPool.length]
+        result.splice(next, 0, { tag, words: '', raw: `[${tag}]` })
+        added++
+        inserted = true
+      }
+    }
+    if (!inserted) break // no gap can take more
+  }
+  return result.map((s) => s.raw).join('\n\n')
+}
+
 async function httpError(res, cfg) {
   let detail = ''
   try {
@@ -1329,8 +1495,12 @@ export async function rewritePrompt(cfg, { text, styleLabel, mode, research }, s
     ? `${text}\n\nSTYLE RESEARCH (from the web) — extract the signature instruments, BPM range, and production techniques below and put them IN the Global Metadata. Do NOT write a generic genre description instead:\n${research}`
     : text
   // Music writes a caption plus full tagged lyrics — a 4-minute song's
-  // lyrics alone run well past the 500-token budget other modes use.
-  const maxTokens = mode === 'music' ? 4000 : 500
+  // lyrics alone run well past the 500-token budget other modes use. The
+  // caption also grew (signature instruments, production techniques), so 4000
+  // was occasionally truncating the reply BEFORE the trailing fields arrived
+  // — the missing "title" is why downloads fell back to track_00001.mp3.
+  // (title is now FIRST in the JSON too, but the headroom matters for lyrics.)
+  const maxTokens = mode === 'music' ? 6000 : 500
   const url = proxyWrap(
     isAnthropic ? `${cfg.url}/messages` : `${cfg.url}/chat/completions`
   )

@@ -288,7 +288,7 @@ export function createApp(opts = {}) {
         throw new HttpError(502, err.message)
       }
     }
-    if (mode === 'music') {
+    if (mode === 'music' || mode === 'sfx') {
       // Trim dead-air tails when the AudioTailTrim custom node is installed
       // (comfy_nodes/AudioTailTrim.py); graphs stay stock without it.
       models.trimAudio = await hasAudioTailTrim(cfg.comfyuiUrl)
@@ -313,7 +313,7 @@ export function createApp(opts = {}) {
 
     // Parity with the app: always free VRAM before MiniMax Music 3 — its AV
     // pass OOMs behind other loaded models (tiled decode handles the rest).
-    if (mode === 'music') await freeLoadedModels(cfg.comfyuiUrl)
+    if (mode === 'music' || mode === 'sfx') await freeLoadedModels(cfg.comfyuiUrl)
 
     const workflow = workflowFor(mode, { prompt, negativePrompt, lyrics, settings: effSettings, models, imageName })
     let promptId

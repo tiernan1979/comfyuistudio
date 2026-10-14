@@ -16,14 +16,22 @@ function filenameFromViewUrl(url) {
   return `comfyui-music-${Date.now()}`
 }
 
-// Build a download filename: AI title (sanitized) + original extension,
-// falling back to the ComfyUI name (track_00001.mp3) when no title.
-function downloadName(url, title) {
+// Build a download filename: AI title (sanitized) + original extension.
+// When no title is available, derive a stable name from the first words of
+// the prompt instead of leaking the raw ComfyUI filename (track_00001.mp3).
+function downloadName(url, title, prompt) {
   const orig = filenameFromViewUrl(url)
   const ext = (orig.match(/\.\w+$/) || ['.mp3'])[0]
-  if (!title) return orig
-  const safe = title.replace(/[^\w\s-]/g, '').trim().replace(/\s+/g, '_').slice(0, 60)
-  return safe ? `${safe}${ext}` : orig
+  const safe = String(title || '')
+    .replace(/[^\w\s-]/g, '').trim().replace(/\s+/g, '_').slice(0, 60)
+  if (safe) return `${safe}${ext}`
+  // No AI title: derive from the prompt's first few words.
+  const fromPrompt = String(prompt || '')
+    .replace(/^Global Metadata:\s*/i, '')
+    .split(/[,.]/)[0]
+    .replace(/[^\w\s-]/g, '').trim().replace(/\s+/g, '_').slice(0, 40)
+  if (fromPrompt) return `${fromPrompt}${ext}`
+  return orig
 }
 
 function formatElapsed(s) {
@@ -42,6 +50,7 @@ export default function MusicPlayer() {
   const elapsedTime = useStore((s) => s.elapsedTime)
   const setShowMusicEditor = useStore((s) => s.setShowMusicEditor)
   const title = useStore((s) => s.titles?.music)
+  const prompt = useStore((s) => s.prompt)
   const [loading, setLoading] = useState(false)
 
   // Stop the "Loading track..." state once the element can play
@@ -58,7 +67,7 @@ export default function MusicPlayer() {
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = url
-      a.download = downloadName(outputAudio, title)
+      a.download = downloadName(outputAudio, title, prompt)
       a.click()
       URL.revokeObjectURL(url)
     } catch (err) {
@@ -161,7 +170,7 @@ export default function MusicPlayer() {
               </p>
             )}
             <p className="text-[11px] text-text-muted font-mono text-center break-all max-w-xl">
-              {downloadName(outputAudio, title)}
+              {downloadName(outputAudio, title, prompt)}
             </p>
           </motion.div>
         ) : (

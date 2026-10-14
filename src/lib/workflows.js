@@ -1742,6 +1742,9 @@ export function buildMusicWorkflow({
   quality = '320k', // 'wav' | '320k' | 'V0' | '128k'
   // ACE-Step only: uploaded reference-audio filename (timbre/style source).
   referenceAudio = '',
+  // SFX (Studio mode "sfx"): require the ACE-Step engine — MiniMax Music 3
+  // cannot render sound effects, so a MiniMax-resolved model is an error.
+  forceAce = false,
   models,
 }) {
   const actualSeed = seed === -1 ? Math.floor(Math.random() * 2 ** 48) : seed
@@ -1768,6 +1771,12 @@ export function buildMusicWorkflow({
   // completely different stack (qwen ACE text encoders / AIO checkpoint, its
   // own latent + encoder). Detect it and build its graph from the resolved
   // { ace } assets instead of the MiniMax trio.
+  if (forceAce && !isAceStepModel(models.unet) && !models.ace) {
+    throw new Error(
+      'SFX needs the ACE-Step engine — no ACE-Step model resolved on the ComfyUI server. ' +
+        'Install ace_step_1.5_turbo_aio.safetensors in models/checkpoints/.',
+    )
+  }
   if (isAceStepModel(models.unet) || models.ace) {
     if (!models.ace) {
       throw new Error(
