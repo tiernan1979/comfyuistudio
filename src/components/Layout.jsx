@@ -1,5 +1,5 @@
 import { motion } from 'framer-motion'
-import { Image, Film, Wand2, Box, Music } from 'lucide-react'
+import { Image, Film, Wand2, Box, Music, AudioWaveform, LayoutGrid } from 'lucide-react'
 import useStore from '../store/useStore'
 import clsx from 'clsx'
 import PromptInput from './PromptInput'
@@ -9,6 +9,8 @@ import ProgressBar from './ProgressBar'
 import ImageViewer from './ImageViewer'
 import VideoPlayer from './VideoPlayer'
 import MusicPlayer from './MusicPlayer'
+import SfxPlayer from './SfxPlayer'
+import SpritePlayer from './SpritePlayer'
 import ImageUpload from './ImageUpload'
 import ErrorBanner from './ErrorBanner'
 import WebSearchPanel from './WebSearchPanel'
@@ -33,6 +35,8 @@ export default function Layout() {
     { key: 'edit', label: 'Image Edit', icon: Wand2 },
     { key: 'video', label: 'Video', icon: Film },
     { key: 'music', label: 'Music', icon: Music },
+    { key: 'sfx', label: 'SFX', icon: AudioWaveform },
+    { key: 'sprite', label: 'Sprites', icon: LayoutGrid },
     ...(threeDEnabled ? [{ key: '3d', label: '3D Image', icon: Box }] : []),
   ]
 
@@ -100,6 +104,10 @@ export default function Layout() {
                 <VideoPlayer />
               ) : effectiveMode === 'music' ? (
                 <MusicPlayer />
+              ) : effectiveMode === 'sfx' ? (
+                <SfxPlayer />
+              ) : effectiveMode === 'sprite' ? (
+                <SpritePlayer />
               ) : (
                 <ImageViewer />
               )}

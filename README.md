@@ -1,13 +1,17 @@
 # ComfyUI Studio
 
-A self-hosted web UI for [ComfyUI](https://github.com/comfyanonymous/ComfyUI) — generate images, videos, music and 3D models, edit existing images, and assemble everything on a multi-track timeline from one clean interface.
+A self-hosted web UI for [ComfyUI](https://github.com/comfyanonymous/ComfyUI) — generate images, videos, music, sound effects, game-ready sprite sheets and 3D models, edit existing images, and assemble everything on a multi-track timeline from one clean interface. **Everything here is sized to run on a single 16 GB GPU** (see [Hardware & VRAM](#hardware--vram)).
 
 Static frontend (React + Vite) served by nginx; every external request (ComfyUI, image search, LLM APIs) goes through a built-in dynamic reverse proxy on the same origin, so there is no backend to configure and no CORS to fight. Optional companion services add a LAN REST API and an MCP server for driving generation from other tools.
 
 ## Features
 
 - **Image generation** — Qwen-Image (or the lighter Qwen-Image-2.1) workflows with aspect ratio, steps, CFG, turbo mode, seed control
-- **Music generation** — MiniMax Music 3 or ACE-Step 1.5 XL (turbo) with prompt, lyrics (with structure tags), output quality (`wav` / `320k` / `V0` / `128k`); MiniMax exposes steps + guidance
+- **Music generation** — MiniMax Music 3 or ACE-Step 1.5 XL (turbo) with prompt, lyrics (with structure tags), output quality (`wav` / `320k` / `V0` / `128k`); MiniMax exposes steps + guidance. Lossless renders download as real `.wav` files
+- **SFX generation** — its own **SFX** tab: Stable Audio 3 (small_sfx default, medium selectable) via a Stable Audio checkpoint + T5Gemma text encoder, tuned for short high-quality sound effects (≤ 47 s, native `ConditioningStableAudio` nodes); falls back to ACE-Step 1.5 when Stable Audio isn't installed. The AI prompt writer fills in the sound-only caption, a **sized clip length (1–47 s)**, the negative prompt and the filename title — and when the box is empty it invents effects plus clickable alternatives. Downloads are real `.wav` (ComfyUI stores FLAC; the browser converts), with the untouched `.flac` one click away. Models: [SFX generation — Stable Audio 3](#sfx-generation--stable-audio-3)
+- **Sprite sheets (game-ready)** — a **Sprites** tab with two engines:
+  - **Pose edits** — one base pose + per-frame AI pose edits (identity-consistent), BiRefNet background removal, fixed-cell packing into a transparent PNG, plus a **Godot 4 `SpriteFrames` `.tres`** and a JSON atlas. 38 animations across combat (attack, kick, punch, block, throw, shoot, charge, cast, dodge, taunt), movement (idle, walk, run, crawl, sneak, crouch, climb, swim, jump, fall, push), survival/gathering (dig, chop, mine, fish, loot, open), reactions (hurt, knockdown, getup, death), social (wave, talk, sit, sleep, victory) and VFX/item — locomotion rows can fan out per direction (2-way or 4-way). Uses the image model + BiRefNet ([Models](#models))
+  - **Video (WAN 2.2)** — generates one keyframe, then renders each animation row as a short **WAN 2.2 i2v A14B (lightx2v 4-step, GGUF)** image-to-video clip and extracts its frames — smoother, more natural motion. Same transparent sheet / `.tres` / JSON output contract. Runs both GGUF experts (high-noise → low-noise) in sequence with a VRAM-friendly `/free` between each model family, so it fits a 16 GB card. Needs **city96/ComfyUI-GGUF** and the WAN GGUF stack — setup, node pack and download links in [Sprite sheets — video engine](#sprite-sheets--video-engine-wan-22-i2v-gguf)
 - **Music editor** — a multi-track timeline for generated/imported audio (see [Music editor](#music-editor--stem-splitting)):
   - add clips from files on disk, from ComfyUI history, or the current generation
   - split / copy / delete clips, cut or mute time ranges, loop, zoom, undo/redo
@@ -16,8 +20,8 @@ Static frontend (React + Vite) served by nginx; every external request (ComfyUI,
     - *AI split* (server) — htdemucs 6-source → UVR Karaoke → FoxJoy Reverb gives **drums / bass / guitar / piano / other / reverb / lead / backing**
   - **AI part presets** — generate a bassline, drum beat, guitar riff, keys, pad, lead, strings or percussion loop into the timeline (MiniMax Music 3)
   - export the arrangement as a WAV mixdown
-- **Video generation** — Wan 2.1 text-to-video, or MiniMax H3 (videos carry audio) with resolution, frames, FPS controls
-- **Edit mode** — upload an image (or pick one from the web) and change it with Qwen-Image-Edit
+- **Video generation** — Wan 2.1 text-to-video, or MiniMax H3 (videos carry audio) with resolution, frames, FPS controls, and last-frame-chained windows for longer clips with crossfaded audio
+- **Edit mode** — upload an image (or pick one from the web) and change it with Qwen-Image-Edit. Sources can be **dragged straight in**: a PNG/JPG from your file manager, or an existing tile from the history grid — drop onto the source box *or* the big canvas (the whole panel is a drop target; a stray drop anywhere else no longer navigates the page away)
 - **3D generation** (optional) — character image → 3D model → auto-rig → walk/run/jump animation:
   - *Local pipeline*: [TRELLIS.2](https://huggingface.co/Comfy-Org/TRELLIS.2) or [Pixal3D](https://github.com/TencentARC/Pixal3D) image → GLB (engines are built into ComfyUI ≥ 0.39), optional face fix (MediaPipe mask), ESRGAN enhance, UltraShape upscale, then MIA/UniRig auto-rig (+ Mixamo animations) on your own ComfyUI
   - *Tripo pipeline*: one cloud job — image → model → rig → 116 preset animations (needs ComfyUI signed in to comfy.org)
@@ -28,11 +32,25 @@ Static frontend (React + Vite) served by nginx; every external request (ComfyUI,
   - OpenAI (ChatGPT)
   - Anthropic (Claude)
   - any OpenAI-compatible endpoint (OpenRouter, Groq, Ollama, vLLM, …)
+  - **Per mode:** image → prompt + search query + title; music → metadata, arrangement, tagged lyrics and a length that moves the duration knob; **SFX → sound-only caption, clip length (1–47 s), negative prompt, filename title, and (on an empty box) invented effects + clickable alternatives**; sprites → subject description. If no model is saved it asks the server which chat models it has, and if the saved endpoint is dead it retries the known local hosts (LM Studio lives on the ComfyUI box)
 - **Web image search → edit** — search [SearXNG](https://github.com/searxng/searxng), Serper, SerpAPI, Brave or Google CSE, click a result, and use it as the edit source
 - **LAN REST API** (optional) — generate image/edit/video/music, read models/history/queue from any device on your LAN ([api/](api/))
 - **MCP server** (optional) — drive the Studio REST API from Claude / any MCP client ([mcp/](mcp/))
 - **Idle model unloading** — tells ComfyUI to free VRAM after 5 minutes without generations (configurable)
 - **On-disk deployment config** — instance settings live in a `config.json` file, not in the code; Settings → Save writes it back so every browser shares it
+
+## Hardware & VRAM
+
+Every feature here is sized for a single **16 GB consumer GPU** (RTX 4060 Ti / 5060 Ti / 4070 Ti Super class) with ~16 GB of system RAM — the reference box this was built and tested on is an **RTX 5060 Ti 16 GB**. Nothing needs more, and where a model family is larger than the card the app *sequences* it rather than loading it all at once, so "it fits" is a design rule, not an accident:
+
+- **Quantized models by default.** Every preset points at an `int8_convrot` / `fp8` / `Q4_K_M` GGUF file (see [Models](#models)) — that's what lets the 14B-class video and music models fit. Full-precision variants are offered where they exist if you have the headroom; the dropdowns list whatever your server actually has.
+- **One model family resident at a time.** Each run POSTs `/free` (`unload_models` + `free_memory`) to ComfyUI before it starts and releases the weights again as soon as it finishes, so moving Image → Video → Music → Sprites never stacks models on the card.
+- **Multi-model chains sequence their weights.** The **Sprites → Video** engine samples with the ~9.7 GB high-noise WAN expert, `/free`s the card, then loads the ~9.7 GB low-noise expert for the second pass — the two never coexist. That's exactly why the run is split into a keyframe prompt + one prompt per stage instead of one large graph.
+- **Idle unload.** After 5 minutes with no generation (`autoUnload`, on by default) the app asks ComfyUI to release its VRAM, so the card is free for other work without you doing anything.
+- **VRAM guard.** When the prompt-writer LLM (LM Studio) shares the card with ComfyUI, the guard frees ComfyUI's weights before a run if a big LLM is resident — and refuses to start, with a clear message, if a ComfyUI job is already running, instead of racing two models into an out-of-memory crash.
+- **Modest default sizes.** 512² WAN clips, 1024² images, fixed per-row sprite cells — big enough to look right, small enough to leave headroom. The sliders stop where the card would choke (e.g. H3 video is capped at 12 windows ≈ 1 minute; sprite sheets at 48 pose / 96 video frames).
+
+On **12 GB** the lighter image model (`qwen_image_2.1_int8_convrot`) and the GGUF WAN experts still fit — drop video to 384² and keep sheets short. With more VRAM, step up a resolution or pick a full-precision variant.
 
 ## Quick start
 
@@ -125,6 +143,9 @@ Instance configuration lives in **[`public/config.json`](public/config.json)**, 
 ```jsonc
 {
   "serverUrl": "http://127.0.0.1:8188",  // ComfyUI server
+  "useProxy": true,                       // route ComfyUI traffic through the app's /proxy (no CORS)
+  "autoUnload": true,                     // free ComfyUI VRAM after 5 min idle
+  "vramGuard": false,                     // free VRAM before a run when LM Studio holds the card
   "searchUrl": "",                        // your SearXNG instance (Web button)
   "llmProvider": "lmstudio",              // lmstudio | openai | anthropic | custom
   "llmConfigs": {
@@ -139,7 +160,23 @@ Instance configuration lives in **[`public/config.json`](public/config.json)**, 
     "edit":  { "unet": "..." },
     "music": { "unet": "minimax_music3_dit_int8_convrot.safetensors",
                "clip": "minimax_music3_text_encoder_pruned_int8_convrot.safetensors",
-               "vae":  "minimax_music3_dav.safetensors" }
+               "vae":  "minimax_music3_dav.safetensors" },
+    "sfx":   { "unet": "stable_audio_3_small_sfx.safetensors",
+               "clip": "t5gemma_b_b_ul2.safetensors", "vae": "" },
+    // Sprites → Video (WAN 2.2) — two GGUF experts + umt5 + Wan 2.1 VAE
+    "character": {
+      "high": "wan2.2_i2v_A14b_high_noise_lightx2v_4step-Q4_K_M.gguf",
+      "low":  "wan2.2_i2v_A14b_low_noise_lightx2v_4step-Q4_K_M.gguf",
+      "clip": "umt5_xxl_fp8_e4m3fn_scaled.safetensors",
+      "vae":  "Wan2.1_VAE.safetensors"
+    }
+  },
+  "spriteSettings": {
+    "engine": "pose",       // pose = per-frame AI edits | video = WAN 2.2 i2v rows
+    "sheetMode": "single",  // single | multi
+    "videoFrames": 13,      // video engine: frames per row (WAN 4n+1: 9/13/17/21/25/33/49/81 @16fps)
+    "videoRes": 512,        // video engine: 384 | 512 | 640
+    "cellSize": 256         // packed cell size in the exported sheet
   },
   "threeD": {
     "enabled": false,             // show the 3D tab
@@ -154,7 +191,7 @@ Instance configuration lives in **[`public/config.json`](public/config.json)**, 
 
 **Precedence:** a fresh browser (no saved settings yet) always seeds from `config.json`. After any **Settings → Save** the file carries `synced: true`, and from then on every browser applies it on load — change a setting once, it shows up everywhere. **Settings → Update from server** force-pulls the saved config on demand (useful when another device saved after this one loaded). Settings you made before that still win until the first Save. To re-seed one browser from scratch, clear the site's local storage.
 
-**What syncs:** server URL, models (image/video/edit/music), 3D options, per-mode generation settings (steps/cfg/seeds/resolution/quality), style, search and AI-provider config. **API keys never sync** — they stay in the browser that typed them.
+**What syncs:** server URL, proxy/auto-unload/VRAM-guard toggles, models (image / video / edit / music / sfx and the Sprites video `character` stack), 3D options, per-mode generation settings (steps/cfg/seeds/resolution/quality — sprite engine, frames, render size and cell size included), style, search and AI-provider config. **API keys never sync** — they stay in the browser that typed them.
 
 **API keys are never read from disk.** OpenAI / Anthropic keys are typed into the Settings screen and stay in that browser's local storage — `config.json` only carries non-secret values, and the loader strips any `key` fields defensively.
 
@@ -164,10 +201,14 @@ All other settings (ComfyUI URL, models, providers, SearXNG URL) can also be cha
 
 | Feature | Needs |
 |---|---|
+| **Hardware** | A **16 GB GPU** (RTX 4060 Ti / 5060 Ti class) + ~16 GB RAM covers every feature below — see [Hardware & VRAM](#hardware--vram) |
 | Image generation | ComfyUI + Qwen-Image models (see [Models](#models)) |
 | Edit mode | ComfyUI + `qwen_image_edit_*.safetensors` (see [Models](#models)) |
 | Video generation | ComfyUI + Wan 2.1 or MiniMax H3 models |
 | Music generation | ComfyUI + MiniMax Music 3 or ACE-Step 1.5 models |
+| SFX generation | ComfyUI + Stable Audio 3 (`stable_audio_3_*.safetensors` checkpoint + `t5gemma_b_b_ul2.safetensors` encoder); falls back to ACE-Step 1.5 |
+| Sprite sheets (pose edits) | ComfyUI + an image model (Qwen-Image) + **BiRefNet** (`birefnet.safetensors` → `models/background_removal/`, for the built-in `LoadBackgroundRemovalModel`/`RemoveBackground` nodes); the graph emits one transparent PNG per frame and the sheet/atlas/`.tres` are packed **client-side** (so alpha survives — KJNodes `ImageGrid` would flatten it) |
+| Sprite sheets (**Video / WAN 2.2**) | ComfyUI + **city96/ComfyUI-GGUF** + `WAN2.2-I2V-A14B` lightx2v 4-step GGUF (high + low noise) in `models/unet/`, `umt5_xxl_fp8_e4m3fn_scaled.safetensors` + `Wan2.1_VAE.safetensors`, and the image model above for the keyframe |
 | Music editor — timeline, DSP stems, mixdown | nothing extra (client-side only) |
 | Music editor — **AI stems** | ComfyUI + the **AudioSeparation** node pack (see [Stem splitting](#music-editor--stem-splitting)) |
 | AI part presets | ComfyUI + the music models above |
@@ -281,7 +322,90 @@ native H3 workflow (videos carry an audio track):
 | `minimax_h3_video_vae_fp16.safetensors` | `models/vae/` | [Comfy-Org/MiniMax-H3](https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/vae/minimax_h3_video_vae_fp16.safetensors) |
 | `minimax_h3_audio_vae_fp32.safetensors` | `models/vae/` | [Comfy-Org/MiniMax-H3](https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/vae/minimax_h3_audio_vae_fp32.safetensors) |
 
-The audio VAE is required — the app checks for it before queueing.
+The audio VAE is required — the app checks for it before queueing. If you have the
+model but leave the clip/VAE slots on stale values, the app overrides them at build
+time (H3 needs its own `qwen3vl_32b_*` text encoder and the H3 video VAE — feeding it
+the *music* encoder crashes the sampler with a `mat1 and mat2 shapes cannot be
+multiplied` error).
+
+**Longer clips — chained windows.** A single H3 pass tops out at ~5 s in training.
+Settings → Video exposes a **Length** slider (seconds); the app chains enough windows
+end-to-end to reach it, conditioning each window on the previous one's last frame (the
+`first_frame` input — the reason the model file is `fl2va`) so motion continues across
+the cut. The result is **one continuous video file** — the windows are internal sampling
+passes, and a single `CreateVideo` muxes the whole concatenated run, not one clip per
+window. Each window is a full sampling pass (~3 min on a 16 GB box), so cost grows with
+length — the slider shows the window count and achieved duration. The hard ceiling is 12
+windows (~a minute). This is the only fully-local way to go past a few seconds; it is
+*not* a path to 10-minute video.
+
+**Seamless joins (video + audio).** Consecutive windows match closely at the seam, but
+each window generates its *own* frames and its *own* soundtrack, so a naive join can
+hitch (video) or click (audio). Install the two bundled seam-blend nodes:
+
+1. Copy [`comfy_nodes/AudioCrossfade.py`](comfy_nodes/AudioCrossfade.py) **and**
+   [`comfy_nodes/VideoCrossfade.py`](comfy_nodes/VideoCrossfade.py) into your ComfyUI
+   folder's `custom_nodes/` directory.
+2. Restart ComfyUI (both are plain Python — pure `torch`, already shipped with ComfyUI).
+3. Reload the Studio tab. The app probes for both nodes and, when present, blends every
+   seam: **VideoCrossfade** overlaps the last `N` frames of the running video with the
+   first `N` of the next window (linear dissolve), and **AudioCrossfade** overlaps the
+   soundtracks by the same duration (equal-power). Adjust via the **Audio crossfade**
+   slider (default 0.5 s).
+
+Both nodes are required together and must be used as a pair: the audio crossfade
+*shortens* the audio timeline by the fade length, so the video node removes exactly the
+same duration (`fade_frames/24` s). This keeps audio and video locked frame-for-frame
+across any number of joins — using only the audio node would leave ~0.5 s of dead air at
+*each* join (≈5 s of silence over 12 windows). If either node is missing the app
+falls back to a hard cut (a deduplicated boundary frame + `AudioConcat`) and still
+produces a valid single file.
+
+For genuinely long (minutes) or higher-quality video, use the cloud API nodes
+(`KlingTextToVideoWithAudio`, `MinimaxHailuo03TextToVideoNode`, `Veo3…`) or a
+long-context model such as LTX-2.3 — not this local H3 path.
+
+### Sprite sheets — video engine (WAN 2.2 i2v, GGUF)
+
+The **Sprites → Engine → Video (WAN 2.2)** path renders each animation row as a short
+image-to-video clip (keyframe → frames) rather than a single pose edit. It needs the
+WAN 2.2 **A14B lightx2v** experts quantized to GGUF (one high-noise + one low-noise
+file), the WAN text encoder and VAE, the **city96/ComfyUI-GGUF** node pack, and an
+image model for the keyframe.
+
+| File | Put in | Download |
+|---|---|---|
+| `wan2.2_i2v_A14b_high_noise_lightx2v_4step-Q4_K_M.gguf` | `models/unet/` | [jayn7/WAN2.2-I2V_A14B-DISTILL-LIGHTX2V-4STEP-GGUF](https://huggingface.co/jayn7/WAN2.2-I2V_A14B-DISTILL-LIGHTX2V-4STEP-GGUF/resolve/main/wan2.2_i2v_A14b_high_noise_lightx2v_4step-Q4_K_M.gguf) |
+| `wan2.2_i2v_A14b_low_noise_lightx2v_4step-Q4_K_M.gguf` | `models/unet/` | [jayn7/WAN2.2-I2V-A14B-DISTILL-LIGHTX2V-4STEP-GGUF](https://huggingface.co/jayn7/WAN2.2-I2V_A14B-DISTILL-LIGHTX2V-4STEP-GGUF/resolve/main/wan2.2_i2v_A14b_low_noise_lightx2v_4step-Q4_K_M.gguf) |
+| `umt5_xxl_fp8_e4m3fn_scaled.safetensors` | `models/text_encoders/` | [Comfy-Org/Wan_2.1_ComfyUI_repackaged](https://huggingface.co/Comfy-Org/Wan_2.1_ComfyUI_repackaged/resolve/main/split_files/text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors) |
+| `Wan2.1_VAE.safetensors` | `models/vae/` | [comfyanonymous/Wan2.1_comfyui](https://huggingface.co/comfyanonymous/Wan2.1_comfyui/resolve/main/vae/Wan2.1_VAE.safetensors) |
+
+Install the loader node pack:
+
+```bash
+cd ComfyUI/custom_nodes
+git clone https://github.com/city96/ComfyUI-GGUF
+python -m pip install -r ComfyUI-GGUF/requirements.txt
+```
+
+Restart ComfyUI, then set the four **Character video** model slots in Settings (they
+default to the file names above). Both experts are ~9.7 GB, so the chain samples with
+the high-noise expert first, `/free`s the card, then loads the low-noise expert — it
+fits a 16 GB GPU. Frame counts follow WAN's `4n+1` rule (9 / 13 / 17 / 21 / 25 / 33 /
+49 / 81 at 16 fps). The BiRefNet background removal from the pose engine is reused per
+frame, so the same `SpriteFrames` `.tres` / JSON outputs come out either way.
+
+### SFX generation — Stable Audio 3
+
+The **SFX** tab is its own stack: a Stable Audio 3 checkpoint carries the DiT + VAE, a T5Gemma text encoder drives it, and the app wires the native `ConditioningStableAudio` nodes. `small_sfx` is the default; `medium` is selectable in Settings → SFX.
+
+| File | Put in | Download |
+|---|---|---|
+| `stable_audio_3_small_sfx.safetensors` | `models/checkpoints/` | [Comfy-Org/stable-audio-3](https://huggingface.co/Comfy-Org/stable-audio-3/resolve/main/checkpoints/stable_audio_3_small_sfx.safetensors) |
+| `stable_audio_3_medium.safetensors` (optional — better quality) | `models/checkpoints/` | [Comfy-Org/stable-audio-3](https://huggingface.co/Comfy-Org/stable-audio-3/resolve/main/checkpoints/stable_audio_3_medium.safetensors) |
+| `t5gemma_b_b_ul2.safetensors` | `models/text_encoders/` | [Comfy-Org/stable-audio-3](https://huggingface.co/Comfy-Org/stable-audio-3/resolve/main/text_encoders/t5gemma_b_b_ul2.safetensors) |
+
+Clips run up to 47 s (the model's window). If Stable Audio isn't installed the SFX tab falls back to ACE-Step 1.5 (the music stack below). Models are subject to the [Stable Audio community license](https://huggingface.co/stabilityai/stable-audio-open-1.0/blob/main/LICENSE.md).
 
 ### Music generation — MiniMax Music 3
 
@@ -458,7 +582,7 @@ its own docker volume:
 | Route | Purpose |
 |---|---|
 | `GET /api/health` | Studio API + ComfyUI reachability |
-| `POST /api/generate` | generate image / edit / video / music (blocks until done, or `wait=false` + poll). Per-mode knobs live in `settings` (e.g. `settings.upscale: "auto"` detail-upscales images when 4x-UltraSharp is installed) |
+| `POST /api/generate` | generate image / edit / video / music / sfx (blocks until done, or `wait=false` + poll). Per-mode knobs live in `settings` (e.g. `settings.upscale: "auto"` detail-upscales images when 4x-UltraSharp is installed) |
 | `POST /api/generate` (modes `3d` / `skin` / `meshupscale`) | 3D flows — image→GLB, picture→skinned GLB, UltraShape mesh refine. Always block (5–45 min, `timeoutSec` up to 60min); `3d` takes `imageBase64`, `skin`/`meshupscale` take `imageBase64` + `mesh: {filename, subfolder?, type?}` (or `meshBase64`) |
 | `GET /api/job/:promptId` | status of one graph generation (optional `?wait=true`) |
 | `GET /api/models` | model files per mode + the defaults the API would use |
@@ -486,7 +610,7 @@ cd mcp && npm install
 ```
 
 Tools: `generate_image` (with optional `upscale`), `edit_image`, `generate_video`,
-`generate_music`, `generate_3d`, `skin_mesh`, `upscale_mesh`,
+`generate_music`, `generate_sfx`, `generate_3d`, `skin_mesh`, `upscale_mesh`,
 `get_models`, `get_history`, `get_queue`, `get_job` (with `wait`), `cancel`,
 `get_status`.
 
@@ -514,8 +638,8 @@ Tools: `generate_image` (with optional `upscale`), `edit_image`, `generate_video
     -d '{"mode":"image","prompt":"a red bicycle in the rain","wait":true}'
   ```
 
-- **Full ComfyUI coverage** — the Studio API/MCP intentionally cover the four
-  generative modes (image / edit / video / music) plus reads. If you need *everything*
+- **Full ComfyUI coverage** — the Studio API/MCP intentionally cover the common
+  generative modes (image / edit / video / music / sfx) plus reads. If you need *everything*
   a ComfyUI server can do (3D, stems, custom node graphs), talk to ComfyUI directly:
   `POST /prompt` with any workflow executes it — that is the complete, unlimited
   surface, and the Studio is a friendly layer on top of it.
@@ -525,8 +649,9 @@ Tools: `generate_image` (with optional `upscale`), `edit_image`, `generate_video
 
 ```
 public/config.json        deployment config seed (baked into the image; live copy lives in the studio-config volume, updated by Settings → Save)
-src/lib/                  comfyui client, workflows, stems (DSP) + stemsAI (server chain), llm, search, config loader
-src/components/           UI (MusicEditor = multi-track timeline, ThreeDPanel, players, settings)
+src/lib/                  comfyui client, workflows (image/video/music/sfx/sprite pose), character.js (Sprites video-engine WAN 2.2 chain), sprite.js (sheet packer + Godot .tres + atlas), dropImage.js (drag-drop), stems (DSP) + stemsAI (server chain), llm, search, config loader
+src/components/           UI (MusicEditor = multi-track timeline, ThreeDPanel, ImageUpload/ImageViewer with drag-drop, SpritePlayer, players, settings)
+src/hooks/                useComfyUI (run + history), useAppConnection (socket/idle-unload), useVramGuard
 src/store/useStore.js     persisted app state (Zustand)
 nginx.conf                SPA, dynamic /proxy/<host>/<port>/... reverse proxy, WebDAV config PUT, /api/ → studio-api
 api/                      optional LAN REST API service (port 5557)

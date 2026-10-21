@@ -1,4 +1,4 @@
-import { isAceStepModel } from './workflows.js'
+import { isAceStepModel, isStableAudioModel } from './workflows.js'
 
 let ws = null
 let progressCallback = null
@@ -214,6 +214,12 @@ export function musicTextFromGraph(graph) {
       consider(node.inputs?.prompt, '')
     } else if (t === 'ComfyCloudMiniMaxMusic3TextToAudioNode') {
       consider(node.inputs?.prompt, node.inputs?.lyrics)
+    } else if (t === 'ConditioningStableAudio') {
+      // Stable Audio 3: the prompt is a plain CLIPTextEncode feeding the
+      // node's `positive` input (the `negative` one is the ban list).
+      const ref = node.inputs?.positive
+      const pos = Array.isArray(ref) ? graph[ref[0]] : null
+      if (pos?.class_type === 'CLIPTextEncode') consider(pos.inputs?.text, '')
     }
   }
   return { caption, lyrics }
@@ -265,13 +271,22 @@ export async function getServerHistory(serverUrl, maxcount = 60) {
       kind === 'image' &&
       Object.values(graph).some((n) => n?.class_type === 'LoadImage' && !!n.inputs?.image)
 
+    // Audio from a Stable Audio graph is SFX (its own mode); other audio is
+    // music. ComfyUI files both under the same `audio` output bucket.
+    const isSfx =
+      kind === 'music' &&
+      Object.values(graph).some((n) => n?.class_type === 'ConditioningStableAudio')
+
+    // Sprite frames are written under the `sprite/` output subfolder.
+    const isSprite = kind === 'image' && String(file.subfolder || '').startsWith('sprite')
+
     const tsMsg = (item.status?.messages || []).find(
       (m) => m[0] === 'execution_success' || m[0] === 'execution_start'
     )
 
     const entry = {
       id: promptId,
-      type: kind === 'video' ? 'video' : kind === 'music' ? 'music' : isEdit ? 'edit' : 'image',
+      type: kind === 'video' ? 'video' : kind === 'music' ? (isSfx ? 'sfx' : 'music') : isSprite ? 'sprite' : isEdit ? 'edit' : 'image',
       prompt: positiveTextFromGraph(graph),
       data: await getViewUrl(serverUrl, file.filename, file.subfolder || '', file.type || 'output'),
       // File params on their own: history is shared across origins
@@ -414,6 +429,9 @@ export async function getModelLists(base, { force = false } = {}) {
     clip: ['CLIPLoader', 'clip_name'],
     vae: ['VAELoader', 'vae_name'],
     lora: ['LoraLoaderModelOnly', 'lora_name'],
+    // GGUF diffusion models (ComfyUI-GGUF/Kijai) — the video character
+    // engine's WAN 2.2 experts live here.
+    gguf: ['GGUFLoaderKJ', 'model_name'],
     // AIO checkpoints (e.g. ace_step_1.5_turbo_aio) load unet+clip+vae in one
     // file — needed to resolve ACE-Step music on servers without split encoders.
     checkpoint: ['CheckpointLoaderSimple', 'ckpt_name'],
@@ -507,8 +525,113 @@ export function resolveAceStepModels(lists, selected = {}) {
   )
 }
 
+// Resolve the Stable Audio 3 assets for the selected music preset. The
+// checkpoint (stable_audio_3_*) lives in models/checkpoints/ and the T5Gemma
+// text encoder in models/text_encoders/ — neither is in the UNET list, so the
+// preset stores the checkpoint name in its `unet` field by convention.
+// Returns { checkpoint, clip } for buildStableAudioWorkflow.
+export function resolveStableAudioModels(lists, selected = {}) {
+  const ckpts = Array.isArray(lists?.checkpoint) ? lists.checkpoint : []
+  const clips = Array.isArray(lists?.clip) ? lists.clip : []
+  const wanted = selected.checkpoint || selected.unet
+  const stableCkpts = ckpts.filter((m) => isStableAudioModel(m))
+  const checkpoint =
+    (wanted && ckpts.includes(wanted) ? wanted : null) ||
+    stableCkpts.find((m) => /sfx/i.test(m)) ||
+    stableCkpts[0]
+  const t5 = clips.filter((m) => /t5gemma/i.test(m))
+  const clip = (selected.clip && clips.includes(selected.clip) ? selected.clip : null) || t5[0]
+  const missing = []
+  if (!checkpoint) missing.push('checkpoint (stable_audio_3_*.safetensors in models/checkpoints/)')
+  if (!clip) missing.push('text encoder (t5gemma_b_b_ul2.safetensors in models/text_encoders/)')
+  if (missing.length) {
+    throw new Error(
+      `Stable Audio 3 needs its ${missing.join(' and ')} on the ComfyUI server. ` +
+        `Have — Stable Audio checkpoints: ${stableCkpts.join(', ') || 'none'}; ` +
+        `T5Gemma encoders: ${t5.join(', ') || 'none'}.`
+    )
+  }
+  return { checkpoint, clip }
+}
+
+// Resolve the MiniMax H3 video assets for the selected video unet against the
+// server's file lists. The H3 graph is picky: the DiT expects the H3 text
+// encoder (Qwen3-VL-32B, hidden 5120) in the clip slot and decodes an AV
+// latent with BOTH an H3 video VAE and an H3 audio VAE. Presets that only
+// carry the DiT — or that were saved with the music encoder / audio VAE
+// sitting in the clip/vae slots (the classic "mat1 and mat2 shapes cannot be
+// multiplied (… 32768 and 5120 …)" crash in the sampler's preprocess_text_embeds)
+// — are corrected here rather than trusted. Mirrors resolveAceStepModels:
+// throws with concrete install guidance when a file is genuinely absent.
+export function resolveH3VideoModels(lists, selected = {}) {
+  const clips = Array.isArray(lists?.clip) ? lists.clip : []
+  const vaes = Array.isArray(lists?.vae) ? lists.vae : []
+  const clip = clips.find((m) => /(qwen|vl).*h\d|h\d.*(qwen|vl)/i.test(m))
+  const vae = vaes.find((m) => /video[-_ ]?vae/i.test(m))
+  const vaeAudio = vaes.find((m) => /audio[-_ ]?vae/i.test(m))
+  const missing = []
+  if (!clip) missing.push('H3 text encoder (qwen3vl_32b_minimax_h3_*.safetensors)')
+  if (!vae) missing.push('H3 video VAE (minimax_h3_video_vae_*.safetensors)')
+  if (!vaeAudio) missing.push('H3 audio VAE (minimax_h3_audio_vae_*.safetensors)')
+  if (missing.length) {
+    throw new Error(
+      `MiniMax H3 video needs ${missing.join(', ')} on the ComfyUI server. ` +
+        `Have — text encoders: ${clips.join(', ') || 'none'}; VAEs: ${vaes.join(', ') || 'none'}.`
+    )
+  }
+  return { ...selected, clip, vae, vaeAudio }
+}
+
 function listModels(label, names) {
   return names.length > 0 ? `${label}: ${names.join(', ')}` : `${label}: none`
+}
+
+// Throws when the WAN stack for the Sprites video engine (models.character:
+// two A14B GGUF experts + umt5 text encoder + Wan 2.1 VAE) isn't on the
+// server. The GGUF list is read straight from object_info — it changes the
+// moment files land on disk, while the shared model-list cache can be minutes
+// old. Silent when the server can't be interrogated (ComfyUI's own prompt
+// rejection remains the fallback).
+export async function assertCharacterModels(base, character = {}) {
+  let lists
+  try {
+    lists = await getModelLists(base)
+  } catch {
+    return
+  }
+  const missing = []
+  let gguf = []
+  try {
+    const res = await fetch(`${base}/object_info/GGUFLoaderKJ`)
+    if (res.ok) {
+      const data = await res.json()
+      const spec = data?.GGUFLoaderKJ?.input?.required?.model_name
+      gguf = Array.isArray(spec?.[0]) ? spec[0] : Array.isArray(spec?.[1]?.options) ? spec[1].options : []
+    }
+  } catch {
+    /* unreachable — the check below reports it as an empty list */
+  }
+  if (gguf.length === 0) {
+    missing.push(
+      'the ComfyUI-GGUF node pack (GGUFLoaderKJ) isn\'t installed on the server — install it in custom_nodes/ and restart ComfyUI',
+    )
+  } else {
+    if (character.high && !gguf.includes(character.high)) {
+      missing.push(`high-noise expert "${character.high}" is not on the server — drop it into ComfyUI/models/unet/ (${listModels('have', gguf)})`)
+    }
+    if (character.low && !gguf.includes(character.low)) {
+      missing.push(`low-noise expert "${character.low}" is not on the server — drop it into ComfyUI/models/unet/ (${listModels('have', gguf)})`)
+    }
+  }
+  if (character.clip && Array.isArray(lists.clip) && lists.clip.length && !lists.clip.includes(character.clip)) {
+    missing.push(`WAN text encoder "${character.clip}" is not on the server — put it in ComfyUI/models/text_encoders/ (${listModels('have', lists.clip)})`)
+  }
+  if (character.vae && Array.isArray(lists.vae) && lists.vae.length && !lists.vae.includes(character.vae)) {
+    missing.push(`WAN VAE "${character.vae}" is not on the server — put it in ComfyUI/models/vae/ (${listModels('have', lists.vae)})`)
+  }
+  if (missing.length > 0) {
+    throw new Error(`The Sprites video engine can't run — ${missing.join('; ')}.`)
+  }
 }
 
 // Throws when the configured models for this mode aren't on the server.
@@ -548,10 +671,35 @@ export async function assertModelsAvailable(base, mode, models) {
       // split qwen encoders) — resolveAceStepModels checks those below
       // instead of requiring the MiniMax trio.
       if (isAceStepModel(unet)) return [['unet', unet, 'Music model']]
+      // Stable Audio 3 is a checkpoint + a separate T5Gemma encoder — the
+      // `unet` field holds the checkpoint name (see resolveStableAudioModels).
+      if (isStableAudioModel(unet) || models.music?.engine === 'stable_audio') {
+        return [
+          ['checkpoint', unet, 'Stable Audio checkpoint'],
+          ['clip', models.music?.clip || 't5gemma_b_b_ul2.safetensors', 'Stable Audio text encoder'],
+        ]
+      }
       return [
         ['unet', unet, 'Music model'],
         ['clip', models.music?.clip || 'minimax_music3_text_encoder_pruned_int8_convrot.safetensors', 'Music text encoder'],
         ['vae', models.music?.vae || 'minimax_music3_dav.safetensors', 'Music VAE'],
+      ]
+    }
+    if (mode === 'sfx') {
+      // Stable Audio 3: `unet` holds the checkpoint name (see
+      // resolveStableAudioModels); the T5Gemma encoder is a separate file.
+      const unet = models.sfx?.unet || 'stable_audio_3_small_sfx.safetensors'
+      return [
+        ['checkpoint', unet, 'Stable Audio checkpoint'],
+        ['clip', models.sfx?.clip || 't5gemma_b_b_ul2.safetensors', 'Stable Audio text encoder'],
+      ]
+    }
+    if (mode === 'sprite') {
+      // Sprites share the image stack (base pose + instruction edits).
+      return [
+        ['unet', models.image?.unet, 'Sprite diffusion model'],
+        ['clip', models.image?.clip, 'Sprite text encoder'],
+        ['vae', models.image?.vae, 'Sprite VAE'],
       ]
     }
     return [
@@ -596,6 +744,14 @@ export async function assertModelsAvailable(base, mode, models) {
       } catch (err) {
         missing.push(err.message)
       }
+    } else if (isStableAudioModel(unet) || models.music?.engine === 'stable_audio') {
+      // Stable Audio: the `unet` field holds the checkpoint; also require the
+      // T5Gemma encoder (same resolver the builder feeds).
+      try {
+        resolveStableAudioModels(lists, models.music || {})
+      } catch (err) {
+        missing.push(err.message)
+      }
     } else if (!looksLikeMusicModel(unet)) {
       missing.push(
         `"${unet}" is not a music model — music needs a MUSIC diffusion model ` +
@@ -607,6 +763,16 @@ export async function assertModelsAvailable(base, mode, models) {
     }
   }
 
+  if (mode === 'sfx') {
+    // Stable Audio 3 needs a checkpoint + the T5Gemma encoder — same resolver
+    // the builder feeds, so the error names the missing file.
+    try {
+      resolveStableAudioModels(lists, models.sfx || {})
+    } catch (err) {
+      missing.push(err.message)
+    }
+  }
+
   if (missing.length > 0) {
     const what =
       mode === 'video'
@@ -615,7 +781,11 @@ export async function assertModelsAvailable(base, mode, models) {
           ? 'Image editing'
           : mode === 'music'
             ? 'Music generation'
-            : 'Image generation'
+            : mode === 'sfx'
+              ? 'SFX generation'
+              : mode === 'sprite'
+                ? 'Sprite generation'
+                : 'Image generation'
     const fileIssues = missing.some((m) => m.includes('is not on the server'))
     let tail = fileIssues ? ' Fix them in Settings → Models.' : ''
     if (mode === 'video' && fileIssues && !missing.some((m) => m.includes('is an image model'))) {
@@ -746,6 +916,36 @@ export async function hasReferenceAudioPrep(base) {
   }
   refPrepNodeCache.set(base, { t: Date.now(), v })
   return v
+}
+
+// Are the bundled seam-blend custom nodes installed? (comfy_nodes/
+// AudioCrossfade.py + comfy_nodes/VideoCrossfade.py.) Together they blend a
+// chained H3 video's per-window soundtracks AND frames at each join, removing
+// the audio clicks and keeping A/V locked (both give up the same duration).
+// Without them the builder hard-cuts: AudioConcat audio, dropped boundary frame.
+const seamNodeCache = new Map()
+async function hasNode(base, className) {
+  const key = `${base}|${className}`
+  const hit = seamNodeCache.get(key)
+  if (hit && Date.now() - hit.t < 60000) return hit.v
+  let v = false
+  try {
+    const res = await fetch(`${base}/object_info/${className}`)
+    if (res.ok) {
+      const data = await res.json()
+      v = !!data?.[className]
+    }
+  } catch {
+    // unreachable → keep false; the graph falls back to a hard cut
+  }
+  seamNodeCache.set(key, { t: Date.now(), v })
+  return v
+}
+export function hasAudioCrossfade(base) {
+  return hasNode(base, 'AudioCrossfade')
+}
+export function hasVideoCrossfade(base) {
+  return hasNode(base, 'VideoCrossfade')
 }
 
 // Verify every node class used by a built workflow exists on the server

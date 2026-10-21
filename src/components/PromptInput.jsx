@@ -1,9 +1,10 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { motion } from 'framer-motion'
 import { Sparkles, ChevronDown, ChevronUp, Wand2, Bot, Loader2, Globe, BookmarkPlus, BookmarkCheck } from 'lucide-react'
 import useStore from '../store/useStore'
 import { STYLES, enhancePrompt } from '../lib/enhance'
-import { rewritePrompt, resolveLlmConfig, PROVIDERS, padInstrumentalSections, trimVocalSections, trimSectionBudget, parseVocalShare, detectMusicStyle, defaultVocalShare, detectArtistRefs, stripArtistRefs, injectSignatureSounds, suggestDurationFromLyrics, ensureOutroLead, collapseConsecutiveWordless, sectionCeiling } from '../lib/llm'
+import { rewritePrompt, resolveLlmConfig, PROVIDERS, pickDefaultModel, padInstrumentalSections, trimVocalSections, trimSectionBudget, parseVocalShare, detectMusicStyle, defaultVocalShare, detectArtistRefs, stripArtistRefs, injectSignatureSounds, suggestDurationFromLyrics, ensureOutroLead, collapseConsecutiveWordless, sectionCeiling } from '../lib/llm'
+import { STABLE_AUDIO_MAX_SECONDS } from '../lib/workflows'
 import { searchText } from '../lib/search'
 import Dropdown from './Dropdown'
 
@@ -12,6 +13,17 @@ const EXAMPLES = [
   'Cyberpunk city street at night with neon reflections in puddles, cinematic',
   'A cozy coffee shop interior with warm lighting, plants, and rain outside the window',
   'Portrait of a futuristic astronaut floating in space with nebula reflections on the helmet',
+]
+
+// The image examples above are nonsense as sound effects ("dramatic
+// lighting" is not a sound) — SFX gets its own.
+const SFX_EXAMPLES = [
+  'a close lightning crack followed by a deep rolling thunder rumble',
+  'heavy steel door slamming shut, hard impact, concrete room echo',
+  'glass shattering on a tile floor, close and bright',
+  'catapult firing — rope whip, wooden clack, distant stone impact',
+  'a leather book dropping onto a thick rug, soft muffled thud',
+  'crowd cheering swelling then fading, stadium reverb',
 ]
 
 const PLACEHOLDERS = {
@@ -23,6 +35,16 @@ const PLACEHOLDERS = {
     '(metadata + arrangement + tagged lyrics + length). For example:\n' +
     '4 min progressive trance, Avicii-style, 25% of the song for lyrics, euphoric\n' +
     'or just: a sad piano ballad about a rainy train station, instrumental',
+  sfx:
+    'Describe a single sound effect — what is heard, not music. For example:\n' +
+    'a close lightning crack followed by a deep rolling thunder rumble\n' +
+    'heavy steel door slamming shut, hard impact\n' +
+    'glass shattering on a tile floor, close and bright',
+  sprite:
+    'Describe one character or subject for the sprite sheet — full body, no scene.\n' +
+    'For example: a knight in blue plate armour with a red plume and a round shield\n' +
+    'a small green slime creature with big eyes\n' +
+    'a sci-fi soldier in white armour holding a rifle',
 }
 
 export default function PromptInput() {
@@ -44,17 +66,30 @@ export default function PromptInput() {
   const addSavedPrompt = useStore((s) => s.addSavedPrompt)
   const setLyrics = useStore((s) => s.setLyrics)
   const setMusicSettings = useStore((s) => s.setMusicSettings)
+  const setSfxSettings = useStore((s) => s.setSfxSettings)
   const setTitle = useStore((s) => s.setTitle)
   const [showNegative, setShowNegative] = useState(false)
   const [rewriting, setRewriting] = useState(false)
   const [researching, setResearching] = useState(false)
   const [savedFlash, setSavedFlash] = useState(false)
+  // SFX only: extra sound-effect ideas the AI proposed when the box was empty.
+  const [suggestions, setSuggestions] = useState([])
+
+  // SFX conditions on the negative prompt (music doesn't) and the AI fills it
+  // in, so open that box when the tab is picked; drop any sound-effect ideas
+  // left over from another mode.
+  useEffect(() => {
+    if (mode === 'sfx') setShowNegative(true)
+    setSuggestions([])
+  }, [mode])
 
   const styleOptions = Object.entries(STYLES).map(([key, s]) => ({ value: key, label: s.label }))
 
   const insertExample = () => {
-    const ex = EXAMPLES[Math.floor(Math.random() * EXAMPLES.length)]
+    const bank = mode === 'sfx' ? SFX_EXAMPLES : EXAMPLES
+    const ex = bank[Math.floor(Math.random() * bank.length)]
     setPrompt(ex)
+    if (mode === 'sfx') setSuggestions([])
   }
 
   const saveCurrentPrompt = () => {
@@ -67,8 +102,9 @@ export default function PromptInput() {
 
   const applyStyle = (styleKey) => {
     setStyle(styleKey)
-    // Fill the negative prompt from the style, but never overwrite user text
-    if (!negativePrompt.trim() && STYLES[styleKey]?.negative) {
+    // Fill the negative prompt from the style, but never overwrite user text.
+    // SFX/sprites have their own negative fields with no style defaults.
+    if (mode !== 'sfx' && mode !== 'sprite' && !negativePrompt.trim() && STYLES[styleKey]?.negative) {
       setNegativePrompt(STYLES[styleKey].negative)
     }
   }
@@ -76,20 +112,35 @@ export default function PromptInput() {
   const handleEnhance = () => {
     if (!prompt.trim()) return
     setPrompt(enhancePrompt(prompt, style))
-    if (!negativePrompt.trim() && STYLES[style]?.negative) {
+    if (mode !== 'sfx' && mode !== 'sprite' && !negativePrompt.trim() && STYLES[style]?.negative) {
       setNegativePrompt(STYLES[style].negative)
     }
   }
 
   const handleAiRewrite = async () => {
-    if (!prompt.trim() || rewriting) return
-    const cfg = resolveLlmConfig(useStore.getState())
+    // SFX lets the button run on an EMPTY box — the AI then invents a usable
+    // effect plus a few alternatives to pick from.
+    if (rewriting) return
+    if (!prompt.trim() && mode !== 'sfx') return
+    let cfg = resolveLlmConfig(useStore.getState())
+    if (!cfg.model) {
+      // No model saved (fresh deploy, or the saved one was deleted): ask the
+      // server what it has instead of refusing to run. Best effort — a failed
+      // lookup just falls through to the normal error below.
+      try {
+        const picked = await pickDefaultModel(cfg)
+        if (picked) cfg = { ...cfg, model: picked }
+      } catch {
+        /* fall through */
+      }
+    }
     if (!cfg.model) {
       setError('No model selected — open Settings → AI Prompt Writer and pick one.')
       return
     }
     setRewriting(true)
     clearError()
+    setSuggestions([])
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(), 120000)
     try {
@@ -136,7 +187,9 @@ export default function PromptInput() {
       const out = await rewritePrompt(
         cfg,
         {
-          text: prompt.trim(),
+          // Empty SFX box: tell the model to invent something rather than
+          // echoing an empty string back as the prompt.
+          text: prompt.trim() || (mode === 'sfx' ? 'invent a sound effect' : ''),
           styleLabel: STYLES[style]?.label || 'photorealistic',
           mode,
           research,
@@ -159,7 +212,7 @@ export default function PromptInput() {
       }
       setPrompt(out.prompt)
       setSearchQuery(out.searchQuery || '')
-      if (out.title && (mode === 'music' || mode === 'video')) setTitle(mode, out.title)
+      if (out.title && (mode === 'music' || mode === 'video' || mode === 'sfx' || mode === 'sprite')) setTitle(mode, out.title)
       // Music mode: the AI writes the full song package — tagged lyrics
       // fill the Lyrics box, and a stated length moves the Max length knob.
       // Weak/local models ignore the vocal-share rule, so enforce it
@@ -170,7 +223,10 @@ export default function PromptInput() {
         // — which used to keep the 300s (5-min) knob default, making EVERY
         // song 4–5 minutes. Fall back to the lyric map's section count
         // (~10.4s/section, the planner's real sizing) instead.
-        const dur = out.duration || suggestDurationFromLyrics(out.lyrics) || useStore.getState().musicSettings.duration || 300
+        const raw = out.duration || suggestDurationFromLyrics(out.lyrics) || useStore.getState().musicSettings.duration || 300
+        // parseDuration now floors at 1 (SFX needs 1–47s) — music's knob
+        // still starts at 10.
+        const dur = Math.min(2000, Math.max(10, raw))
         if (dur !== useStore.getState().musicSettings.duration) setMusicSettings({ duration: dur })
         if (out.lyrics) {
           // Detect the style family from the prompt: it drives the MIDDLE
@@ -191,7 +247,19 @@ export default function PromptInput() {
           setLyrics(ensureOutroLead(collapsed, musicStyle))
         }
       }
-      if (!negativePrompt.trim() && STYLES[style]?.negative) {
+      // SFX mode: the AI writes the whole generation setup — a sized clip
+      // length (a coin ping is not 20s), a take-ruining negative, the title
+      // used for the download filename, and alternatives when the box was
+      // empty. Duration only moves if the AI actually chose one.
+      if (mode === 'sfx') {
+        if (out.duration) {
+          const dur = Math.min(STABLE_AUDIO_MAX_SECONDS, Math.max(1, out.duration))
+          if (dur !== useStore.getState().sfxSettings.duration) setSfxSettings({ duration: dur })
+        }
+        if (out.negative && !negativePrompt.trim()) setNegativePrompt(out.negative)
+        setSuggestions(out.suggestions || [])
+      }
+      if (mode !== 'sfx' && mode !== 'sprite' && !negativePrompt.trim() && STYLES[style]?.negative) {
         setNegativePrompt(STYLES[style].negative)
       }
       // End-to-end: in image mode continue straight into the web reference search
@@ -210,7 +278,7 @@ export default function PromptInput() {
   return (
     <div className="space-y-2">
       <div className="flex items-center gap-2 flex-wrap">
-        {mode !== 'edit' && mode !== 'music' && (
+        {mode !== 'edit' && mode !== 'music' && mode !== 'sfx' && mode !== 'sprite' && (
           <>
             <span className="text-xs text-text-muted shrink-0">Style</span>
             <div className="flex-1 min-w-36">
@@ -227,9 +295,9 @@ export default function PromptInput() {
         {mode !== 'edit' && (
           <div className="flex items-center gap-1.5 shrink-0">
               {/* Enhance appends image-style quality tags — meaningless for
-                  music captions, so the offline button stays hidden there
-                  (the AI button below writes proper music captions instead). */}
-              {mode !== 'music' && (
+                  music and sound-effect captions, so the offline button stays
+                  hidden there (the AI button below writes proper prompts). */}
+              {mode !== 'music' && mode !== 'sfx' && mode !== 'sprite' && (
                 <motion.button
                   whileHover={{ scale: 1.05 }}
                   whileTap={{ scale: 0.95 }}
@@ -246,14 +314,24 @@ export default function PromptInput() {
                 whileHover={{ scale: 1.05 }}
                 whileTap={{ scale: 0.95 }}
                 onClick={handleAiRewrite}
-                disabled={generating || rewriting || !prompt.trim()}
+                disabled={generating || rewriting || (!prompt.trim() && mode !== 'sfx')}
                 className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium bg-purple-500/15 text-purple-300 hover:bg-purple-500/25 transition-colors disabled:opacity-40 shrink-0"
-                title={`Rewrite with ${PROVIDERS[llmProvider]?.short || 'AI'}${
-                  llmConfigs[llmProvider]?.model ? ` (${llmConfigs[llmProvider].model})` : ' (not configured)'
-                } — configure in Settings`}
+                title={
+                  mode === 'sfx' && !prompt.trim()
+                    ? `Invent a sound effect (plus a few ideas to try) with ${PROVIDERS[llmProvider]?.short || 'AI'} — configure in Settings`
+                    : `Rewrite with ${PROVIDERS[llmProvider]?.short || 'AI'}${
+                        llmConfigs[llmProvider]?.model ? ` (${llmConfigs[llmProvider].model})` : ' (not configured)'
+                      } — configure in Settings`
+                }
               >
                 {rewriting ? <Loader2 size={12} className="animate-spin" /> : <Bot size={12} />}
-                {rewriting ? (researching ? 'Researching…' : 'Writing...') : 'AI'}
+                {rewriting
+                  ? researching
+                    ? 'Researching…'
+                    : 'Writing...'
+                  : !prompt.trim() && mode === 'sfx'
+                    ? 'Suggest'
+                    : 'AI'}
               </motion.button>
             </div>
         )}
@@ -280,6 +358,8 @@ export default function PromptInput() {
             setPrompt(e.target.value)
             // a manually edited prompt invalidates the AI-picked search query
             if (searchQuery) setSearchQuery('')
+            // ...and the AI's alternative ideas (they described the old text)
+            if (suggestions.length) setSuggestions([])
           }}
           placeholder={PLACEHOLDERS[mode] || PLACEHOLDERS.image}
           disabled={generating}
@@ -315,8 +395,33 @@ export default function PromptInput() {
         </div>
       </div>
 
+      {/* SFX: alternative effects the AI proposed when the box was empty —
+          click one to load it into the prompt. */}
+      {mode === 'sfx' && suggestions.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="text-[10px] text-text-muted">Ideas</span>
+          {suggestions.map((s) => (
+            <motion.button
+              key={s}
+              whileHover={{ scale: 1.03 }}
+              whileTap={{ scale: 0.97 }}
+              onClick={() => {
+                setPrompt(s)
+                setSuggestions([])
+              }}
+              disabled={generating}
+              className="px-2.5 py-1 rounded-lg text-[11px] bg-purple-500/10 text-purple-200 hover:bg-purple-500/20 border border-purple-500/20 transition-colors disabled:opacity-50"
+              title="Use this sound effect"
+            >
+              {s}
+            </motion.button>
+          ))}
+        </div>
+      )}
+
       {/* Music hides the negative-prompt field entirely (the model has no
-          negative conditioning) — no explanatory note under the prompt. */}
+          negative conditioning). SFX keeps it OPEN by default — the AI fills
+          it in and Stable Audio actually conditions on it. */}
       {mode !== 'music' && (
         <motion.button
           onClick={() => setShowNegative(!showNegative)}

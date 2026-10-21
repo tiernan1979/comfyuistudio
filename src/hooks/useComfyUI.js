@@ -12,13 +12,19 @@ import {
   resolveApiBase,
   extractHistoryError,
   assertModelsAvailable,
+  assertCharacterModels,
   freeLoadedModels,
   getModelLists,
   resolveAceStepModels,
+  resolveStableAudioModels,
+  resolveH3VideoModels,
+  hasAudioCrossfade,
+  hasVideoCrossfade,
   hasAudioTailTrim,
   hasAudioLoudnessNodes,
   hasReferenceAudioPrep,
   uploadAudioFile,
+  checkNodes,
 } from '../lib/comfyui'
 import useStore, { pushHistoryEntries, resolveActiveModels } from '../store/useStore'
 import { checkVramGuard } from './useVramGuard'
@@ -27,9 +33,24 @@ import {
   buildVideoWorkflow,
   buildEditWorkflow,
   buildMusicWorkflow,
+  buildSpriteWorkflow,
   isMiniMaxH3,
   isAceStepModel,
+  isStableAudioModel,
 } from '../lib/workflows'
+import {
+  buildCharacterKeyframeWorkflow,
+  buildCharacterStage1Workflow,
+  buildCharacterStage2Workflow,
+  characterMotionPrompt,
+  characterStartPose,
+  layoutRows,
+  CHARACTER_MODEL_DEFAULTS,
+  CHARACTER_NODES,
+  CHARACTER_NODE_HINTS,
+  VIDEO_SHEET_MAX_CELLS,
+} from '../lib/character'
+import { packSpriteSheet } from '../lib/sprite'
 
 // Pull the shared generation history into the store. Primary source is
 // the app's own API (/api/history) — a durable, origin-neutral store that
@@ -98,6 +119,14 @@ export async function syncServerHistory() {
 
 export function useComfyUI() {
   const timerRef = useRef(null)
+  // Multi-prompt state for the Sprites video engine (keyframe → stage 1 per
+  // row → stage 2 per row → pack). null when no chain is running. Kept in a
+  // ref because the WS completion callback is registered once and must read
+  // the live state of whichever chain is in flight.
+  const chainRef = useRef(null)
+  // Stage label prepended to WS node-phase text ("walk · pass 1/2 (2/7) ·
+  // Sampling") so the user can see WHERE in the chain we are.
+  const chainStageRef = useRef(null)
 
   // Drop models from VRAM as soon as a run reaches a terminal state
   // (success or error). ComfyUI otherwise keeps the previous pipeline's
@@ -132,13 +161,31 @@ export function useComfyUI() {
     })
     // Friendly phase of the running node ("Decoding audio", "Sampling") —
     // keeps the UI alive when sampling hits 20/20 but the job still has
-    // minutes of VAE decoding left.
+    // minutes of VAE decoding left. During a video-engine chain the current
+    // stage is prefixed so the label never loses the big picture.
     setPhaseCallback((label, promptId) => {
       if (!isOurs(promptId)) return
-      useStore.getState().setProgressLabel(label)
+      const stage = chainStageRef.current
+      useStore.getState().setProgressLabel(stage ? `${stage} · ${label}` : label)
     })
     setCompletionCallback(async (promptId, error) => {
       const st = useStore.getState()
+      // The video engine runs several prompts back-to-back; it owns its own
+      // completion path (advance one stage or tear the whole chain down).
+      // Gate on the plan's OWN queued prompt: currentPromptId is a shared
+      // slot another flow (e.g. 3D) can overwrite mid-chain, and swallowing
+      // a foreign completion here would feed foreign outputs to the chain.
+      if (chainRef.current) {
+        const id = error ? error.prompt_id : promptId
+        if (id != null && id !== chainRef.current.queuedPromptId) return
+        try {
+          await advanceChain(promptId, error)
+        } catch (err) {
+          console.error('video character chain failed:', err)
+          await failChain(err.message || 'Video character run failed.')
+        }
+        return
+      }
       if (error) {
         if (!isOurs(error.prompt_id)) return
         const base_msg = String(error.exception_message || error.message || '').trim()
@@ -198,8 +245,36 @@ export function useComfyUI() {
       }
       let found = false
 
-      // Find the output node
-      for (const nodeId of Object.keys(entry.outputs)) {
+      // Sprite mode: the graph emits N transparent per-frame PNGs (one
+      // SaveImage batch). Gather them all, pack a single alpha-preserving
+      // sheet in the browser, upload it for a stable URL, and publish that.
+      if (state.mode === 'sprite') {
+        try {
+          const frames = []
+          for (const nodeId of Object.keys(entry.outputs)) {
+            const out = entry.outputs[nodeId]
+            for (const img of out.images || []) {
+              frames.push(await getViewUrl(base, img.filename, img.subfolder, img.type))
+            }
+          }
+          if (frames.length) {
+            const sp = state.spriteSettings || {}
+            await publishSpriteSheet(base, promptId, frames, sp, layoutRows(sp), state.prompt)
+          } else {
+            state.setError('The sprite graph finished without producing any frames.')
+          }
+        } catch (err) {
+          console.error('sprite packing failed', err)
+          state.setError(`Sprite packing failed: ${err.message}`)
+        }
+        // Sprite mode owns its output: never fall through to the generic
+        // single-image branch below, which would show one raw frame as if it
+        // were the packed sheet (and mislabel it as an image).
+        found = true
+      }
+
+      // Find the output node (non-sprite modes)
+      if (!found) for (const nodeId of Object.keys(entry.outputs)) {
         const output = entry.outputs[nodeId]
 
         // Image output. H3 video also lands in `images` (animated mp4) —
@@ -257,23 +332,24 @@ export function useComfyUI() {
           break
         }
 
-        // Music output (WAV / MP3 from SaveAudio / SaveAudioMP3)
+        // Audio output (WAV / MP3 / FLAC from SaveAudio / SaveAudioMP3) —
+        // music (MiniMax / ACE-Step) or SFX (Stable Audio 3).
         if (output.audio?.length > 0) {
           const au = output.audio[0]
           const url = await getViewUrl(base, au.filename, au.subfolder || '', au.type || 'output')
+          const audioType = state.mode === 'sfx' ? 'sfx' : 'music'
           state.setOutputAudio(url)
           state.addToHistory({
             id: promptId,
-            type: 'music',
+            type: audioType,
             prompt: state.prompt,
-            lyrics: state.lyrics,
+            lyrics: audioType === 'music' ? state.lyrics : undefined,
             // Snapshot the AI title onto the job so the download name and
-            // the history tile keep matching THIS song — regenerating or
-            // rewriting later must not rename what was already rendered.
-            title: state.titles?.music || '',
+            // the history tile keep matching THIS render.
+            title: state.titles?.[audioType] || '',
             data: url,
             timestamp: Date.now(),
-            settings: { ...state.musicSettings },
+            settings: { ...(audioType === 'sfx' ? state.sfxSettings : state.musicSettings) },
           })
           found = true
           break
@@ -298,6 +374,242 @@ export function useComfyUI() {
       }
     }
   }, [])
+
+  // Pack frames row-major into an alpha-preserving sheet, upload it for a
+  // stable URL, and publish it (output image + history entry). Shared by the
+  // pose engine's single-prompt path and the video engine's chain finale —
+  // both hand over the flat row-major frame list from layoutRows().
+  const publishSpriteSheet = async (base, promptId, frames, sp, layout, prompt) => {
+    const state = useStore.getState()
+    const rows = layout.map((r) => ({ name: r.name, frames: r.frames }))
+    const columns = rows.reduce((m, r) => Math.max(m, r.frames), 1)
+    const packed = await packSpriteSheet(frames, {
+      columns,
+      cellSize: sp.cellSize || 256,
+      rows,
+      background: sp.background || 'transparent',
+    })
+    console.log(
+      `[sprite] packed ${frames.length} frames into ${packed.width}×${packed.height} ` +
+        `(${columns} cols × ${rows.length} rows @ ${sp.cellSize || 256}px)`,
+    )
+    let sheetUrl = ''
+    try {
+      const up = await uploadImage(
+        base,
+        new File([packed.blob], `sprite_${Date.now()}.png`, { type: 'image/png' }),
+      )
+      sheetUrl = await getViewUrl(base, up.name, up.subfolder || '', up.type || 'input')
+    } catch {
+      // ComfyUI upload unavailable — fall back to a session blob URL.
+      sheetUrl = URL.createObjectURL(packed.blob)
+    }
+    state.setOutputImage(sheetUrl)
+    state.addToHistory({
+      id: promptId,
+      type: 'sprite',
+      prompt,
+      data: sheetUrl,
+      frames,
+      timestamp: Date.now(),
+      settings: { ...sp, layout: rows, columns },
+    })
+    return sheetUrl
+  }
+
+  // ---------------------------------------------------------------------------
+  // Video engine chain: keyframe (Qwen) → stage 1 (WAN high-noise expert,
+  // SaveLatent) per row → stage 2 (low-noise expert + frame extraction) per
+  // row → pack. The two GGUF experts are ~9.7 GB each and must never be
+  // resident together (16 GB VRAM, 17 GB RAM), so every model-family
+  // transition POSTs /free first; consecutive prompts of the same family
+  // reuse the resident model. Latents and the keyframe cross prompts via
+  // "[output]" annotated paths — SaveLatent writes into output/ and both
+  // LoadLatent and LoadImageOutput resolve annotated output/ paths (verified
+  // against this ComfyUI), so no file ever round-trips through the browser.
+  // ---------------------------------------------------------------------------
+
+  const finishChain = () => {
+    chainRef.current = null
+    chainStageRef.current = null
+    const st = useStore.getState()
+    st.setGenerating(false)
+    st.setProgress(null)
+    st.setProgressLabel(null)
+    if (timerRef.current) {
+      clearInterval(timerRef.current)
+      timerRef.current = null
+    }
+  }
+
+  const failChain = async (msg) => {
+    const st = useStore.getState()
+    st.setError(msg)
+    // A failed stage's models are still resident — free them now (same
+    // contract as the single-prompt failure path).
+    await freeModelsAfterRun()
+    finishChain()
+  }
+
+  const submitChainStage = async (base) => {
+    const plan = chainRef.current
+    if (!plan) return
+    const st = useStore.getState()
+    const row = plan.rows[plan.row]
+    const step = plan.done + 1
+    let wf
+    let label
+    if (plan.phase === 'keyframe') {
+      label = `Keyframe (${step}/${plan.total})`
+      wf = buildCharacterKeyframeWorkflow({
+        subject: plan.subject,
+        pose: plan.keyframePose,
+        genSize: plan.sp.genSize,
+        seed: plan.seed,
+        steps: plan.sp.steps,
+        cfg: plan.sp.cfg,
+        prefix: plan.keyframePrefix,
+        models: plan.imageModels,
+      })
+    } else if (plan.phase === 'stage1') {
+      label = `${row.name} · pass 1/2 (${step}/${plan.total})`
+      wf = buildCharacterStage1Workflow({
+        keyframe: plan.keyframe,
+        motion: plan.motion[plan.row],
+        width: plan.width,
+        height: plan.height,
+        frames: row.frames,
+        seed: plan.seed,
+        prefix: plan.prefixes[plan.row],
+        character: plan.character,
+      })
+    } else {
+      label = `${row.name} · pass 2/2 + frames (${step}/${plan.total})`
+      wf = buildCharacterStage2Workflow({
+        keyframe: plan.keyframe,
+        motion: plan.motion[plan.row],
+        width: plan.width,
+        height: plan.height,
+        frames: row.frames,
+        seed: plan.seed,
+        cellSize: plan.sp.cellSize,
+        character: plan.character,
+        latent: plan.latents[plan.row],
+      })
+    }
+    chainStageRef.current = label
+    st.setProgressLabel(label)
+    st.setProgress({ value: plan.done / plan.total, max: 1, step: plan.done, total: plan.total })
+    const promptId = await queuePrompt(base, wf)
+    plan.queuedPromptId = promptId
+    st.setCurrentPromptId(promptId)
+  }
+
+  const completeChain = async (promptId) => {
+    const plan = chainRef.current
+    if (!plan) return
+    const st = useStore.getState()
+    const base = resolveApiBase(st.serverUrl, st.useProxy)
+    try {
+      const frames = plan.framesByRow.flat()
+      console.log(
+        `[sprite] chain complete: ${frames.length} frames from ${plan.framesByRow.length} rows ` +
+          `(per row: ${plan.framesByRow.map((r) => r.length).join(',')})`,
+      )
+      await publishSpriteSheet(base, promptId, frames, plan.sp, plan.rows, plan.subject)
+    } catch (err) {
+      console.error('sprite packing failed', err)
+      st.setError(`Sprite packing failed: ${err.message}`)
+    } finally {
+      await freeModelsAfterRun()
+      finishChain()
+    }
+  }
+
+  const advanceChain = async (promptId, error) => {
+    const plan = chainRef.current
+    if (!plan) return
+    const st = useStore.getState()
+    const base = resolveApiBase(st.serverUrl, st.useProxy)
+    if (error) {
+      const baseMsg = String(error.exception_message || error.message || '').trim()
+      const fallback = `Execution failed on node ${error.node_id ?? '?'} (${error.node_type || 'unknown'})`
+      const where = error.node_type ? ` (node ${error.node_id ?? '?'}: ${error.node_type})` : ''
+      return failChain(`ComfyUI execution error: ${baseMsg || fallback}${baseMsg ? where : ''}`)
+    }
+    if (!promptId) return failChain('ComfyUI finished without reporting a prompt_id.')
+    let history
+    try {
+      history = await getHistory(base, promptId)
+    } catch (err) {
+      return failChain(`Queued OK, but could not fetch results: ${err.message}`)
+    }
+    const entry = history[promptId]
+    if (!entry) {
+      return failChain(`No history found for prompt ${promptId} — did ComfyUI restart or clear its queue?`)
+    }
+    if (
+      entry.status?.completed === false ||
+      entry.status?.status_str === 'error' ||
+      entry.status?.status_str === 'interrupted'
+    ) {
+      const errMsg = extractHistoryError(entry) || 'execution did not complete'
+      // A user-initiated stop isn't a server failure — no scary prefix.
+      return failChain(errMsg === 'Generation stopped.' ? errMsg : `ComfyUI reported failure: ${errMsg}`)
+    }
+    const outputs = entry.outputs || {}
+    // Every stage builder names its terminal node `out`.
+    const out = outputs.out || Object.values(outputs)[0]
+    if (!out) return failChain('ComfyUI finished but returned no outputs.')
+    plan.done += 1
+    // The chain may have been torn down (stop button, mode switch) while we
+    // were fetching history — never advance a plan that is no longer live.
+    if (chainRef.current !== plan) return
+
+    if (plan.phase === 'keyframe') {
+      const img = out.images?.[0]
+      if (!img) return failChain('The keyframe step produced no image.')
+      plan.keyframe = `${img.subfolder ? `${img.subfolder}/` : ''}${img.filename} [output]`
+      plan.phase = 'stage1'
+      plan.row = 0
+      // Qwen image stack out of VRAM before the first WAN expert loads.
+      await freeLoadedModels(base)
+      if (chainRef.current !== plan) return
+      return submitChainStage(base)
+    }
+
+    if (plan.phase === 'stage1') {
+      const lat = out.latents?.[0]
+      if (!lat) return failChain('WAN pass 1 finished without a latent — SaveLatent output missing.')
+      plan.latents.push(`${lat.subfolder ? `${lat.subfolder}/` : ''}${lat.filename} [output]`)
+      if (plan.row + 1 < plan.rows.length) {
+        plan.row += 1
+        return submitChainStage(base)
+      }
+      // All latents saved — high-noise expert out before the low-noise one
+      // loads (two separate 9.7 GB files).
+      await freeLoadedModels(base)
+      plan.phase = 'stage2'
+      plan.row = 0
+      if (chainRef.current !== plan) return
+      return submitChainStage(base)
+    }
+
+    // stage2 — transparent frames for this row, already in batch order.
+    const imgs = out.images || []
+    if (!imgs.length) return failChain('WAN pass 2 finished without frames.')
+    const frameUrls = []
+    for (const im of imgs) {
+      frameUrls.push(await getViewUrl(base, im.filename, im.subfolder || '', im.type || 'output'))
+    }
+    if (chainRef.current !== plan) return
+    plan.framesByRow.push(frameUrls)
+    if (plan.row + 1 < plan.rows.length) {
+      plan.row += 1
+      return submitChainStage(base)
+    }
+    return completeChain(promptId)
+  }
 
   const generate = useCallback(async () => {
     const state = useStore.getState()
@@ -430,6 +742,13 @@ export function useComfyUI() {
             forceDirect: dur > 360,
           })
         }
+        // Stable Audio 3 (SFX engine): the checkpoint lives in models/checkpoints
+        // and the T5Gemma encoder in models/text_encoders — resolve both here so
+        // the builder gets { stable } (throws with install guidance if absent).
+        const stableSelected = isStableAudioModel(musicModels.unet) || musicModels.engine === 'stable_audio'
+        if (stableSelected) {
+          musicModels.stable = resolveStableAudioModels(await getModelLists(base), musicModels)
+        }
         // ACE-Step reference audio (timbre/style source): upload into input/
         // so LoadAudio can pick it up, then thread the filename into the
         // graph (ReferenceTimbreAudio branch). MiniMax has no such node.
@@ -460,19 +779,127 @@ export function useComfyUI() {
           referenceAudio: referenceAudioName,
           models: musicModels,
         })
-      } else {
-        let videoModels = resolveActiveModels(state, 'video')
-        // MiniMax H3 decodes an AV latent — the audio VAE isn't a setting,
-        // pick whatever H3 audio VAE the server has.
-        if (isMiniMaxH3(videoModels?.unet)) {
-          const lists = await getModelLists(base)
-          const audioVae = (lists?.vae || []).find((n) => /audio[-_ ]?vae/i.test(n))
-          if (!audioVae) {
+      } else if (state.mode === 'sfx') {
+        // Stable Audio 3 sound effects. The checkpoint lives in
+        // models/checkpoints and the T5Gemma encoder in models/text_encoders,
+        // so resolve both against the server before building. Free leftover
+        // image/video/music models first so the audio decode stays clean.
+        const sfxModels = { ...resolveActiveModels(state, 'sfx') }
+        sfxModels.stable = resolveStableAudioModels(await getModelLists(base), sfxModels)
+        await freeLoadedModels(base)
+        workflow = buildMusicWorkflow({
+          caption: state.prompt,
+          negativePrompt: state.negativePrompt,
+          lyrics: '',
+          duration: state.sfxSettings.duration,
+          seed: state.sfxSettings.seed,
+          quality: state.sfxSettings.quality,
+          sfx: true,
+          models: sfxModels,
+        })
+      } else if (state.mode === 'sprite') {
+        // Game-ready sprite sheet. Pose engine (default): one base pose + N
+        // identity-consistent pose edits (all from that base), BiRefNet
+        // background removal, scaled to fixed cells and saved as N transparent
+        // frames (packed in-browser).
+        //
+        // Video engine: a multi-prompt WAN 2.2 chain (keyframe → one animation
+        // video per row → frames) that ends in the exact same sheet contract.
+        // It owns its completions from here on, so it starts the chain and
+        // returns — every later prompt is queued from advanceChain().
+        const sp = state.spriteSettings || {}
+        if (sp.engine === 'video') {
+          const rows = layoutRows(sp)
+          const totalCells = rows.reduce((n, r) => n + r.frames, 0)
+          if (totalCells > VIDEO_SHEET_MAX_CELLS) {
             throw new Error(
-              'MiniMax H3 video needs an audio VAE on the server (minimax_h3_audio_vae_*.safetensors) — install it or pick another video model in Settings → Models.'
+              `Video sheet too large: ${rows.length} rows = ${totalCells} frames ` +
+                `(max ${VIDEO_SHEET_MAX_CELLS}). Reduce animations, directions, or frames per animation.`,
             )
           }
-          videoModels = { ...videoModels, vaeAudio: audioVae }
+          // Two model families run back-to-back — always start clean, then
+          // preflight both stacks and every node class the three graphs use
+          // (a half-installed server would otherwise die mid-chain, after
+          // the keyframe has already been paid for).
+          await freeLoadedModels(base)
+          await assertModelsAvailable(base, 'sprite', models)
+          const character = { ...CHARACTER_MODEL_DEFAULTS, ...(state.models.character || {}) }
+          await assertCharacterModels(base, character)
+          const { missing, unreachable } = await checkNodes(base, CHARACTER_NODES)
+          if (unreachable) {
+            throw new Error('Could not reach ComfyUI to verify the video engine — check the server URL in Settings.')
+          }
+          if (missing.length) {
+            throw new Error(
+              'The Sprites video engine needs node pack(s) that aren\'t installed on your ComfyUI server: ' +
+                missing.map((c) => CHARACTER_NODE_HINTS[c] || c).join('; ') +
+                '. Install them in custom_nodes/ (then restart ComfyUI), or switch Engine back to “Pose edits”.',
+            )
+          }
+          // Resolve the seed ONCE: the keyframe seed and every stage's noise
+          // seed must stay identical across the whole chain.
+          const seed = sp.seed === -1 || sp.seed == null ? Math.floor(Math.random() * 2 ** 48) : sp.seed
+          const run = Date.now().toString(36)
+          chainRef.current = {
+            phase: 'keyframe',
+            row: 0,
+            rows,
+            total: 1 + rows.length * 2,
+            done: 0,
+            sp,
+            subject: state.prompt,
+            imageModels: models.image,
+            character,
+            seed,
+            // A single-animation sheet starts the video from that action's
+            // pose (crawl/swim/fall would otherwise morph in from standing);
+            // a multi-animation sheet has no single start pose, so standing.
+            keyframePose: rows.length === 1 ? characterStartPose(rows[0].animation) : 'neutral standing pose',
+            width: sp.videoRes || 512,
+            height: sp.videoRes || 512,
+            keyframePrefix: `wan_key/${run}`,
+            prefixes: rows.map((_, i) => `wan22_${run}/r${i}`),
+            motion: rows.map((r) => characterMotionPrompt(state.prompt, r.animation, r.direction)),
+            keyframe: '',
+            latents: [],
+            framesByRow: [],
+          }
+          await submitChainStage(base)
+          return
+        }
+        await freeLoadedModels(base)
+        workflow = buildSpriteWorkflow({
+          subject: state.prompt,
+          frames: sp.frames,
+          cellSize: sp.cellSize,
+          genSize: sp.genSize,
+          animation: sp.animation,
+          sheetMode: sp.sheetMode,
+          animations: sp.animations,
+          directions: sp.directions,
+          animFrames: sp.animFrames,
+          seed: sp.seed,
+          steps: sp.steps,
+          cfg: sp.cfg,
+          models: models.image,
+        })
+      } else {
+        let videoModels = resolveActiveModels(state, 'video')
+        // MiniMax H3 is a three-headed beast: the DiT needs its own Qwen3-VL
+        // text encoder (not the music one) and decodes an AV latent with both
+        // an H3 video VAE and an H3 audio VAE. None of that is a setting —
+        // resolve whatever the server has and overwrite the preset's clip/vae
+        // (which may be stale, e.g. a music encoder in the clip slot).
+        let crossfade = 0
+        if (isMiniMaxH3(videoModels?.unet)) {
+          videoModels = resolveH3VideoModels(await getModelLists(base), videoModels)
+          // Crossfade the seams only when BOTH bundled nodes are installed:
+          // the audio node shortens its timeline and the video node shortens
+          // the frame count by the same duration, so they must be used
+          // together to stay in sync. If either is missing we hard-cut.
+          if ((state.videoSettings.crossfadeSeconds || 0) > 0 && (await hasAudioCrossfade(base)) && (await hasVideoCrossfade(base))) {
+            crossfade = state.videoSettings.crossfadeSeconds
+          }
         }
         workflow = buildVideoWorkflow({
           prompt: state.prompt,
@@ -480,6 +907,9 @@ export function useComfyUI() {
           resolution: state.videoSettings.resolution,
           frames: state.videoSettings.frames,
           fps: state.videoSettings.fps,
+          segments: state.videoSettings.segments,
+          duration: state.videoSettings.duration,
+          crossfade,
           seed: state.videoSettings.seed,
           steps: state.videoSettings.steps,
           cfg: state.videoSettings.cfg,
@@ -491,6 +921,10 @@ export function useComfyUI() {
       state.setCurrentPromptId(promptId)
     } catch (err) {
       console.error('Generation failed:', err)
+      // The video chain's first submission lives inside this try — a failure
+      // there must not leave a half-built plan to receive completions.
+      chainRef.current = null
+      chainStageRef.current = null
       state.setError(err.message || 'Generation failed for an unknown reason.')
       state.setGenerating(false)
       state.setProgress(null)

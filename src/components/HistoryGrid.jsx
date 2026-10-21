@@ -1,5 +1,5 @@
 import { motion } from 'framer-motion'
-import { Image, Film, Music, Box, Trash2 } from 'lucide-react'
+import { Image, Film, Music, Box, Trash2, AudioWaveform, LayoutGrid } from 'lucide-react'
 import useStore from '../store/useStore'
 import clsx from 'clsx'
 
@@ -63,9 +63,18 @@ export default function HistoryGrid() {
               interactive viewer modal.
               mp4/webm videos need <video preload> for a first-frame poster;
               animated webp only renders in <img>. */}
-          {entry.type === 'music' ? (
-            <span className="absolute inset-0 flex items-center justify-center bg-gradient-to-br from-purple-500/30 to-accent/20">
-              <Music size={22} className="text-white/80" />
+          {entry.type === 'music' || entry.type === 'sfx' ? (
+            <span
+              className={clsx(
+                'absolute inset-0 flex items-center justify-center bg-gradient-to-br',
+                entry.type === 'sfx' ? 'from-amber-500/30 to-accent/20' : 'from-purple-500/30 to-accent/20'
+              )}
+            >
+              {entry.type === 'sfx' ? (
+                <AudioWaveform size={22} className="text-white/80" />
+              ) : (
+                <Music size={22} className="text-white/80" />
+              )}
             </span>
           ) : entry.type === '3d' ? (
             entry.thumbnail ? (
@@ -96,7 +105,7 @@ export default function HistoryGrid() {
           )}
           <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent opacity-0 hover:opacity-100 transition-opacity">
             <div className="absolute bottom-1 left-1 right-1">
-              {(entry.type === 'music' || entry.type === 'video') && entry.title ? (
+              {(entry.type === 'music' || entry.type === 'sfx' || entry.type === 'video') && entry.title ? (
                 <p className="text-[9px] font-medium text-white leading-tight truncate">{entry.title}</p>
               ) : null}
               <p className="text-[9px] text-white/80 line-clamp-2 leading-tight">
@@ -109,6 +118,10 @@ export default function HistoryGrid() {
               <Film size={10} className="text-white/70" />
             ) : entry.type === 'music' ? (
               <Music size={10} className="text-white/70" />
+            ) : entry.type === 'sfx' ? (
+              <AudioWaveform size={10} className="text-white/70" />
+            ) : entry.type === 'sprite' ? (
+              <LayoutGrid size={10} className="text-white/70" />
             ) : entry.type === '3d' ? (
               <Box size={10} className="text-white/70" />
             ) : (

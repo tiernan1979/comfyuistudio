@@ -15,7 +15,7 @@
 //   GET  /api/queue             ComfyUI queue depth
 //   POST /api/cancel            interrupt the running prompt
 //   POST /api/generate          run a generation (wait=true default, or wait=false + GET /api/job/:promptId)
-//                               modes: image | edit | video | music (graphs, wait supported)
+//                               modes: image | edit | video | music | sfx (graphs, wait supported)
 //                               + 3d | skin | meshupscale (long-lived flows — always block,
 //                                 timeoutSec up to 60min, no promptId/job polling)
 //   GET  /api/job/:promptId     status/outputs of a queued prompt
@@ -334,7 +334,7 @@ export function createApp(opts = {}) {
       promptId,
       mode,
       elapsedMs: Date.now() - started,
-      outputs: outputsOf(item, '/api/file', cfg.comfyuiUrl),
+      outputs: outputsOf(item, '/api/file', cfg.comfyuiUrl, mode),
       settings: effSettings,
       models,
       error: extractHistoryError(item) || null,
@@ -566,7 +566,7 @@ export function createApp(opts = {}) {
         })
       }
       const error = extractHistoryError(item)
-      const outputs = outputsOf(item, '/api/file', cfg.comfyuiUrl)
+      const outputs = outputsOf(item, '/api/file', cfg.comfyuiUrl, known?.mode || '')
       const elapsedMs = known ? (known.finishedAt || Date.now()) - known.startedAt : 0
       if (error) {
         return res.json({ promptId, status: 'error', error, outputs, elapsedMs })

@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import { STRUCTURE_TAGS } from '../lib/workflows.js'
+import { CHARACTER_MODEL_DEFAULTS } from '../lib/character.js'
 import { viewFromUrl } from '../lib/comfyui.js'
 
 // Defaults for the AI prompt writer (used by fresh installs and migrations)
@@ -35,6 +36,42 @@ const DEFAULT_MODELS = {
     clip: 'minimax_music3_text_encoder_pruned_int8_convrot.safetensors',
     vae: 'minimax_music3_dav.safetensors',
   },
+  sfx: {
+    // Stable Audio 3 — a checkpoint in models/checkpoints plus a T5Gemma
+    // text encoder loaded via CLIPLoader type 'stable_audio'.
+    unet: 'stable_audio_3_small_sfx.safetensors',
+    clip: 't5gemma_b_b_ul2.safetensors',
+    vae: '',
+  },
+  // WAN 2.2 i2v stack for the Sprites video engine (two A14B lightx2v 4-step
+  // Q4 experts + umt5 + Wan 2.1 VAE). Names mirror the reference pipeline's
+  // downloads; see Settings → Models → Character video.
+  character: { ...CHARACTER_MODEL_DEFAULTS },
+}
+
+// Sprite-sheet settings (game-ready). One base pose, then a per-frame pose
+// edit of it (identity-consistent), background removed and packed — or, with
+// engine 'video', one WAN 2.2 animation video per row from a shared keyframe.
+// `multi` mode renders several animations, one per row.
+const DEFAULT_SPRITE_SETTINGS = {
+  engine: 'pose', // 'pose' (per-frame edits) | 'video' (WAN 2.2 i2v rows)
+  sheetMode: 'single', // 'single' | 'multi'
+  animation: 'walk', // single mode: SPRITE_ANIMATIONS key
+  animations: 'idle,walk,attack', // multi mode: CSV of animation keys
+  directions: 'none', // 'none' | 'lr' | '4way' (locomotion rows)
+  frames: 8, // single mode: frames (columns); multi uses per-animation counts
+  animFrames: 'idle:4,walk:6,run:8,jump:6,attack:6,cast:6,hurt:4,death:4,effect:6,item:1', // "anim:count,…"
+  background: 'transparent', // 'transparent' | 'black' | 'magenta'
+  cellSize: 256,
+  genSize: 1024,
+  fps: 12,
+  seed: -1,
+  steps: 20,
+  cfg: 4,
+  // Video engine only: frames per row (snapped to WAN's 4n+1 rule) and the
+  // square render size WAN samples at before cells are scaled down.
+  videoFrames: 13,
+  videoRes: 512,
 }
 
 // Default named presets for the multi-model pickers. `presets` (per mode)
@@ -59,12 +96,38 @@ const DEFAULT_PRESETS = {
       vae: 'minimax_music3_dav.safetensors',
     },
   ],
+  // SFX mode — Stable Audio 3 (sound effects, not music). The checkpoint
+  // (models/checkpoints) sits in `unet` by convention; the T5Gemma text
+  // encoder is resolved by resolveStableAudioModels.
+  sfx: [
+    {
+      name: 'Stable Audio 3 (SFX)',
+      engine: 'stable_audio',
+      unet: 'stable_audio_3_small_sfx.safetensors',
+      clip: 't5gemma_b_b_ul2.safetensors',
+      vae: '',
+    },
+    {
+      name: 'Stable Audio 3 Medium',
+      engine: 'stable_audio',
+      unet: 'stable_audio_3_medium.safetensors',
+      clip: 't5gemma_b_b_ul2.safetensors',
+      vae: '',
+    },
+  ],
 }
 
 // Build a display label for a preset: engine badge + unet stem.
 export function presetLabel(p) {
   if (!p) return '(none)'
-  const engine = p.engine === 'ace' || /ace[-_ ]?step/i.test(p.unet || '') ? 'ACE' : /minimax/i.test(p.unet || '') ? 'MiniMax' : ''
+  const engine =
+    p.engine === 'ace' || /ace[-_ ]?step/i.test(p.unet || '')
+      ? 'ACE'
+      : p.engine === 'stable_audio' || /stable[-_ ]?audio/i.test(p.unet || '')
+        ? 'Stable Audio'
+        : /minimax/i.test(p.unet || '')
+          ? 'MiniMax'
+          : ''
   const stem = String(p.unet || '').replace(/\.(safetensors|ckpt|pt|sft|bin)$/i, '')
   return engine ? `${engine} · ${stem}` : stem || p.name || '(unnamed)'
 }
@@ -151,7 +214,7 @@ const useStore = create(
       queueRemaining: 0,
 
       // Mode
-      mode: 'image', // 'image' | 'video' | 'edit' | 'music' | '3d'
+      mode: 'image', // 'image' | 'video' | 'edit' | 'music' | 'sfx' | 'sprite' | '3d'
 
       // Generation state
       generating: false,
@@ -181,8 +244,8 @@ const useStore = create(
       // (like `prompt`, not persisted).
       prompt: '',
       negativePrompt: '',
-      promptByMode: { image: '', video: '', edit: '', music: '', '3d': '' },
-      negativeByMode: { image: '', video: '', edit: '', music: '', '3d': '' },
+      promptByMode: { image: '', video: '', edit: '', music: '', sfx: '', sprite: '', '3d': '' },
+      negativeByMode: { image: '', video: '', edit: '', music: '', sfx: '', sprite: '', '3d': '' },
       style: 'photoreal',
       // Web search query picked by the AI rewrite (transient)
       searchQuery: '',
@@ -219,6 +282,15 @@ const useStore = create(
         resolution: '480p',
         frames: 33,
         fps: 16,
+        // MiniMax H3 chaining. `duration` (seconds) is the primary control —
+        // the builder picks enough chained windows to reach it. `segments` is
+        // the explicit window count used only when duration is 0. Default
+        // duration ≈ one window at the default frames/fps (single clip).
+        duration: 2,
+        segments: 1,
+        // Crossfade the per-window soundtracks (needs the AudioCrossfade
+        // custom node; ignored/falls back to a hard cut without it).
+        crossfadeSeconds: 0.5,
         seed: -1,
         steps: 20, // was 30 — sampler dominates on 16GB RAM; raise in Settings if needed
         cfg: 6,
@@ -244,6 +316,18 @@ const useStore = create(
         duration: 300, // 5-minute default cap
       },
 
+      // SFX settings (Stable Audio 3). Short effects, lossless by default.
+      // duration is clamped to STABLE_AUDIO_MAX_SECONDS (47s) by the builder.
+      sfxSettings: {
+        seed: -1,
+        quality: 'wav', // 'wav' | '320k' | 'V0' | '128k'
+        duration: 6,
+      },
+
+      // Sprite-sheet settings — see DEFAULT_SPRITE_SETTINGS for the fields
+      // and what each engine (pose | video) reads from them.
+      spriteSettings: { ...DEFAULT_SPRITE_SETTINGS },
+
       // Sung lyrics for music mode. Default = the section-tag map (also the
       // visible example in the box); tag-only = instrumental at generate
       // time. Not persisted across reloads, so the default always resurfaces.
@@ -258,7 +342,7 @@ const useStore = create(
       // is the index of the preset generation uses, or null for the flat
       // group above (single-model, backward compatible).
       presets: JSON.parse(JSON.stringify(DEFAULT_PRESETS)),
-      active: { video: 0, music: 0 },
+      active: { video: 0, music: 0, sfx: 0 },
 
       // 3D Generation (optional feature — Settings → 3D Generation).
       // local  = native Pixal3D/TRELLIS.2 (image→GLB, ComfyUI ≥ 0.39)
@@ -407,7 +491,19 @@ const useStore = create(
           if (config.presets) {
             const presets = { ...s.presets }
             for (const [k, v] of Object.entries(config.presets)) {
-              if (Array.isArray(v)) presets[k] = v
+              if (!Array.isArray(v)) continue
+              // Keep the server's order/entries, but make sure every built-in
+              // ENGINE preset (the ones carrying an explicit `engine`, e.g.
+              // Stable Audio 3) is available. Without this, a device that
+              // loads a saved config never sees an engine added after that
+              // config was written. Non-engine defaults (Wan, MiniMax) are
+              // left to the server list alone, so a deliberately removed
+              // preset doesn't reappear.
+              const engines = new Set(v.map((p) => p?.engine).filter(Boolean))
+              const extra = (DEFAULT_PRESETS[k] || []).filter(
+                (p) => p?.engine && !engines.has(p.engine)
+              )
+              presets[k] = extra.length ? [...v, ...extra] : v
             }
             patch.presets = presets
           }
@@ -415,7 +511,7 @@ const useStore = create(
             patch.active = { ...s.active, ...config.active }
           }
           // Per-mode generation settings — server wins per key.
-          for (const k of ['imageSettings', 'videoSettings', 'editSettings', 'musicSettings']) {
+          for (const k of ['imageSettings', 'videoSettings', 'editSettings', 'musicSettings', 'sfxSettings', 'spriteSettings']) {
             if (config[k]) patch[k] = { ...s[k], ...config[k] }
           }
           if (config.threeD) {
@@ -467,6 +563,8 @@ const useStore = create(
       setVideoSettings: (settings) => set((s) => ({ videoSettings: { ...s.videoSettings, ...settings } })),
       setEditSettings: (settings) => set((s) => ({ editSettings: { ...s.editSettings, ...settings } })),
       setMusicSettings: (settings) => set((s) => ({ musicSettings: { ...s.musicSettings, ...settings } })),
+      setSfxSettings: (settings) => set((s) => ({ sfxSettings: { ...s.sfxSettings, ...settings } })),
+      setSpriteSettings: (settings) => set((s) => ({ spriteSettings: { ...s.spriteSettings, ...settings } })),
       setLyrics: (lyrics) => set({ lyrics }),
       setTitle: (mode, title) => set((s) => ({ titles: { ...s.titles, [mode]: title } })),
       setShowMusicEditor: (showMusicEditor) => set({ showMusicEditor }),
@@ -615,15 +713,18 @@ const useStore = create(
           }
           const isVideo = entry.type === 'video'
           const isMusic = entry.type === 'music'
-          const mode = isVideo ? 'video' : isMusic ? 'music' : entry.type === 'edit' ? 'edit' : 'image'
+          const isSfx = entry.type === 'sfx'
+          const isSprite = entry.type === 'sprite'
+          const isAudio = isMusic || isSfx
+          const mode = isVideo ? 'video' : isMusic ? 'music' : isSfx ? 'sfx' : isSprite ? 'sprite' : entry.type === 'edit' ? 'edit' : 'image'
           const text = entry.prompt ?? ''
           set((st) => ({
             selectedHistoryId: id,
-            // Only video entries are videos and only music entries are
+            // Only video entries are videos and only music/SFX entries are
             // audio — 'edit' entries are still images.
-            outputImage: isVideo || isMusic ? null : entry.data,
+            outputImage: isVideo || isAudio ? null : entry.data,
             outputVideo: isVideo ? entry.data : null,
-            outputAudio: isMusic ? entry.data : null,
+            outputAudio: isAudio ? entry.data : null,
             prompt: text,
             // also remember it as that tab's own prompt
             promptByMode: { ...st.promptByMode, [mode]: text },
@@ -631,7 +732,7 @@ const useStore = create(
             // Restore the AI title snapshotted onto the job so the download
             // name matches THIS song, not whatever was rewritten since.
             titles: entry.title
-              ? { ...st.titles, [isVideo ? 'video' : 'music']: entry.title }
+              ? { ...st.titles, [isVideo ? 'video' : isSfx ? 'sfx' : 'music']: entry.title }
               : st.titles,
             mode,
           }))
@@ -684,11 +785,15 @@ const useStore = create(
     }),
     {
       name: 'comfyui-studio-storage',
-      version: 3,
+      version: 6,
       // v0/v1 stored a flat llmUrl/llmModel (Ollama era: port 11434 +
       // "name:tag" ids). Fold them into the v2 per-provider config.
       // v3 merges model groups against DEFAULT_MODELS so browsers saved
       // before a group existed (music) get its defaults.
+      // v6 re-runs that merge (character group) and merges spriteSettings
+      // against DEFAULT_SPRITE_SETTINGS — the shallow persist merge replaces
+      // nested objects wholesale, so saved sprites settings predate the
+      // engine/videoFrames/videoRes fields.
       migrate: (persisted) => {
         const s = { ...persisted }
         if (s.llmConfigs) {
@@ -725,10 +830,20 @@ const useStore = create(
         for (const k of new Set([...Object.keys(DEFAULT_PRESETS), ...Object.keys(s.presets || {})])) {
           presetGroups[k] = s.presets?.[k]?.length ? s.presets[k] : DEFAULT_PRESETS[k]
         }
+        // v5: Stable Audio 3 moved out of the Music engine list into its own
+        // SFX mode. Drop any stable_audio engine preset an earlier build
+        // seeded into `music`, and make sure the SFX presets exist.
+        if (Array.isArray(presetGroups.music)) {
+          presetGroups.music = presetGroups.music.filter((p) => p?.engine !== 'stable_audio')
+        }
+        if (!Array.isArray(presetGroups.sfx) || presetGroups.sfx.length === 0) {
+          presetGroups.sfx = DEFAULT_PRESETS.sfx
+        }
         s.presets = presetGroups
         if (!s.active || typeof s.active !== 'object') {
-          s.active = { video: 0, music: 0 }
+          s.active = { video: 0, music: 0, sfx: 0 }
         } else {
+          if (s.active.sfx == null && (presetGroups.sfx || []).length > 0) s.active.sfx = 0
           // Clamp out-of-range indices (e.g. a preset was removed elsewhere).
           for (const k of Object.keys(DEFAULT_PRESETS)) {
             const list = presetGroups[k] || []
@@ -737,6 +852,9 @@ const useStore = create(
             }
           }
         }
+        // Sprite settings saved before the video engine existed (v6): layer
+        // the new fields (engine/videoFrames/videoRes) under the old values.
+        s.spriteSettings = { ...DEFAULT_SPRITE_SETTINGS, ...(s.spriteSettings || {}) }
         return s
       },
       partialize: (state) => ({
@@ -758,6 +876,8 @@ const useStore = create(
         imageSettings: state.imageSettings,
         videoSettings: state.videoSettings,
         musicSettings: state.musicSettings,
+        sfxSettings: state.sfxSettings,
+        spriteSettings: state.spriteSettings,
         history: state.history,
         hiddenHistoryIds: state.hiddenHistoryIds,
         outputAudio: state.outputAudio,

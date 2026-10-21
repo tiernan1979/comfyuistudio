@@ -1,8 +1,9 @@
 import { useState, useRef, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Download, Music, Scissors, Loader2, Piano } from 'lucide-react'
+import { Download, Music, Scissors, Loader2, Piano, FileAudio } from 'lucide-react'
 import useStore from '../store/useStore'
 import { looksLikeMusicModel } from '../lib/comfyui'
+import { audioExtFromUrl, downloadAudioAs } from '../lib/audio'
 
 // Extract the real output filename from a ComfyUI /view URL.
 function filenameFromViewUrl(url) {
@@ -16,22 +17,24 @@ function filenameFromViewUrl(url) {
   return `comfyui-music-${Date.now()}`
 }
 
-// Build a download filename: AI title (sanitized) + original extension.
+// Build a download filename: AI title (sanitized) + extension.
 // When no title is available, derive a stable name from the first words of
 // the prompt instead of leaking the raw ComfyUI filename (track_00001.mp3).
-function downloadName(url, title, prompt) {
+// `ext` overrides the server's extension — ComfyUI writes .flac even on the
+// "WAV" setting, and the lossless download hands back a real .wav.
+function downloadName(url, title, prompt, ext) {
   const orig = filenameFromViewUrl(url)
-  const ext = (orig.match(/\.\w+$/) || ['.mp3'])[0]
+  const safeExt = ext || (orig.match(/\.\w+$/) || ['.mp3'])[0]
   const safe = String(title || '')
     .replace(/[^\w\s-]/g, '').trim().replace(/\s+/g, '_').slice(0, 60)
-  if (safe) return `${safe}${ext}`
+  if (safe) return `${safe}${safeExt}`
   // No AI title: derive from the prompt's first few words.
   const fromPrompt = String(prompt || '')
     .replace(/^Global Metadata:\s*/i, '')
     .split(/[,.]/)[0]
     .replace(/[^\w\s-]/g, '').trim().replace(/\s+/g, '_').slice(0, 40)
-  if (fromPrompt) return `${fromPrompt}${ext}`
-  return orig
+  if (fromPrompt) return `${fromPrompt}${safeExt}`
+  return orig.replace(/\.\w+$/, safeExt)
 }
 
 function formatElapsed(s) {
@@ -52,6 +55,13 @@ export default function MusicPlayer() {
   const title = useStore((s) => s.titles?.music)
   const prompt = useStore((s) => s.prompt)
   const [loading, setLoading] = useState(false)
+  const [saving, setSaving] = useState('')
+
+  // ComfyUI's SaveAudio writes .flac even on the "WAV" quality setting — the
+  // lossless download converts it to a real PCM WAV in the browser. MP3
+  // sources are already a final format, so they download as-is.
+  const originalExt = audioExtFromUrl(outputAudio) || '.mp3'
+  const canWav = originalExt === '.flac'
 
   // Stop the "Loading track..." state once the element can play
   const audioRef = useRef(null)
@@ -59,19 +69,18 @@ export default function MusicPlayer() {
     setLoading(false)
   }, [outputAudio])
 
-  const handleDownload = async () => {
+  const handleDownload = async (format = 'original') => {
     if (!outputAudio) return
+    setSaving(format)
     try {
-      const res = await fetch(outputAudio)
-      const blob = await res.blob()
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = downloadName(outputAudio, title, prompt)
-      a.click()
-      URL.revokeObjectURL(url)
+      await downloadAudioAs(outputAudio, {
+        format,
+        makeName: (ext) => downloadName(outputAudio, title, prompt, ext),
+      })
     } catch (err) {
       console.error('download failed', err)
+    } finally {
+      setSaving('')
     }
   }
 
@@ -156,12 +165,27 @@ export default function MusicPlayer() {
               <motion.button
                 whileHover={{ scale: 1.05 }}
                 whileTap={{ scale: 0.95 }}
-                onClick={handleDownload}
-                className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium bg-bg-hover hover:bg-white/10 text-text-secondary transition-colors"
+                onClick={() => handleDownload(canWav ? 'wav' : 'original')}
+                disabled={!!saving}
+                className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium bg-bg-hover hover:bg-white/10 text-text-secondary transition-colors disabled:opacity-50"
+                title={canWav ? 'Save as a real PCM .wav file' : 'Save the generated file'}
               >
-                <Download size={15} />
-                Download
+                {saving ? <Loader2 size={15} className="animate-spin" /> : <Download size={15} />}
+                Download .{canWav ? 'wav' : originalExt.slice(1)}
               </motion.button>
+              {canWav && (
+                <motion.button
+                  whileHover={{ scale: 1.03 }}
+                  whileTap={{ scale: 0.97 }}
+                  onClick={() => handleDownload('original')}
+                  disabled={!!saving}
+                  className="flex items-center gap-1.5 px-3 py-2.5 rounded-xl text-xs font-medium bg-bg-hover hover:bg-white/10 text-text-muted transition-colors disabled:opacity-50"
+                  title="Save the untouched FLAC exactly as ComfyUI produced it"
+                >
+                  <FileAudio size={13} />
+                  FLAC original
+                </motion.button>
+              )}
             </div>
 
             {title && (
@@ -170,7 +194,7 @@ export default function MusicPlayer() {
               </p>
             )}
             <p className="text-[11px] text-text-muted font-mono text-center break-all max-w-xl">
-              {downloadName(outputAudio, title, prompt)}
+              {downloadName(outputAudio, title, prompt, canWav ? '.wav' : originalExt)}
             </p>
           </motion.div>
         ) : (

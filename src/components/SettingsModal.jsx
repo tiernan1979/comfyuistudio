@@ -175,6 +175,8 @@ function ModelPresets({ mode, editDraft, setEditDraft, modelLists }) {
               </div>
               {p.engine === 'ace' || /ace[-_ ]?step/i.test(p.unet || '') ? (
                 <span className="text-[9px] px-1.5 py-0.5 rounded bg-pink-500/20 text-pink-300 font-semibold shrink-0">ACE</span>
+              ) : p.engine === 'stable_audio' || /stable[-_ ]?audio/i.test(p.unet || '') ? (
+                <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 font-semibold shrink-0">Stable Audio</span>
               ) : /minimax/i.test(p.unet || '') ? (
                 <span className="text-[9px] px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-300 font-semibold shrink-0">MiniMax</span>
               ) : null}
@@ -297,6 +299,10 @@ export default function SettingsModal() {
     const src = presets?.video?.[active?.video] || models?.video || {}
     return { unet: '', clip: '', vae: '', lora: '', ...src }
   })
+  const [sfxDraft, setSfxDraft] = useState(() => {
+    const src = presets?.sfx?.[active?.sfx] || models?.sfx || {}
+    return { unet: '', clip: '', vae: '', lora: '', ...src }
+  })
   useEffect(() => {
     setEditDraft(() => {
       const src = presets?.music?.[active?.music] || models?.music || {}
@@ -306,8 +312,12 @@ export default function SettingsModal() {
       const src = presets?.video?.[active?.video] || models?.video || {}
       return { unet: '', clip: '', vae: '', lora: '', ...src }
     })
+    setSfxDraft(() => {
+      const src = presets?.sfx?.[active?.sfx] || models?.sfx || {}
+      return { unet: '', clip: '', vae: '', lora: '', ...src }
+    })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active?.music, active?.video, presets])
+  }, [active?.music, active?.video, active?.sfx, presets])
   const [saved, setSaved] = useState(false)
   const [saveError, setSaveError] = useState(null)
   const [pulling, setPulling] = useState(false)
@@ -594,10 +604,15 @@ export default function SettingsModal() {
     setModels('video', localModels.video)
     if (localModels.edit) setModels('edit', localModels.edit)
     if (localModels.music) setModels('music', localModels.music)
+    if (localModels.sfx) setModels('sfx', localModels.sfx)
+    if (localModels.character) setModels('character', localModels.character)
     // Write the edited model files back into the selected music preset so
     // the picker and generation both see the change.
     if (active?.music != null && presets?.music?.[active.music]) {
       updatePreset('music', active.music, { ...editDraft })
+    }
+    if (active?.sfx != null && presets?.sfx?.[active.sfx]) {
+      updatePreset('sfx', active.sfx, { ...sfxDraft })
     }
     if (active?.video != null && presets?.video?.[active.video]) {
       updatePreset('video', active.video, { ...videoDraft })
@@ -1517,7 +1532,7 @@ export default function SettingsModal() {
             )}
             {!listsError && !loadingLists && (
               <p className="text-[11px] text-text-muted mt-1.5">
-                UNET: {modelLists.unet.length} · CLIP: {modelLists.clip.length} · VAE: {modelLists.vae.length} · LoRA: {modelLists.lora.length}
+                UNET: {modelLists.unet.length} · GGUF: {(modelLists.gguf || []).length} · CLIP: {modelLists.clip.length} · VAE: {modelLists.vae.length} · LoRA: {modelLists.lora.length}
               </p>
             )}
           </div>
@@ -1630,6 +1645,51 @@ export default function SettingsModal() {
 
           <hr className="border-border" />
 
+          {/* Character video models — the Sprites video engine's WAN 2.2 stack */}
+          <div className="space-y-3">
+            <h3 className="text-sm font-semibold flex items-center gap-2">
+              <HardDrive size={14} className="text-orange-400" />
+              Character video (WAN 2.2 — Sprites engine)
+            </h3>
+            <p className="text-[11px] leading-relaxed text-text-muted rounded-lg bg-bg-card border border-border px-3 py-2">
+              Used by Sprites → Engine → <span className="text-text-secondary">Video (WAN 2.2)</span>: two GGUF experts
+              (high-noise + low-noise, 4-step lightx2v distill — ~9.7 GB each from{' '}
+              <span className="font-mono">jayn7/WAN2.2-I2V_A14B-DISTILL-LIGHTX2V-4STEP-GGUF</span> in{' '}
+              <span className="font-mono">models/unet/</span>) plus the <span className="font-mono">umt5_xxl</span> text
+              encoder and the <span className="font-mono">Wan 2.1 VAE</span>. Requires the ComfyUI-GGUF node pack.
+            </p>
+            <ModelField
+              label="High-noise expert (GGUF)"
+              value={localModels.character?.high || ''}
+              onChange={(v) => setLocalModels((m) => ({ ...m, character: { ...(m.character || {}), high: v } }))}
+              options={modelLists.gguf || []}
+              placeholder="wan2.2_i2v_A14b_high_noise_lightx2v_4step-Q4_K_M.gguf"
+            />
+            <ModelField
+              label="Low-noise expert (GGUF)"
+              value={localModels.character?.low || ''}
+              onChange={(v) => setLocalModels((m) => ({ ...m, character: { ...(m.character || {}), low: v } }))}
+              options={modelLists.gguf || []}
+              placeholder="wan2.2_i2v_A14b_low_noise_lightx2v_4step-Q4_K_M.gguf"
+            />
+            <ModelField
+              label="WAN text encoder (CLIP)"
+              value={localModels.character?.clip || ''}
+              onChange={(v) => setLocalModels((m) => ({ ...m, character: { ...(m.character || {}), clip: v } }))}
+              options={modelLists.clip}
+              placeholder="umt5_xxl_fp8_e4m3fn_scaled.safetensors"
+            />
+            <ModelField
+              label="WAN VAE"
+              value={localModels.character?.vae || ''}
+              onChange={(v) => setLocalModels((m) => ({ ...m, character: { ...(m.character || {}), vae: v } }))}
+              options={modelLists.vae}
+              placeholder="Wan2.1_VAE.safetensors"
+            />
+          </div>
+
+          <hr className="border-border" />
+
           {/* Music Models */}
           <div className="space-y-3">
             <h3 className="text-sm font-semibold flex items-center gap-2">
@@ -1648,7 +1708,7 @@ export default function SettingsModal() {
               label="Music Diffusion Model (UNET)"
               value={editDraft.unet || ''}
               onChange={(v) => setEditDraft((d) => ({ ...d, unet: v }))}
-              options={modelLists.unet}
+              options={[...new Set([...(modelLists.unet || []), ...(modelLists.checkpoint || [])])]}
               placeholder="minimax_music3_dit_int8_convrot.safetensors"
             />
             <ModelField
@@ -1664,6 +1724,38 @@ export default function SettingsModal() {
               onChange={(v) => setEditDraft((d) => ({ ...d, vae: v }))}
               options={modelLists.vae}
               placeholder="minimax_music3_dav.safetensors"
+            />
+          </div>
+
+          <hr className="border-border" />
+
+          {/* SFX Models (Stable Audio 3) */}
+          <div className="space-y-3">
+            <h3 className="text-sm font-semibold flex items-center gap-2">
+              <HardDrive size={14} className="text-amber-400" />
+              SFX Models
+            </h3>
+            <p className="text-[11px] leading-relaxed text-text-muted rounded-lg bg-bg-card border border-border px-3 py-2">
+              The SFX tab renders short, high-quality sound effects with Stable Audio 3 — a
+              checkpoint in <span className="font-mono">models/checkpoints/</span> plus the T5Gemma
+              text encoder in <span className="font-mono">models/text_encoders/</span> (loaded via
+              CLIPLoader type <span className="font-mono">stable_audio</span>). Pick a preset, tweak
+              the file names, then Save.
+            </p>
+            <ModelPresets mode="sfx" editDraft={sfxDraft} setEditDraft={setSfxDraft} modelLists={modelLists} />
+            <ModelField
+              label="Stable Audio Checkpoint"
+              value={sfxDraft.unet || ''}
+              onChange={(v) => setSfxDraft((d) => ({ ...d, unet: v }))}
+              options={modelLists.checkpoint}
+              placeholder="stable_audio_3_small_sfx.safetensors"
+            />
+            <ModelField
+              label="Text Encoder (T5Gemma)"
+              value={sfxDraft.clip || ''}
+              onChange={(v) => setSfxDraft((d) => ({ ...d, clip: v }))}
+              options={modelLists.clip}
+              placeholder="t5gemma_b_b_ul2.safetensors"
             />
           </div>
             </>

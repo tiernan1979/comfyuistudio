@@ -206,6 +206,26 @@ tool(
   (args) => generate('music', args),
 )
 
+tool(
+  'generate_sfx',
+  'Generate a sound effect (Stable Audio 3 on the ComfyUI server — short, high-quality SFX; falls back to ACE-Step 1.5 if Stable Audio is not installed). Describe the SOUND, not music. Blocks until finished.',
+  {
+    prompt: z
+      .string()
+      .describe('Sound-effect description, e.g. "heavy wooden door creaking open, slow, ominous, detailed"'),
+    duration: z
+      .number()
+      .min(1)
+      .max(47)
+      .optional()
+      .describe('Seconds (default 6, capped at 47 — Stable Audio\'s window)'),
+    quality: z.enum(['wav', '320k', 'V0', '128k']).optional().describe('wav lossless (default) or MP3 bitrate'),
+    seed: z.number().int().optional().describe('-1 (default) = random'),
+    wait: waitSchema,
+  },
+  (args) => generate('sfx', args),
+)
+
 const meshRefSchema = z
   .object({
     filename: z.string().describe('GLB filename, e.g. outputs[0].filename from a prior generate_3d run'),

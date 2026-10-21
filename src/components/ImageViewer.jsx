@@ -1,7 +1,8 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Download, Maximize2, X, Copy, Check } from 'lucide-react'
+import { Download, Maximize2, X, Copy, Check, ImagePlus } from 'lucide-react'
 import useStore from '../store/useStore'
+import { fileFromDrop } from '../lib/dropImage'
 
 // ClipboardItem only reliably accepts image/png — ComfyUI outputs webp —
 // and canvas re-encode gives us a guaranteed PNG either way.
@@ -64,8 +65,31 @@ export default function ImageViewer() {
   const generating = useStore((s) => s.generating)
   const progress = useStore((s) => s.progress)
   const setError = useStore((s) => s.setError)
+  const mode = useStore((s) => s.mode)
+  const sourceImage = useStore((s) => s.sourceImage)
+  const setSourceImage = useStore((s) => s.setSourceImage)
   const [fullscreen, setFullscreen] = useState(false)
   const [copied, setCopied] = useState(false)
+  // Edit mode: the whole canvas doubles as a drop target for the source image.
+  const [dragOver, setDragOver] = useState(false)
+  const dragDepth = useRef(0)
+
+  const onDropImage = async (e) => {
+    if (mode !== 'edit') return
+    e.preventDefault()
+    e.stopPropagation()
+    dragDepth.current = 0
+    setDragOver(false)
+    if (generating) return
+    try {
+      const file = await fileFromDrop(e)
+      if (!file) return
+      if (sourceImage?.preview) URL.revokeObjectURL(sourceImage.preview)
+      setSourceImage({ file, preview: URL.createObjectURL(file), name: file.name })
+    } catch (err) {
+      setError(`Could not use that dropped image — ${err.message}`)
+    }
+  }
 
   const handleDownload = async () => {
     if (!outputImage) return
@@ -107,7 +131,35 @@ export default function ImageViewer() {
 
   return (
     <>
-      <div className="relative w-full h-full flex items-center justify-center rounded-2xl overflow-hidden bg-bg-card border border-border">
+      <div
+        className={`relative w-full h-full flex items-center justify-center rounded-2xl overflow-hidden bg-bg-card border transition-colors ${
+          mode === 'edit' && dragOver ? 'border-accent ring-2 ring-accent/40' : 'border-border'
+        }`}
+        onDragEnter={(e) => {
+          if (mode !== 'edit') return
+          e.preventDefault()
+          dragDepth.current += 1
+          if (!generating) setDragOver(true)
+        }}
+        onDragOver={(e) => {
+          if (mode !== 'edit') return
+          e.preventDefault()
+          if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy'
+        }}
+        onDragLeave={(e) => {
+          if (mode !== 'edit') return
+          e.preventDefault()
+          dragDepth.current = Math.max(0, dragDepth.current - 1)
+          if (dragDepth.current === 0) setDragOver(false)
+        }}
+        onDrop={onDropImage}
+      >
+        {mode === 'edit' && dragOver && (
+          <div className="absolute inset-0 z-10 pointer-events-none flex flex-col items-center justify-center gap-2 bg-accent/15 backdrop-blur-[1px] text-sm font-medium text-white">
+            <ImagePlus size={26} className="text-accent" />
+            Drop to use as the source image
+          </div>
+        )}
         <AnimatePresence mode="wait">
           {generating && !outputImage ? (
             <motion.div

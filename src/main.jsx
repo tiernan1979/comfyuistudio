@@ -26,4 +26,11 @@ fetchRuntimeConfig().then((config) => {
     if (document.visibilityState === 'visible') refreshFromServer()
   })
   window.addEventListener('focus', refreshFromServer)
+
+  // Dropping a file outside a drop target makes the browser navigate to it
+  // (unloading the app). Swallow the default at the window level — real drop
+  // targets still receive the event by bubbling and can use it themselves.
+  const stopDropNav = (e) => e.preventDefault()
+  window.addEventListener('dragover', stopDropNav)
+  window.addEventListener('drop', stopDropNav)
 })

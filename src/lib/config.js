@@ -17,7 +17,7 @@
 import { SEARCH_ENGINES } from './search.js'
 
 const LLM_PROVIDERS = new Set(['lmstudio', 'openai', 'anthropic', 'custom'])
-const MODEL_GROUPS = new Set(['image', 'video', 'edit', 'music'])
+const MODEL_GROUPS = new Set(['image', 'video', 'edit', 'music', 'sfx'])
 
 // Quality presets for the local native 3D pipeline (Pixal3D/TRELLIS.2).
 // Each preset fills the individual pixal* fields below — the fields are
@@ -178,6 +178,32 @@ const MODE_SETTING_FIELDS = {
     cfgScale: [0, 10],
     quality: new Set(['wav', '320k', 'V0', '128k']),
     duration: [10, 2000],
+  },
+  // sfxSettings: Stable Audio 3 sound effects — short clips (≤ 47s), the
+  // builder clamps duration to the model window.
+  sfxSettings: {
+    seed: 'number',
+    quality: new Set(['wav', '320k', 'V0', '128k']),
+    duration: [1, 47],
+  },
+  // spriteSettings: game-ready sprite sheets (uses the image models).
+  spriteSettings: {
+    engine: 'string',
+    sheetMode: 'string',
+    animation: 'string',
+    animations: 'string',
+    directions: 'string',
+    animFrames: 'string',
+    background: 'string',
+    frames: [1, 12],
+    videoFrames: [4, 97],
+    videoRes: [256, 1024],
+    cellSize: [32, 2048],
+    genSize: [256, 2048],
+    fps: [1, 60],
+    seed: 'number',
+    steps: [1, 100],
+    cfg: [0, 30],
   },
 }
 
@@ -354,6 +380,8 @@ export function configFromState(state) {
     videoSettings: { ...(state.videoSettings || {}) },
     editSettings: { ...(state.editSettings || {}) },
     musicSettings: { ...(state.musicSettings || {}) },
+    sfxSettings: { ...(state.sfxSettings || {}) },
+    spriteSettings: { ...(state.spriteSettings || {}) },
   }
 }
 

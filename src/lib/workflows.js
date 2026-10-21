@@ -263,6 +263,268 @@ export function buildEditWorkflow({
 }
 
 // ---------------------------------------------------------------------------
+// Sprite sheets (game-ready). One graph:
+//   base pose (Qwen-Image) → N pose edits (Qwen-Image-Edit, all from the SAME
+//   base image so identity holds) → BiRefNet background removal → RGBA →
+//   scale to a fixed cell → ImageGrid pack → SaveImage (transparent PNG).
+// The edit model + base model are the same Qwen-Image file on this stack, so
+// one UNETLoader feeds both branches.
+// ---------------------------------------------------------------------------
+
+// Animation presets: cyclic pose hints the per-frame editor turns into poses.
+export const SPRITE_ANIMATIONS = {
+  idle: { label: 'Idle', hints: ['subtle breathing, arms relaxed at sides', 'slight bob down, weight settling', 'arms relaxed, chest up', 'slight bob up, shoulders raised'] },
+  walk: { label: 'Walk cycle', hints: ['contact — right foot forward, left arm forward', 'passing — legs together, body lifted', 'contact — left foot forward, right arm forward', 'passing — legs together, body lifted'] },
+  run: { label: 'Run cycle', hints: ['right leg extended, left arm forward, leaning forward', 'airborne — both legs bent under body', 'left leg extended, right arm forward, leaning forward', 'airborne — legs tucked, arms pumping'] },
+  jump: { label: 'Jump', hints: ['deep crouch, knees bent, arms back', 'launch — legs extending, arms swinging up', 'airborne — legs tucked, arms up', 'landing — knees bent, arms out for balance'] },
+  attack: { label: 'Attack', hints: ['wind-up — weapon raised back', 'mid-swing — weapon sweeping forward', 'impact — weapon fully extended forward', 'recover — returning to guard'] },
+  cast: { label: 'Cast spell', hints: ['arms lowered, gathering energy at hands', 'arms rising, energy building', 'arms extended forward, release', 'settling back to stance'] },
+  hurt: { label: 'Hurt / hit', hints: ['recoil — head snapped back, torso back', 'arms flung up, off balance', 'stagger back a step', 'recovering, guard up'] },
+  death: { label: 'Death', hints: ['stagger backward', 'falling — torso tilting back', 'down on knees', 'collapsed on the ground'] },
+  effect: { label: 'VFX / effect', hints: ['first spark / ignition — small', 'building up — growing', 'peak — brightest and largest', 'dissipating — fading out'] },
+  item: { label: 'Item / prop', hints: ['centered product shot'] },
+  crouch: { label: 'Crouch', hints: ['crouching low, knees bent, weight on the balls of the feet', 'crouched, hands near the ground, staying low', 'crouched, slight bob, head up and alert', 'crouched, settling back down low'] },
+  crawl: { label: 'Crawl', hints: ['on hands and knees, right arm and left knee forward', 'low to the ground, body stretched forward', 'on hands and knees, left arm and right knee forward', 'low to the ground, dragging forward'] },
+  sneak: { label: 'Sneak', hints: ['crouched, right foot creeping forward quietly', 'crouched low, weight shifting forward', 'crouched, left foot creeping forward quietly', 'crouched, hunched low and still'] },
+  climb: { label: 'Climb', hints: ['reaching up with the right hand, left foot raised', 'pulling up, body close to the surface', 'reaching up with the left hand, right foot raised', 'pulling up, legs pushing'] },
+  swim: { label: 'Swim', hints: ['body horizontal, right arm reaching forward', 'arm pulling through the water, head turning', 'body horizontal, left arm reaching forward', 'arm pulling through, legs kicking'] },
+  fall: { label: 'Fall', hints: ['airborne, arms up, legs slightly bent', 'falling, arms flailing, legs trailing', 'airborne, body upright, arms out', 'falling, legs tucked slightly'] },
+  kick: { label: 'Kick', hints: ['wind-up — weight back, knee raised', 'extending — leg kicking forward fast', 'impact — leg fully extended forward', 'recover — leg returning to stance'] },
+  punch: { label: 'Punch', hints: ['wind-up — fist pulled back, guard up', 'extending — arm punching straight forward', 'impact — arm fully extended forward', 'recover — pulling back to guard'] },
+  block: { label: 'Block / guard', hints: ['arms raised in front, bracing', 'guard up, weight braced back slightly', 'arms crossed in front, holding', 'guard up, steady and braced'] },
+  throw: { label: 'Throw', hints: ['wind-up — arm drawn back over the shoulder', 'mid-throw — arm swinging forward', 'release — arm extended forward', 'follow-through — arm settling down'] },
+  dodge: { label: 'Dodge / roll', hints: ['ducking low, weight to one side', 'tucking down, rolling low', 'mid-roll, body curled', 'rising out of the roll back to stance'] },
+  dig: { label: 'Dig', hints: ['holding a shovel, driving it into the ground', 'levering down, digging up soil', 'lifting the shovel with a load of dirt', 'tossing the dirt aside, resetting'] },
+  push: { label: 'Push', hints: ['leaning forward, arms extended pushing', 'straining, weight into the push', 'arms extended, stepping forward', 'bracing, pushing steadily'] },
+  sit: { label: 'Sit', hints: ['lowering down, knees bending to sit', 'seated, legs forward, hands resting', 'seated, slight lean back', 'seated, settling, hands on knees'] },
+  sleep: { label: 'Sleep / lie down', hints: ['lying down on one side, eyes closed', 'lying still, breathing slowly', 'lying on the back, arms relaxed', 'lying still and peaceful'] },
+  wave: { label: 'Wave', hints: ['raising one arm to the side', 'hand up high, waving', 'arm raised, waving back', 'lowering the arm back down'] },
+  talk: { label: 'Talk', hints: ['small open-hand gesture while speaking', 'hands gesturing outward, mid-sentence', 'one hand raised, gesturing', 'hands lowering, finishing'] },
+  victory: { label: 'Victory / celebrate', hints: ['arms thrust up in triumph', 'arms up, small jump of joy', 'arms up, chest out', 'arms coming down, pleased'] },
+  taunt: { label: 'Taunt / emote', hints: ['leaning forward, beckoning with one hand', 'arms out wide, challenging', 'hands on hips, leaning back', 'gesturing dismissively'] },
+  shoot: { label: 'Shoot (bow / ranged)', hints: ['drawing the bowstring back, aiming forward', 'fully drawn, steady aim', 'release — string snapping forward', 'lowering the bow, recovering'] },
+  charge: { label: 'Charge attack', hints: ['crouched, gathering power, arms drawn back', 'energy building, body tensing', 'peak charge — arms pulled back, ready', 'unwinding forward on release'] },
+  knockdown: { label: 'Knockdown', hints: ['struck, body flung backward', 'falling backward, arms up', 'hitting the ground on the back', 'lying dazed on the ground'] },
+  getup: { label: 'Get up', hints: ['on the ground, pushing up with the arms', 'rising to one knee', 'standing up, unsteady', 'back on both feet, recovering'] },
+  loot: { label: 'Loot / pick up', hints: ['bending down, reaching to the ground', 'hand on an object, about to grab', 'lifting the object up', 'standing back up with the item'] },
+  open: { label: 'Open (door / chest)', hints: ['reaching forward, hand on the handle', 'pushing or lifting the lid open', 'leaning forward, opening wide', 'stepping back, now open'] },
+  chop: { label: 'Chop (axe)', hints: ['raising the axe overhead', 'axe held high, ready', 'swinging the axe down fast', 'axe at the bottom, recovering'] },
+  mine: { label: 'Mine (pickaxe)', hints: ['raising the pickaxe over the shoulder', 'pickaxe poised, ready', 'swinging the pickaxe down into the rock', 'recoiling, pulling the pickaxe free'] },
+  fish: { label: 'Fish', hints: ['holding a fishing rod forward, line cast', 'rod steady, waiting', 'rod bending, reeling in', 'pulling the rod back, landing the catch'] },
+}
+
+// Animations that make sense in multiple directions (locomotion + idle).
+// Each direction becomes its own ROW in the sheet.
+export const DIRECTIONAL_ANIMS = new Set(['idle', 'walk', 'run', 'crawl', 'sneak', 'swim'])
+
+function directionsFor(mode) {
+  if (mode === '4way') return ['down', 'left', 'right', 'up']
+  if (mode === 'lr') return ['right', 'left']
+  return []
+}
+
+// Sensible default frame counts per animation (classic character sheets have
+// rows of different lengths — idle 4, walk 6, run 8…). Used when multi mode
+// doesn't specify its own per-animation counts.
+export const SPRITE_ANIMATION_FRAMES = {
+  idle: 4, walk: 6, run: 8, jump: 6, attack: 6, cast: 6, hurt: 4, death: 4, effect: 6, item: 1,
+  crouch: 4, crawl: 6, sneak: 6, climb: 6, swim: 6, fall: 4, kick: 6, punch: 6, block: 4, throw: 6, dodge: 6, dig: 6, push: 6,
+  sit: 4, sleep: 4, wave: 4, talk: 4, victory: 6, taunt: 6, shoot: 6, charge: 6, knockdown: 4, getup: 6, loot: 6, open: 6, chop: 6, mine: 6, fish: 6,
+}
+
+// "idle:4,walk:6,attack:6" → { idle:4, walk:6, attack:6 }
+function parseFrameCounts(str) {
+  const m = {}
+  for (const part of String(str || '').split(',')) {
+    const [k, v] = part.split(':')
+    const key = (k || '').trim()
+    const n = parseInt(v, 10)
+    if (key && Number.isFinite(n)) m[key] = Math.max(1, Math.min(12, n))
+  }
+  return m
+}
+
+// Expand the sheet spec into rows — ONE animation (optionally per direction)
+// per row, each with its OWN frame count (variable-length rows, left-aligned
+// on a grid of width = the longest row). Shared by the graph builder AND the
+// client-side packer so the two always agree on the layout.
+//
+// `forceFrames` pins every row to one count (the video engine: all rows are
+// videos, all videos share the snapped 4n+1 length); `maxFrames` raises the
+// per-row cap for those counts (default 12 = the pose engine's graph cap).
+export function spriteRows({
+  sheetMode = 'single',
+  animation = 'walk',
+  animations = [],
+  directions = 'none',
+  frames = 8,
+  animFrames = '',
+  forceFrames = 0,
+  maxFrames = 12,
+} = {}) {
+  const overrides = parseFrameCounts(animFrames)
+  const countOf = (a) => {
+    if (forceFrames) return Math.max(1, Math.min(maxFrames, Math.round(forceFrames)))
+    const n = overrides[a] ?? (sheetMode === 'multi' ? SPRITE_ANIMATION_FRAMES[a] : frames) ?? frames
+    return Math.max(1, Math.min(maxFrames, Math.round(n)))
+  }
+  const mk = (anim, dir) => ({
+    animation: anim,
+    direction: dir,
+    name: dir ? `${anim}-${dir}` : anim,
+    frames: countOf(anim),
+  })
+  if (sheetMode !== 'multi') {
+    const dirs = DIRECTIONAL_ANIMS.has(animation) ? directionsFor(directions) : []
+    return dirs.length ? dirs.map((d) => mk(animation, d)) : [mk(animation, '')]
+  }
+  const list = (Array.isArray(animations) ? animations : String(animations || '').split(','))
+    .map((s) => String(s).trim())
+    .filter(Boolean)
+  const rows = []
+  for (const a of list) {
+    const dirs = DIRECTIONAL_ANIMS.has(a) ? directionsFor(directions) : []
+    if (dirs.length) for (const d of dirs) rows.push(mk(a, d))
+    else rows.push(mk(a, ''))
+  }
+  return rows.length ? rows : [mk('walk', '')]
+}
+
+export function directionPhrase(dir) {
+  switch (dir) {
+    case 'right':
+      return ' Side view — the character faces right.'
+    case 'left':
+      return ' Side view — the character faces left.'
+    case 'down':
+      return ' Top-down view — the character faces down (toward the camera).'
+    case 'up':
+      return ' Top-down view — the character faces up (away from the camera).'
+    default:
+      return ''
+  }
+}
+
+function spriteFrameInstruction(subject, animation, i, frames, direction = '') {
+  const anim = SPRITE_ANIMATIONS[animation]
+  const hint = anim ? anim.hints[i % anim.hints.length] : `pose ${i + 1} of ${frames}`
+  const label = anim?.label || 'animation'
+  return (
+    `${subject}. ${label}, frame ${i + 1} of ${frames} — ${hint}.${directionPhrase(direction)} ` +
+    'Keep the EXACT same character: identical body shape, proportions, clothing/armour and colours ' +
+    'as the source image; only the pose changes. Full body, single subject, centred, ' +
+    'plain flat white background, game sprite.'
+  )
+}
+
+export function buildSpriteWorkflow({
+  subject = '',
+  frames = 8,
+  cellSize = 256,
+  genSize = 1024,
+  animation = 'walk',
+  sheetMode = 'single',
+  animations = [],
+  directions = 'none',
+  animFrames = '',
+  framePrompts = null, // explicit per-frame prompts override the preset hints
+  seed = -1,
+  steps = 20,
+  cfg = 4,
+  editSteps = 20,
+  editCfg = 2.5,
+  models = {},
+}) {
+  const actualSeed = seed === -1 ? Math.floor(Math.random() * 2 ** 48) : seed
+  const rows = spriteRows({ sheetMode, animation, animations, directions, frames, animFrames })
+  const total = rows.reduce((n, r) => n + r.frames, 0)
+  if (total > 48) {
+    throw new Error(
+      `Sprite sheet too large: ${rows.length} rows = ${total} frames ` +
+        '(max 48). Reduce frames, animations, or directions.',
+    )
+  }
+  const px = Math.max(32, Math.min(2048, Math.round(cellSize)))
+  const gen = Math.max(256, Math.min(2048, Math.round(genSize / 8) * 8))
+  const basePrompt =
+    `${subject}, full body, neutral standing pose, centred, plain flat white background, ` +
+    'single character, game sprite, high detail'
+  const baseNeg =
+    'multiple characters, duplicate, cropped, out of frame, extra limbs, extra arms, ' +
+    'text, watermark, signature, busy background, scenery'
+
+  const wf = {
+    // Loaders (shared)
+    u1: { class_type: 'UNETLoader', inputs: { unet_name: models.unet, weight_dtype: 'default' } },
+    cl: { class_type: 'CLIPLoader', inputs: { clip_name: models.clip, type: 'qwen_image', device: 'default' } },
+    ve: { class_type: 'VAELoader', inputs: { vae_name: models.vae } },
+    bg: { class_type: 'LoadBackgroundRemovalModel', inputs: { bg_removal_name: 'birefnet.safetensors' } },
+    // Base pose (Qwen-Image)
+    bp: { class_type: 'CLIPTextEncode', inputs: { clip: ['cl', 0], text: basePrompt } },
+    bn: { class_type: 'CLIPTextEncode', inputs: { clip: ['cl', 0], text: baseNeg } },
+    bl: { class_type: 'EmptySD3LatentImage', inputs: { width: gen, height: gen, batch_size: 1 } },
+    bk: {
+      class_type: 'KSampler',
+      inputs: {
+        model: ['u1', 0], positive: ['bp', 0], negative: ['bn', 0], latent_image: ['bl', 0],
+        seed: actualSeed, steps, cfg, sampler_name: 'euler', scheduler: 'simple', denoise: 1,
+      },
+    },
+    bd: { class_type: 'VAEDecode', inputs: { samples: ['bk', 0], vae: ['ve', 0] } },
+    // Shared edit conditioning (every frame edits the SAME base image)
+    af: { class_type: 'ModelSamplingAuraFlow', inputs: { model: ['u1', 0], shift: 3 } },
+    cf: { class_type: 'CFGNorm', inputs: { model: ['af', 0], strength: 1 } },
+    le: { class_type: 'VAEEncode', inputs: { pixels: ['bd', 0], vae: ['ve', 0] } },
+    en: { class_type: 'TextEncodeQwenImageEdit', inputs: { clip: ['cl', 0], vae: ['ve', 0], image: ['bd', 0], prompt: baseNeg } },
+  }
+
+  // Frames are emitted row-major (row 0 left→right, then row 1…) so the app
+  // can pack each row as its own animation.
+  let batch = null
+  let idx = 0
+  for (let r = 0; r < rows.length; r++) {
+    const row = rows[r]
+    for (let c = 0; c < row.frames; c++) {
+      const f = `f${r}_${c}`
+      const text =
+        framePrompts?.[idx] || spriteFrameInstruction(subject, row.animation, c, row.frames, row.direction)
+      wf[`${f}p`] = { class_type: 'TextEncodeQwenImageEdit', inputs: { clip: ['cl', 0], vae: ['ve', 0], image: ['bd', 0], prompt: text } }
+      wf[`${f}k`] = {
+        class_type: 'KSampler',
+        inputs: {
+          model: ['cf', 0], positive: [`${f}p`, 0], negative: ['en', 0], latent_image: ['le', 0],
+          seed: actualSeed, steps: editSteps, cfg: editCfg, sampler_name: 'euler', scheduler: 'simple', denoise: 1,
+        },
+      }
+      wf[`${f}d`] = { class_type: 'VAEDecode', inputs: { samples: [`${f}k`, 0], vae: ['ve', 0] } }
+      wf[`${f}m`] = { class_type: 'RemoveBackground', inputs: { bg_removal_model: ['bg', 0], image: [`${f}d`, 0] } }
+      // RemoveBackground yields a mask that is HIGH (1) on the BACKGROUND and
+      // low on the subject — JoinImageWithAlpha also zeroes RGB where alpha is
+      // 0, so without inverting, the subject comes out transparent/black.
+      wf[`${f}v`] = { class_type: 'InvertMask', inputs: { mask: [`${f}m`, 0] } }
+      wf[`${f}a`] = { class_type: 'JoinImageWithAlpha', inputs: { image: [`${f}d`, 0], alpha: [`${f}v`, 0] } }
+      wf[`${f}s`] = {
+        class_type: 'ImageScale',
+        inputs: { image: [`${f}a`, 0], upscale_method: 'lanczos', width: px, height: px, crop: 'disabled' },
+      }
+      if (batch === null) {
+        batch = [`${f}s`, 0]
+      } else {
+        wf[`${f}b`] = { class_type: 'ImageBatch', inputs: { image1: batch, image2: [`${f}s`, 0] } }
+        batch = [`${f}b`, 0]
+      }
+      idx++
+    }
+  }
+
+  // Save the transparent per-frame PNGs (SaveImage writes one file per image
+  // in the batch). The app packs them into the grid so the sheet KEEPS its
+  // alpha channel — KJNodes ImageGrid flattens to RGB and would drop it.
+  wf.save = { class_type: 'SaveImage', inputs: { images: batch, filename_prefix: 'sprite/frame' } }
+  return wf
+}
+
+// ---------------------------------------------------------------------------
 // Face-fix (settings toggle threeD.faceFix): face-focused Qwen-Image edit
 // passes that run around the 3D pipeline. Faces get ~1-2% of the texels in a
 // full-body texture bake, so sharpening the face at source (before mesh gen)
@@ -1745,6 +2007,12 @@ export function buildMusicWorkflow({
   // SFX (Studio mode "sfx"): require the ACE-Step engine — MiniMax Music 3
   // cannot render sound effects, so a MiniMax-resolved model is an error.
   forceAce = false,
+  // Sound-effect mode: keep the prompt LITERAL. The music caption assembly
+  // (the "strictly instrumental — no vocals…" ban clause and folding the
+  // negative into the positive) reads as music direction to the audio model
+  // and measurably hurts sound-effect fidelity, so SFX uses the raw caption
+  // and passes the negative through the engine's own negative conditioning.
+  sfx = false,
   models,
 }) {
   const actualSeed = seed === -1 ? Math.floor(Math.random() * 2 ** 48) : seed
@@ -1765,7 +2033,8 @@ export function buildMusicWorkflow({
     ...sectionBanned,
     ...(negativePrompt || '').split(/[,;\n]+/).map((x) => x.trim().replace(/[.\s]+$/, '')).filter(Boolean),
   ]
-  const fullCaption = baseCaption + bannedClause(negItems, baseCaption)
+  // SFX keeps the caption literal (no ban clause / negative folding).
+  const fullCaption = sfx ? trimmedCaption : baseCaption + bannedClause(negItems, baseCaption)
 
   // ACE-Step 1.5 (ComfyUI-ACE-Step) shares the MiniMax music slot but has a
   // completely different stack (qwen ACE text encoders / AIO checkpoint, its
@@ -1788,6 +2057,28 @@ export function buildMusicWorkflow({
     }
     return buildAceStepWorkflow({
       caption: fullCaption, lyrics: lyricText, duration, seed: actualSeed, quality, cfgScale, referenceAudio, models,
+    })
+  }
+
+  // Stable Audio 3 — the SFX-oriented engine. Shares the music slot but has a
+  // completely different native-node stack (CheckpointLoaderSimple + a T5Gemma
+  // text encoder via CLIPLoader type 'stable_audio' + ConditioningStableAudio).
+  // Its `stable` assets are resolved by resolveStableAudioModels in comfyui.js.
+  if (isStableAudioModel(models.unet) || models.engine === 'stable_audio') {
+    if (!models.stable) {
+      throw new Error(
+        'Stable Audio 3 needs its checkpoint + text encoder resolved on the ComfyUI server — ' +
+          'stable_audio_3_*.safetensors in models/checkpoints/ and t5gemma_b_b_ul2.safetensors ' +
+          'in models/text_encoders/. Pick it in Settings → Models → Music.',
+      )
+    }
+    return buildStableAudioWorkflow({
+      caption: fullCaption,
+      negativePrompt: (negativePrompt || '').trim(),
+      duration,
+      seed: actualSeed,
+      quality,
+      models,
     })
   }
 
@@ -1933,6 +2224,13 @@ export function buildMusicWorkflow({
 export const ACE_STEP_RE = /(^|[^a-z])(ace[-_ ]?step|acestep)([^a-z]|$)/i
 export function isAceStepModel(name) {
   return ACE_STEP_RE.test(String(name || ''))
+}
+
+// Stable Audio 3 — matches stable_audio_3_small_sfx / stable_audio_3_medium
+// checkpoints. Kept in sync with looksLikeMusicModel in comfyui.js.
+export const STABLE_AUDIO_RE = /(^|[^a-z])(stable[-_ ]?audio|stableaudio)([^a-z]|$)/i
+export function isStableAudioModel(name) {
+  return STABLE_AUDIO_RE.test(String(name || ''))
 }
 
 // ACE-Step 1.5 graph — mirrors the official workflow templates
@@ -2132,9 +2430,128 @@ export function buildAceStepWorkflow({
   return wf
 }
 
+// Stable Audio 3 graph — native ComfyUI nodes only:
+//   CheckpointLoaderSimple(stable_audio_3_*)      → MODEL + VAE
+//   CLIPLoader(t5gemma_b_b_ul2, type 'stable_audio') → CLIP
+//   CLIPTextEncode ×2 → ConditioningStableAudio(seconds_start/total)
+//   → EmptyLatentAudio → KSampler → VAEDecodeAudio → SaveAudio*.
+// The checkpoint carries the DiT and the audio VAE but NOT the text encoder,
+// so the T5Gemma encoder is loaded separately. Stable Audio 3 checkpoints are
+// DISTILLED (LCM): the official ComfyUI template samples with the `lcm`
+// sampler, 8 steps, cfg 1, `simple` scheduler — that fixed recipe is used here
+// (the MiniMax steps/guidance knobs don't apply). `duration` is clamped to the
+// model's window.
+export const STABLE_AUDIO_MAX_SECONDS = 47
+export function buildStableAudioWorkflow({
+  caption = '',
+  negativePrompt = '',
+  duration = 6,
+  seed = -1,
+  quality = 'wav',
+  models = {},
+}) {
+  const stable = models.stable
+  if (!stable?.checkpoint) {
+    throw new Error(
+      'buildStableAudioWorkflow needs models.stable — resolve the Stable Audio assets first',
+    )
+  }
+  const actualSeed = seed === -1 ? Math.floor(Math.random() * 2 ** 48) : seed
+  const dur = Math.min(
+    Math.max(1, Number(duration) > 0 ? Number(duration) : 6),
+    STABLE_AUDIO_MAX_SECONDS,
+  )
+  // No baked-in negative. The previous default banned "noisy"/"distorted" —
+  // exactly the texture that impacts (thunder cracks, crashes, breaking glass)
+  // are made of — which suppressed the very sounds SFX mode exists for. Use
+  // the caller's negative verbatim; empty means no negative conditioning.
+  const neg = (negativePrompt || '').trim()
+  const wf = {
+    s1: { class_type: 'CheckpointLoaderSimple', inputs: { ckpt_name: stable.checkpoint } },
+    s0: {
+      class_type: 'CLIPLoader',
+      inputs: { clip_name: stable.clip, type: 'stable_audio', device: 'default' },
+    },
+    s2: { class_type: 'CLIPTextEncode', inputs: { clip: ['s0', 0], text: caption } },
+    s3: { class_type: 'CLIPTextEncode', inputs: { clip: ['s0', 0], text: neg } },
+    s4: {
+      class_type: 'ConditioningStableAudio',
+      inputs: { positive: ['s2', 0], negative: ['s3', 0], seconds_start: 0, seconds_total: dur },
+    },
+    s5: { class_type: 'EmptyLatentAudio', inputs: { seconds: dur, batch_size: 1 } },
+    s6: {
+      class_type: 'KSampler',
+      inputs: {
+        model: ['s1', 0],
+        positive: ['s4', 0],
+        negative: ['s4', 1],
+        latent_image: ['s5', 0],
+        seed: actualSeed,
+        // Stable Audio 3 ships DISTILLED (LCM) checkpoints — the official
+        // ComfyUI template samples with the lcm sampler, 8 steps, cfg 1,
+        // simple scheduler. Using a normal 50-step SDE sampler at cfg 7
+        // (as for Stable Audio Open) produces the noise/glitch artifacts
+        // people hit; cfg > 1 also collapses a distilled model.
+        steps: 8,
+        cfg: 1,
+        sampler_name: 'lcm',
+        scheduler: 'simple',
+        denoise: 1,
+      },
+    },
+    s7: { class_type: 'VAEDecodeAudio', inputs: { samples: ['s6', 0], vae: ['s1', 2] } },
+  }
+  if (quality === 'wav') {
+    wf.s8 = { class_type: 'SaveAudio', inputs: { audio: ['s7', 0], filename_prefix: 'sfx/stable_audio' } }
+  } else {
+    wf.s8 = {
+      class_type: 'SaveAudioMP3',
+      inputs: {
+        audio: ['s7', 0],
+        filename_prefix: 'sfx/stable_audio',
+        quality: quality === 'V0' || quality === '128k' || quality === '320k' ? quality : '320k',
+      },
+    }
+  }
+  return wf
+}
+
 // MiniMax H3 (Hailuo) video dit — matches minimax_h3_* / hailuo files.
 // Shared with comfyui.js (validation) and useComfyUI.js (audio-VAE pick).
 export const H3_VIDEO_RE = /minimax[-_ ]?h\d|hailuo/i
+// Upper bound on chained H3 windows. Each window is a full sampling pass, so
+// the graph grows (and the render time with it) roughly linearly — 12 windows
+// ≈ a minute of 24fps video, already a long render on the 16GB box.
+export const H3_MAX_SEGMENTS = 12
+
+// H3 samples at 24fps on a 17k+5 frame grid. The UI speaks per-window
+// frames/fps, so convert to the model's 24fps frame count and snap UP to the
+// grid (same maths as the template's python-style modulo). Exported so the
+// settings UI can show the same duration the builder will actually produce.
+export function h3LengthFrames(frames = 33, fps = 16) {
+  const f = Math.max(5, Math.round(((frames || 33) / (fps || 16)) * 24))
+  return f + ((((5 - (f % 17)) % 17) + 17) % 17)
+}
+// One window's real duration on screen (seconds at 24fps).
+export function h3WindowSeconds(frames = 33, fps = 16) {
+  return h3LengthFrames(frames, fps) / 24
+}
+// Chained windows drop one duplicate boundary frame per join, so the total is
+// length + (n-1)(length-1). This is the honest achieved duration.
+export function h3ChainedSeconds(segments, frames = 33, fps = 16) {
+  const length = h3LengthFrames(frames, fps)
+  const n = Math.max(1, Math.min(H3_MAX_SEGMENTS, Math.round(segments || 1)))
+  return (length + (n - 1) * (length - 1)) / 24
+}
+// Fewest windows whose chained length reaches `duration` seconds (clamped to
+// [1, H3_MAX_SEGMENTS]). Drives the duration slider → segment count.
+export function h3SegmentsForDuration(duration, frames = 33, fps = 16) {
+  const length = h3LengthFrames(frames, fps)
+  const d24 = Math.max(1, Math.round((duration || 0) * 24))
+  if (d24 <= length) return 1
+  const n = 1 + Math.ceil((d24 - length) / Math.max(1, length - 1))
+  return Math.max(1, Math.min(H3_MAX_SEGMENTS, n))
+}
 export function isMiniMaxH3(name) {
   return H3_VIDEO_RE.test(String(name || ''))
 }
@@ -2148,9 +2565,12 @@ export function buildVideoWorkflow({
   seed = -1,
   steps = 20, // sampler is the bottleneck on 16GB RAM — 20 (was 30) default
   cfg = 6,
+  segments = 1,
+  duration = 0,
+  crossfade = 0,
   models,
 }) {
-  if (isMiniMaxH3(models?.unet)) return buildH3VideoWorkflow({ prompt, resolution, frames, fps, seed, steps, models })
+  if (isMiniMaxH3(models?.unet)) return buildH3VideoWorkflow({ prompt, resolution, frames, fps, seed, steps, models, segments, duration, crossfade })
   const { width, height } = VIDEO_RESOLUTIONS[resolution] || VIDEO_RESOLUTIONS['480p']
   const actualSeed = seed === -1 ? Math.floor(Math.random() * 2 ** 48) : seed
 
@@ -2244,7 +2664,7 @@ export function buildVideoWorkflow({
 //   - BasicGuider: the model is guidance-embedded — no CFG, no negative
 //   - res_multistep + simple scheduler (official docs: every local H3 workflow)
 //   - AV latent decodes to frames + stereo audio, muxed by CreateVideo/SaveVideo
-function buildH3VideoWorkflow({ prompt, resolution, frames, fps, seed, steps, models }) {
+function buildH3VideoWorkflow({ prompt, resolution, frames, fps, seed, steps, models, segments = 1, duration = 0, crossfade = 0 }) {
   if (!models?.vaeAudio) {
     throw new Error(
       'MiniMax H3 video needs the H3 audio VAE (minimax_h3_audio_vae_*.safetensors) — it was not found on the server.'
@@ -2260,42 +2680,34 @@ function buildH3VideoWorkflow({ prompt, resolution, frames, fps, seed, steps, mo
   const finalHeight = Math.max(32, Math.round(raw.height / 32) * 32)
   const upscale = !!(raw.upscale && (genWidth !== finalWidth || genHeight !== finalHeight))
   const actualSeed = seed === -1 ? Math.floor(Math.random() * 2 ** 48) : seed
-  // H3 samples at 24fps on a 17k+5 frame grid. The UI speaks frames/fps, so
-  // convert the intended duration to 24fps frames and snap UP to the grid
-  // (same maths as the template's expression, python-style modulo).
-  const f = Math.max(5, Math.round(((frames || 33) / (fps || 16)) * 24))
-  const length = f + ((((5 - (f % 17)) % 17) + 17) % 17)
+  // Frame count at 24fps, snapped to H3's 17k+5 grid (shared with the UI so
+  // its duration readout matches what we build).
+  const length = h3LengthFrames(frames, fps)
   // Optional turbo LoRA sits between the loader and the sampler.
   const baseSrc = models.lora ? '52' : '37'
+  // Chain N windows end-to-end: window i>0 is conditioned on the last frame
+  // of window i-1 (H3's first_frame input — the reason the model file is
+  // "fl2va"), so motion continues across the cut. Frames are concatenated
+  // with ImageBatch and the per-window soundtracks with AudioCrossfade (when
+  // the custom node is present) or AudioConcat, then a single CreateVideo
+  // muxes the whole thing. segCount=1 reproduces the old single-clip graph.
+  // A target `duration` (seconds) picks the window count for you; an explicit
+  // `segments` is used when no duration is given.
+  const segCount =
+    duration > 0
+      ? h3SegmentsForDuration(duration, frames, fps)
+      : Math.max(1, Math.min(H3_MAX_SEGMENTS, Math.round(segments || 1)))
 
   const wf = {
     '37': { class_type: 'UNETLoader', inputs: { unet_name: models.unet, weight_dtype: 'default' } },
     '38': { class_type: 'CLIPLoader', inputs: { clip_name: models.clip, type: 'minimax', device: 'default' } },
     '39': { class_type: 'VAELoader', inputs: { vae_name: models.vae } },
     '391': { class_type: 'VAELoader', inputs: { vae_name: models.vaeAudio } },
-    '40': {
-      class_type: 'MiniMaxH3ImageToVideo',
-      inputs: { clip: ['38', 0], vae: ['39', 0], prompt, width: genWidth, height: genHeight, length },
-    },
-    '41': { class_type: 'RandomNoise', inputs: { noise_seed: actualSeed } },
     '42': { class_type: 'KSamplerSelect', inputs: { sampler_name: 'res_multistep' } },
     // Comfy Kitchen INT8 attention: measured 201s vs 316-341s pytorch on the
-    // 5060 Ti (1.6-1.7×, same seed/output quality in A/B tests).
+    // 5060 Ti (1.6-1.7×, same seed/output quality in A/B tests). Shared by
+    // every window's scheduler/guider — the model is loaded once.
     '53': { class_type: 'ModelAttentionBackend', inputs: { model: [baseSrc, 0], attention: 'comfy kitchen attention' } },
-    '43': { class_type: 'BasicScheduler', inputs: { model: ['53', 0], scheduler: 'simple', steps, denoise: 1 } },
-    '44': { class_type: 'BasicGuider', inputs: { model: ['53', 0], conditioning: ['40', 0] } },
-    '45': {
-      class_type: 'SamplerCustomAdvanced',
-      inputs: { noise: ['41', 0], guider: ['44', 0], sampler: ['42', 0], sigmas: ['43', 0], latent_image: ['40', 1] },
-    },
-    '46': { class_type: 'VAEDecode', inputs: { samples: ['45', 0], vae: ['39', 0] } },
-    '47': { class_type: 'VAEDecodeAudio', inputs: { samples: ['45', 0], vae: ['391', 0] } },
-    // H3 is a 24fps model — never the UI's fps (would change playback speed).
-    '48': { class_type: 'CreateVideo', inputs: { images: [upscale ? '51' : '46', 0], audio: ['47', 0], fps: 24 } },
-    '28': {
-      class_type: 'SaveVideo',
-      inputs: { video: ['48', 0], filename_prefix: 'video/ComfyUI', format: 'auto', codec: 'auto' },
-    },
   }
   if (models.lora) {
     wf['52'] = {
@@ -2303,12 +2715,97 @@ function buildH3VideoWorkflow({ prompt, resolution, frames, fps, seed, steps, mo
       inputs: { model: ['37', 0], lora_name: models.lora, strength_model: models.loraStrength ?? 1 },
     }
   }
+
+  const rawFrames = [] // node ids producing a full window's decoded frames
+  const audios = [] // node ids producing a window's decoded audio
+  for (let i = 0; i < segCount; i++) {
+    const h3Inputs = { clip: ['38', 0], vae: ['39', 0], prompt, width: genWidth, height: genHeight, length }
+    // Windows after the first continue from the previous window's last frame.
+    if (i > 0) h3Inputs.first_frame = [`lf-${i - 1}`, 0]
+    wf[`h3-${i}`] = { class_type: 'MiniMaxH3ImageToVideo', inputs: h3Inputs }
+    wf[`rn-${i}`] = {
+      class_type: 'RandomNoise',
+      // Distinct, deterministic seed per window (13th term of a small cycle
+      // avoids the 2**48 wraparound colliding adjacent windows).
+      inputs: { noise_seed: (actualSeed + i * 7919) % 2 ** 48 },
+    }
+    wf[`sch-${i}`] = { class_type: 'BasicScheduler', inputs: { model: ['53', 0], scheduler: 'simple', steps, denoise: 1 } }
+    wf[`gd-${i}`] = { class_type: 'BasicGuider', inputs: { model: ['53', 0], conditioning: [`h3-${i}`, 0] } }
+    wf[`sm-${i}`] = {
+      class_type: 'SamplerCustomAdvanced',
+      inputs: { noise: [`rn-${i}`, 0], guider: [`gd-${i}`, 0], sampler: ['42', 0], sigmas: [`sch-${i}`, 0], latent_image: [`h3-${i}`, 1] },
+    }
+    wf[`vd-${i}`] = { class_type: 'VAEDecode', inputs: { samples: [`sm-${i}`, 0], vae: ['39', 0] } }
+    wf[`va-${i}`] = { class_type: 'VAEDecodeAudio', inputs: { samples: [`sm-${i}`, 0], vae: ['391', 0] } }
+    if (i < segCount - 1) {
+      // Last frame (batch_index -1) is the next window's first_frame.
+      wf[`lf-${i}`] = { class_type: 'ImageFromBatch', inputs: { image: [`vd-${i}`, 0], batch_index: -1, length: 1 } }
+    }
+    rawFrames.push(`vd-${i}`)
+    audios.push(`va-${i}`)
+  }
+
+  // Video seam join. Two modes:
+  //  - crossfade (both bundled nodes present): overlap the last `fadeFrames`
+  //    of the running batch with the first `fadeFrames` of the next window and
+  //    blend them. The video therefore loses exactly `fadeFrames` (= the
+  //    audio's fadeFrames/24 seconds) per join, so A/V stay locked frame-for-
+  //    frame — the audio crossfade shortens its timeline by the same amount.
+  //  - hard cut (nodes absent): window i repeats window i-1's last frame as its
+  //    first; drop that one duplicate so nothing freezes at the join.
+  const fadeFrames = crossfade > 0 ? Math.max(1, Math.round(crossfade * 24)) : 0
+  let curFrames
+  if (fadeFrames > 0) {
+    curFrames = rawFrames[0]
+    for (let i = 1; i < rawFrames.length; i++) {
+      wf[`vx-${i}`] = {
+        class_type: 'VideoCrossfade',
+        inputs: { images1: [curFrames, 0], images2: [rawFrames[i], 0], fade_frames: fadeFrames, curve: 'linear' },
+      }
+      curFrames = `vx-${i}`
+    }
+  } else {
+    const frameSrcs = rawFrames.map((id, i) => {
+      if (i === 0) return id
+      wf[`tr-${i}`] = { class_type: 'ImageFromBatch', inputs: { image: [id, 0], batch_index: 1, length: 4096 } }
+      return `tr-${i}`
+    })
+    curFrames = frameSrcs[0]
+    for (let i = 1; i < frameSrcs.length; i++) {
+      wf[`ib-${i}`] = { class_type: 'ImageBatch', inputs: { image1: [curFrames, 0], image2: [frameSrcs[i], 0] } }
+      curFrames = `ib-${i}`
+    }
+  }
+  let curAudio = audios[0]
+  for (let i = 1; i < audios.length; i++) {
+    if (fadeFrames > 0) {
+      // Overlap the tail of the running mix with the head of the next window
+      // and blend — the per-window soundtracks are otherwise independent, so
+      // a plain concat clicks at every seam. Duration is derived from
+      // fadeFrames (not `crossfade`) so it matches the video exactly.
+      wf[`ac-${i}`] = {
+        class_type: 'AudioCrossfade',
+        inputs: { audio1: [curAudio, 0], audio2: [audios[i], 0], fade_seconds: fadeFrames / 24, curve: 'equal_power' },
+      }
+    } else {
+      wf[`ac-${i}`] = { class_type: 'AudioConcat', inputs: { audio1: [curAudio, 0], audio2: [audios[i], 0], direction: 'after' } }
+    }
+    curAudio = `ac-${i}`
+  }
+
+  // H3 is a 24fps model — never the UI's fps (would change playback speed).
+  wf['48'] = { class_type: 'CreateVideo', inputs: { images: [upscale ? '51' : curFrames, 0], audio: [curAudio, 0], fps: 24 } }
+  wf['28'] = {
+    class_type: 'SaveVideo',
+    inputs: { video: ['48', 0], filename_prefix: 'video/ComfyUI', format: 'auto', codec: 'auto' },
+  }
   if (upscale) {
     // ESRGAN 4× on the decoded frames, then lanczos down to the exact final
     // size (960×544 → 3840×2176 → 1920×1088). Tiled internally by the node,
-    // so it stays inside 16GB VRAM.
+    // so it stays inside 16GB VRAM. Runs once over the whole concatenated
+    // batch, after the join, to keep the memory cost flat per window.
     wf['49'] = { class_type: 'UpscaleModelLoader', inputs: { model_name: raw.upscale } }
-    wf['50'] = { class_type: 'ImageUpscaleWithModel', inputs: { upscale_model: ['49', 0], image: ['46', 0] } }
+    wf['50'] = { class_type: 'ImageUpscaleWithModel', inputs: { upscale_model: ['49', 0], image: [curFrames, 0] } }
     wf['51'] = {
       class_type: 'ImageScale',
       inputs: { image: ['50', 0], upscale_method: 'lanczos', width: finalWidth, height: finalHeight, crop: 'disabled' },

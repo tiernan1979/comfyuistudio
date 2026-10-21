@@ -11,8 +11,9 @@ import {
   buildMusicWorkflow,
   isMiniMaxH3,
   isAceStepModel,
+  isStableAudioModel,
 } from '../../src/lib/workflows.js'
-import { resolveAceStepModels } from '../../src/lib/comfyui.js'
+import { resolveAceStepModels, resolveStableAudioModels } from '../../src/lib/comfyui.js'
 
 export const MODES = ['image', 'edit', 'video', 'music', 'sfx', '3d', 'skin', 'meshupscale']
 
@@ -49,12 +50,15 @@ export const DEFAULT_MODELS = {
     clip: 'minimax_music3_text_encoder_pruned_int8_convrot.safetensors',
     vae: 'minimax_music3_dav.safetensors',
   },
-  // SFX: ACE-Step only — short instrumental clips from a sound-effect
-  // caption. MiniMax cannot do SFX; forceAce in buildMusicWorkflow enforces.
+  // SFX: Stable Audio 3 (sound effects). The checkpoint lives in
+  // models/checkpoints/ (CheckpointLoaderSimple) and the T5Gemma text encoder
+  // in models/text_encoders/ — resolved together by resolveStableAudioModels.
+  // Override models.sfx.unet to 'ace_step_1.5_turbo_aio.safetensors' (or set
+  // the engine to ACE) to fall back to the older ACE-Step SFX path.
   sfx: {
-    unet: 'ace_step_1.5_turbo_aio.safetensors',
-    clip: 'minimax_music3_text_encoder_pruned_int8_convrot.safetensors',
-    vae: 'minimax_music3_dav.safetensors',
+    unet: 'stable_audio_3_small_sfx.safetensors',
+    clip: 't5gemma_b_b_ul2.safetensors',
+    vae: '',
   },
   // Flow modes: node/model availability is validated by the pipeline itself
   // (assertWorkflowNodes); nothing to resolve up front.
@@ -146,10 +150,14 @@ export const MODEL_PREFS = {
     vae: [/ace[-_ ]?step.*vae/i, /ace[-_ ]?step/i, /minimax[-_ ]?music3[-_ ]?dav/i, /dav/i, /music/i],
   },
   sfx: {
+    // Stable Audio 3 first (small_sfx then medium), then ACE-Step as the
+    // fallback for installs without Stable Audio.
     unet: [
+      /stable[-_ ]?audio.*sfx/i, /stable[-_ ]?audio/i,
       /ace[-_ ]?step.*aio/i, /ace[-_ ]?step.*dit/i, /ace[-_ ]?step/i,
     ],
     clip: [
+      /t5gemma/i,
       /ace[-_ ]?step.*qwen.*2\.5.*vl/i, /ace[-_ ]?step.*text.*encoder/i,
       /ace[-_ ]?step/i,
     ],
@@ -205,6 +213,13 @@ export function resolveModels(lists, mode, overrides = {}) {
       out[group] = base[group]
       continue
     }
+    // Stable Audio 3: the checkpoint carries the audio VAE (no separate vae
+    // file) — skip that group. The `clip` is the T5Gemma encoder and resolves
+    // normally below.
+    if (AUDIO_MODES.has(mode) && group === 'vae' && out.unet && isStableAudioModel(out.unet)) {
+      out.vae = ''
+      continue
+    }
     if (overrides[group]) {
       // Music UNET may be an ACE-Step AIO checkpoint, which lives in
       // models/checkpoints/ (CheckpointLoaderSimple), not models/unet/
@@ -223,18 +238,21 @@ export function resolveModels(lists, mode, overrides = {}) {
       out[group] = hit
       continue
     }
-    const arr = Array.isArray(lists?.[group]) ? lists[group] : []
-    let picked = pickModel(arr, base[group], prefs[group])
-    // Music UNET with no MiniMax file: fall back to an ACE AIO checkpoint.
-    // ACE-Step loads its unet+clip+vae from CheckpointLoaderSimple, so the
-    // DiT is in models/checkpoints/, not models/unet/ — search there too.
-    if (!picked && AUDIO_MODES.has(mode) && group === 'unet') {
-      picked = pickModel(
-        Array.isArray(lists?.checkpoint) ? lists.checkpoint : [],
-        base[group],
-        [/ace[-_ ]?step.*aio/i, /ace[-_ ]?step/i],
-      )
-    }
+    // Audio engine files live in either models/unet (UNETLoader) or
+    // models/checkpoints (ACE AIO, Stable Audio — CheckpointLoaderSimple).
+    // Search both in one pass so the preferred engine wins regardless of
+    // which folder it sits in: for SFX, Stable Audio 3 (checkpoints) must
+    // beat ACE (unet) even though ACE appears in the unet list.
+    const arr =
+      AUDIO_MODES.has(mode) && group === 'unet'
+        ? [
+            ...(Array.isArray(lists?.unet) ? lists.unet : []),
+            ...(Array.isArray(lists?.checkpoint) ? lists.checkpoint : []),
+          ]
+        : Array.isArray(lists?.[group])
+          ? lists[group]
+          : []
+    const picked = pickModel(arr, base[group], prefs[group])
     if (!picked) {
       if (arr.length === 0) {
         throw new Error(`No ${group} models found on the ComfyUI server — is it reachable?`)
@@ -245,6 +263,17 @@ export function resolveModels(lists, mode, overrides = {}) {
       )
     }
     out[group] = picked
+  }
+  // Stable Audio 3 (SFX): attach the checkpoint + T5Gemma encoder the builder
+  // needs. The `unet` field holds the checkpoint name; resolveStableAudioModels
+  // maps it (and corrects the clip) against the server's file lists.
+  if (AUDIO_MODES.has(mode) && isStableAudioModel(out.unet)) {
+    const stable = resolveStableAudioModels(lists, { unet: out.unet, clip: out.clip })
+    out.stable = stable
+    out.clip = stable.clip
+    out.vae = ''
+    out.engine = 'stable_audio'
+    return out
   }
   // ACE-Step music: attach the resolved asset set (AIO checkpoint or split
   // encoders) the workflow builder needs; split also corrects clip/vae.
@@ -523,16 +552,17 @@ export function workflowFor(mode, { prompt, negativePrompt = '', lyrics = '', se
     })
   }
   if (mode === 'sfx') {
-    // Short exact-length ACE-Step clip from a sound-effect caption.
-    // forceAce: MiniMax cannot do SFX; instrumental ban pinned in the graph.
+    // Short sound effect. The resolved engine decides the graph — Stable
+    // Audio 3 by default (models.stable set by resolveModels), or ACE-Step
+    // when the SFX model resolves to an ACE checkpoint.
     return buildMusicWorkflow({
       caption: prompt,
       negativePrompt,
-      lyrics: '[Instrumental]',
+      lyrics: '',
       duration: s.duration,
       seed: s.seed,
       quality: s.quality || 'wav',
-      forceAce: true,
+      sfx: true,
       models,
     })
   }
@@ -543,12 +573,14 @@ export function workflowFor(mode, { prompt, negativePrompt = '', lyrics = '', se
   )
 }
 
+// ComfyUI output bucket → API `kind`. Audio has a SINGLE bucket (music and
+// SFX both save via SaveAudio); outputsOf refines it to 'sfx' from the job's
+// mode. Listing it twice emitted every audio file as both kinds.
 const OUTPUT_BUCKETS = [
   ['image', 'images'],
   ['video', 'gifs'],
   ['video', 'videos'],
   ['music', 'audio'],
-  ['sfx', 'audio'],
   ['3d', 'model_3d'],
 ]
 
@@ -559,7 +591,8 @@ export function hasOutputs(item) {
 }
 
 // History outputs → flat list with API-proxied + direct ComfyUI URLs.
-export function outputsOf(entry, fileBase = '/api/file', comfyuiUrl = '') {
+// `mode` (when known) labels audio outputs 'sfx' vs 'music'.
+export function outputsOf(entry, fileBase = '/api/file', comfyuiUrl = '', mode = '') {
   const out = []
   for (const [nodeId, node] of Object.entries(entry?.outputs || {})) {
     for (const [kind, key] of OUTPUT_BUCKETS) {
@@ -573,7 +606,9 @@ export function outputsOf(entry, fileBase = '/api/file', comfyuiUrl = '') {
           key === 'images' &&
           (node.animated?.[0] || /\.(mp4|webm|mov)\b/i.test(f.filename))
             ? 'video'
-            : kind
+            : key === 'audio' && mode === 'sfx'
+              ? 'sfx'
+              : kind
         const params = new URLSearchParams({
           filename: f.filename,
           subfolder: f.subfolder || '',

@@ -72,7 +72,7 @@ export default function GenerateButton() {
         ) : (
           <>
             <Zap size={16} />
-            {mode === 'music' ? 'Generate Music' : 'Generate'}
+            {mode === 'music' ? 'Generate Music' : mode === 'sfx' ? 'Generate SFX' : mode === 'sprite' ? 'Generate Sprites' : 'Generate'}
           </>
         )}
       </span>

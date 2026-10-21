@@ -51,6 +51,56 @@ const DEFAULT_CONFIGS = {
   custom: { url: '', key: '', model: '' },
 }
 
+// Extra local hosts to try when the saved endpoint is unreachable. LM Studio
+// lives on the ComfyUI machine (10.1.1.102:1234) here; the Docker host
+// (host.docker.internal) does NOT run it, so the shipped default alone fails
+// from inside the container.
+export const LLM_ENDPOINT_FALLBACKS = [
+  'http://10.1.1.102:1234',
+  'http://host.docker.internal:1234',
+  'http://127.0.0.1:1234',
+]
+
+// Model ids that are not chat models — never auto-pick these.
+const NON_CHAT_MODEL_RE = /embed|nomic|bge|mxbai|rerank|jina|whisper|tts|vae|clip/i
+// Strong signal that a model is a general instruct/chat model.
+const CHAT_MODEL_RE = /qwen|gemma|llama|mistral|phi-?\d|glm|yi-|deepseek|intern|smol|gpt-4|claude|llava/i
+
+// No model saved (or the one saved is gone): ask the server what it has and
+// pick something that will actually chat — prefer a model already resident in
+// VRAM (no load wait), then any instruct-class model, then anything chat-ish.
+// Returns '' when the endpoint can't be reached or lists nothing usable.
+export async function pickDefaultModel(cfg) {
+  if (!cfg?.url) return ''
+  if (cfg.provider === 'openai' || cfg.provider === 'anthropic') return cfg.model || ''
+
+  let ids = []
+  try {
+    ids = await fetchLlmModels(cfg.url)
+  } catch {
+    ids = []
+  }
+  if (!ids.length) {
+    for (const u of LLM_ENDPOINT_FALLBACKS) {
+      if (u === cfg.url) continue
+      try {
+        ids = await fetchLlmModels(u)
+      } catch {
+        continue
+      }
+      if (ids.length) break
+    }
+  }
+  const chat = ids.filter((id) => !NON_CHAT_MODEL_RE.test(id))
+  if (!chat.length) return ''
+
+  const loaded = await fetchLlmLoaded(cfg.url).catch(() => null)
+  const resident = (loaded || []).find((m) => m.id && chat.includes(m.id) && m.state !== 'unloaded')
+  if (resident) return resident.id
+
+  return chat.find((id) => CHAT_MODEL_RE.test(id)) || chat[0]
+}
+
 // Turn persisted store state into the request config for the active provider.
 export function resolveLlmConfig(state) {
   const provider = state.llmProvider || 'lmstudio'
@@ -100,7 +150,8 @@ export async function fetchLlmLoaded(rawUrl) {
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), 6000)
   try {
-    const res = await fetch(proxyWrap(`${base}/v1/models/loaded`), { signal: controller.signal })
+    // openaiCompatBase already appends /v1 — a second one 404s.
+    const res = await fetch(proxyWrap(`${base}/models/loaded`), { signal: controller.signal })
     if (!res.ok) return null
     const data = await res.json()
     if (!Array.isArray(data?.models)) return null
@@ -232,6 +283,53 @@ export function buildRewriteSystem(styleLabel, mode) {
       'real song name.'
     )
   }
+  if (mode === 'sfx') {
+    return (
+      'You are an expert prompt writer for AI SOUND-EFFECT generation (Stable Audio in ComfyUI).\n' +
+      "Rewrite the user's idea into ONE concise, literal description of a single sound effect " +
+      '(8 to 28 words). Describe ONLY what is heard: the source, its material and action, distance, ' +
+      'and the space/reverb.\n' +
+      'If the user gives you nothing to go on (empty box, or a single vague word), INVENT one ' +
+      'striking, immediately usable sound effect instead of asking questions.\n' +
+      'Examples:\n' +
+      '"a single close lightning crack followed by a deep rolling thunder rumble, outdoors";\n' +
+      '"heavy steel door slamming shut, hard impact, concrete room echo";\n' +
+      '"glass shattering on a tile floor, close and bright".\n' +
+      'Rules:\n' +
+      '- Describe the SOUND only. NEVER a song, music, melody, instruments, genre, BPM, or lyrics.\n' +
+      '- No visual/image words (lighting, colors, composition, waveform, cinematic) and no camera terms.\n' +
+      '- ONE sound event per prompt. If the user asks for several sounds, pick the single most useful one.\n' +
+      '- No vague mood/style adjectives that do not describe sound.\n' +
+      'Fields:\n' +
+      '- prompt — the sound description.\n' +
+      '- duration — an integer 1 to 47 (seconds) sized to the sound. Short impacts, clicks and coin ' +
+      'pings 1–3; footsteps, doors, weapons 2–6; crashes, roars, screams 3–8; rain, ambience, thunder ' +
+      'rumbles and machinery 6–20. NEVER 0 — 0 keeps the previous length and usually truncates the effect.\n' +
+      '- negative — ONE short phrase (max 8 words) of what would ruin the take, e.g. "music, vocals, ' +
+      'digital artifacts". Use an empty string when nothing would hurt the sound.\n' +
+      '- title — a short name (2–5 words, Title Case) for the effect, used as the download filename.\n' +
+      '- suggestions — ONLY when the user gave nothing to work with: 3 further sound-effect ideas, ' +
+      'plain lowercase phrases of 3–8 words each. Otherwise return an empty array.\n' +
+      'Reply with ONLY a JSON object, no markdown, no explanations:\n' +
+      '{"prompt": "<sound description>", "title": "<short title>", "duration": 4, ' +
+      '"negative": "<things to avoid or empty>", "suggestions": []}'
+    )
+  }
+  if (mode === 'sprite') {
+    return (
+      'You are an expert prompt writer for AI game SPRITE generation (ComfyUI, Qwen-Image).\n' +
+      "Rewrite the user's idea into ONE concise description of a single subject for a sprite sheet " +
+      '(20 to 45 words): what it is, its shape/silhouette, colours, clothing/armour or materials, ' +
+      'and any distinguishing features.\n' +
+      'Rules:\n' +
+      '- Describe ONE subject only, full body, facing the camera, neutral standing pose.\n' +
+      '- NO scene, background, environment, lighting or camera words — the subject is cut out on a plain background.\n' +
+      '- No animation or pose instructions (those are handled separately per frame).\n' +
+      '- Also pick a short title (2–4 words, Title Case) naming the subject.\n' +
+      'Reply with ONLY a JSON object, no markdown, no explanations:\n' +
+      '{"prompt": "<subject description>", "title": "<short title>"}'
+    )
+  }
   if (mode === 'edit') {
     return (
       'You are an expert prompt writer for AI image editing (instruction-based edit models in ComfyUI).\n' +
@@ -261,7 +359,29 @@ export function buildRewriteSystem(styleLabel, mode) {
   )
 }
 
-// Parse the model's reply into { prompt, searchQuery, lyrics?, duration? }.
+// Normalize one parsed rewrite object into the shape every mode consumes.
+// `negative` + `suggestions` are SFX-only extras; other modes simply ignore
+// them (their models never return those keys).
+function rewriteResult(obj) {
+  const suggestions = Array.isArray(obj.suggestions)
+    ? obj.suggestions
+        .filter((s) => typeof s === 'string' && s.trim())
+        .map((s) => s.trim().slice(0, 120))
+        .slice(0, 5)
+    : []
+  return {
+    prompt: String(obj.prompt || '').trim(),
+    searchQuery: String(obj.search_query || obj.searchQuery || '').trim(),
+    lyrics: typeof obj.lyrics === 'string' ? obj.lyrics.trim() : '',
+    duration: parseDuration(obj.duration),
+    title: typeof obj.title === 'string' ? obj.title.trim().slice(0, 80) : '',
+    negative: typeof obj.negative === 'string' ? obj.negative.trim().slice(0, 300) : '',
+    suggestions,
+  }
+}
+
+// Parse the model's reply into { prompt, searchQuery, lyrics?, duration?,
+// title?, negative?, suggestions? }.
 // Tolerates markdown fences, surrounding prose, and malformed JSON —
 // falls back to treating the whole reply as the prompt.
 export function parseRewrite(content) {
@@ -278,15 +398,7 @@ export function parseRewrite(content) {
     const segment = end > start ? t.slice(start, end + 1) : t.slice(start)
     try {
       const obj = JSON.parse(segment)
-      if (obj && typeof obj.prompt === 'string' && obj.prompt.trim()) {
-        return {
-          prompt: obj.prompt.trim(),
-          searchQuery: String(obj.search_query || obj.searchQuery || '').trim(),
-          lyrics: typeof obj.lyrics === 'string' ? obj.lyrics.trim() : '',
-          duration: parseDuration(obj.duration),
-          title: typeof obj.title === 'string' ? obj.title.trim().slice(0, 80) : '',
-        }
-      }
+      if (obj && typeof obj.prompt === 'string' && obj.prompt.trim()) return rewriteResult(obj)
     } catch { /* fall through to regex extraction */ }
 
     // Malformed JSON but the fields may still be extractable
@@ -296,13 +408,21 @@ export function parseRewrite(content) {
       const lm = segment.match(/"lyrics"\s*:\s*"((?:[^"\\]|\\.)*)"/)
       const dm = segment.match(/"duration"\s*:\s*"?(\d{1,3})"?/)
       const tm = segment.match(/"title"\s*:\s*"((?:[^"\\]|\\.)*)"/) || segment.match(/"title"\s*:\s*"([^"]*)$/)
-      return {
-        prompt: unescapeJsonStr(pm[1]),
-        searchQuery: sm ? unescapeJsonStr(sm[1]) : '',
-        lyrics: lm ? unescapeJsonStr(lm[1]).trim() : '',
-        duration: parseDuration(dm ? dm[1] : 0),
-        title: tm ? unescapeJsonStr(tm[1]).trim().slice(0, 80) : '',
+      const nm = segment.match(/"negative"\s*:\s*"((?:[^"\\]|\\.)*)"/)
+      const sug = []
+      const arr = segment.match(/"suggestions"\s*:\s*\[([\s\S]*?)\]/)
+      if (arr) {
+        for (const m of arr[1].matchAll(/"((?:[^"\\]|\\.)*)"/g)) sug.push(unescapeJsonStr(m[1]))
       }
+      return rewriteResult({
+        prompt: unescapeJsonStr(pm[1]),
+        search_query: sm ? unescapeJsonStr(sm[1]) : '',
+        lyrics: lm ? unescapeJsonStr(lm[1]).trim() : '',
+        duration: dm ? dm[1] : 0,
+        title: tm ? unescapeJsonStr(tm[1]).trim().slice(0, 80) : '',
+        negative: nm ? unescapeJsonStr(nm[1]) : '',
+        suggestions: sug,
+      })
     }
   }
 
@@ -317,11 +437,13 @@ export function parseRewrite(content) {
 
 // Song length in seconds. Music mode's "Max length" knob runs 10–2000
 // (MiniMax planner caps at 360 internally; ACE can go longer).
+// Sound effects need the SAME field but at the other end of the scale
+// (1–47s), so the floor here is 1 — music clamps its own value on apply.
 // 0 (or junk) means "keep the current setting".
 function parseDuration(v) {
   const n = Math.round(Number(v))
   if (!Number.isFinite(n) || n <= 0) return 0
-  return Math.min(2000, Math.max(10, n))
+  return Math.min(2000, Math.max(1, n))
 }
 
 // Fallback duration from the lyric map when the AI returns 0. The planner
@@ -1478,8 +1600,9 @@ async function httpError(res, cfg) {
 }
 
 // Rewrite the user's idea via the configured provider.
-// Returns { prompt, searchQuery, lyrics?, duration? } — music mode fills in
-// lyrics (tagged sections) and duration (seconds) alongside the caption.
+// Returns { prompt, searchQuery, lyrics?, duration?, negative?, suggestions? }
+// — music mode fills in lyrics (tagged sections) and duration (seconds)
+// alongside the caption; SFX fills in duration/negative/title/suggestions.
 // `research` (optional, music mode): web snippets about an artist's sound
 // ("sounds like Avicii" → genre/BPM/production facts) appended to the user
 // message so the caption is grounded in reality, not the LLM's memory.
@@ -1501,10 +1624,7 @@ export async function rewritePrompt(cfg, { text, styleLabel, mode, research }, s
   // was occasionally truncating the reply BEFORE the trailing fields arrived
   // — the missing "title" is why downloads fell back to track_00001.mp3.
   // (title is now FIRST in the JSON too, but the headroom matters for lyrics.)
-  const maxTokens = mode === 'music' ? 6000 : 500
-  const url = proxyWrap(
-    isAnthropic ? `${cfg.url}/messages` : `${cfg.url}/chat/completions`
-  )
+  const maxTokens = mode === 'music' ? 6000 : mode === 'sfx' ? 800 : 500
 
   const headers = { 'Content-Type': 'application/json' }
   let body
@@ -1534,15 +1654,40 @@ export async function rewritePrompt(cfg, { text, styleLabel, mode, research }, s
     }
   }
 
-  let res
-  try {
-    res = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body), signal })
-  } catch (err) {
-    if (err.name === 'AbortError') {
-      throw new Error(`AI rewrite timed out (120s) — is ${cfg.label} running and the model loaded?`)
-    }
-    throw new Error(`Could not reach ${cfg.label} (${err.message})`)
+  // Local servers move around (the ComfyUI box hosts LM Studio on
+  // 10.1.1.102:1234, the Docker host does not) and a stale saved URL is the
+  // #1 reason the AI button dies with "Could not reach …". Retry the known
+  // hosts instead of failing on the first dead one. Every candidate goes
+  // through openaiCompatBase so a bare origin still becomes …/v1/…
+  // (otherwise the retry 404s on /chat/completions and looks "reachable").
+  const bases = []
+  for (const u of [cfg.url, ...(isAnthropic ? [] : LLM_ENDPOINT_FALLBACKS)]) {
+    const base = isAnthropic ? String(u || '').trim() : openaiCompatBase(u)
+    if (base && !bases.includes(base)) bases.push(base)
   }
+
+  let res = null
+  let lastErr = null
+  for (const base of bases) {
+    const url = proxyWrap(isAnthropic ? `${base}/messages` : `${base}/chat/completions`)
+    try {
+      res = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body), signal })
+    } catch (err) {
+      if (err.name === 'AbortError') {
+        throw new Error(`AI rewrite timed out (120s) — is ${cfg.label} running and the model loaded?`)
+      }
+      lastErr = new Error(`Could not reach ${base} (${err.message})`)
+      continue
+    }
+    // 502/503/504 = the proxy reached nothing — try the next host.
+    if (!res.ok && res.status >= 500 && bases.length > 1) {
+      lastErr = new Error(`${base} returned HTTP ${res.status}`)
+      res = null
+      continue
+    }
+    break
+  }
+  if (!res) throw lastErr || new Error(`Could not reach ${cfg.label}.`)
   if (!res.ok) throw await httpError(res, cfg)
 
   const data = await res.json()
