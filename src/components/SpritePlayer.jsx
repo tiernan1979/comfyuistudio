@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Download, LayoutGrid, Loader2, FileJson, FileCode2 } from 'lucide-react'
 import useStore from '../store/useStore'
@@ -24,6 +24,8 @@ export default function SpritePlayer() {
   const prompt = useStore((s) => s.prompt)
   const [busy, setBusy] = useState('')
   const [dims, setDims] = useState(null)
+  const [previewRow, setPreviewRow] = useState(0)
+  const [previewFrame, setPreviewFrame] = useState(0)
 
   // outputImage is shared across every mode — an image/edit render also lands
   // there. Only treat it as a sheet when a matching sprite history entry
@@ -50,6 +52,21 @@ export default function SpritePlayer() {
   const frameCount = rows.reduce((n, r) => n + r.frames, 0)
   const background = settings?.background || 'transparent'
   const meta = { name, columns, cellSize, rows, fps }
+  const previewIndex = Math.min(Math.max(0, previewRow), Math.max(0, rows.length - 1))
+  const preview = rows[previewIndex] || { name: 'default', frames: 1 }
+  const previewCell = Math.max(48, Math.min(160, cellSize))
+
+  useEffect(() => setPreviewRow(0), [outputImage])
+  useEffect(() => {
+    if (!isSheet) return
+    setPreviewFrame(0)
+    const count = Math.max(1, preview.frames)
+    const id = setInterval(
+      () => setPreviewFrame((f) => (f + 1) % count),
+      Math.max(50, 1000 / Math.max(1, fps)),
+    )
+    return () => clearInterval(id)
+  }, [isSheet, previewIndex, preview.frames, fps, outputImage])
 
   const downloadSheet = async () => {
     if (!outputImage) return
@@ -130,6 +147,39 @@ export default function SpritePlayer() {
               />
             </div>
 
+            {/* Animated row preview — the sheet alone looks like a pile of
+                poses; this loops the selected row at the sheet's FPS so a
+                duplicate or broken cycle is obvious immediately. */}
+            <div className="flex flex-wrap items-center justify-center gap-3">
+              <div
+                className="relative overflow-hidden rounded-xl border border-border bg-bg-hover"
+                style={{ width: previewCell, height: previewCell }}
+                title={`Preview: ${preview.name}`}
+              >
+                <img
+                  src={outputImage}
+                  alt={`${preview.name} preview`}
+                  style={{
+                    position: 'absolute',
+                    left: -previewFrame * previewCell,
+                    top: -previewIndex * previewCell,
+                    width: columns * previewCell,
+                    height: rowCount * previewCell,
+                    imageRendering: 'pixelated',
+                  }}
+                />
+              </div>
+              <div className="text-left">
+                <p className="text-xs font-medium text-text-primary">{preview.name}</p>
+                <p className="text-[10px] text-text-muted">
+                  {preview.frames} frames · {(preview.frames / fps).toFixed(2)}s loop · {fps} fps
+                </p>
+                <p className="mt-0.5 text-[10px] text-text-muted/70">
+                  Click a row below to preview another animation.
+                </p>
+              </div>
+            </div>
+
             <p className="text-[11px] text-text-muted font-mono text-center">
               {columns}×{rowCount} grid · {frameCount} frames · {cellSize}px cells ·{' '}
               {columns * cellSize}×{rowCount * cellSize}px · transparent
@@ -137,13 +187,21 @@ export default function SpritePlayer() {
             </p>
 
             <div className="flex flex-wrap items-center justify-center gap-1.5 max-w-2xl">
-              {rows.map((r) => (
-                <span
+              {rows.map((r, i) => (
+                <button
                   key={r.name}
-                  className="text-[10px] font-mono px-2 py-0.5 rounded bg-bg-hover text-text-secondary"
+                  type="button"
+                  onClick={() => setPreviewRow(i)}
+                  aria-pressed={i === previewIndex}
+                  className={
+                    'text-[10px] font-mono px-2 py-0.5 rounded transition-colors ' +
+                    (i === previewIndex
+                      ? 'bg-accent text-white'
+                      : 'bg-bg-hover text-text-secondary hover:bg-white/10 hover:text-text-primary')
+                  }
                 >
                   {r.name}
-                </span>
+                </button>
               ))}
             </div>
 

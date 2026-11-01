@@ -4,3 +4,5 @@ dist/
 .env.*
 *.log
 .DS_Store
+/AGENTS.md
+/stargate-promo/

@@ -28,11 +28,16 @@ services:
       context: .
       dockerfile: api/Dockerfile
     ports:
+      # Publishing this port exposes generation + history to the network.
+      # Set API_KEY below if the host is reachable from untrusted devices.
       - "5557:5557"
     environment:
       - COMFYUI_URL=http://10.1.1.102:8188
       # Set to require Authorization: Bearer <key> on every /api route
       - API_KEY=
+      # The container must listen on all interfaces so nginx can proxy /api/.
+      # Direct `node api/src/server.js` runs bind to 127.0.0.1 unless HOST is set.
+      - HOST=0.0.0.0
       - DATA_DIR=/app/data
     extra_hosts:
       - "host.docker.internal:host-gateway"

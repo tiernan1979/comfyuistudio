@@ -151,6 +151,9 @@ const THREE_D_FIELDS = {
 const MODE_SETTING_FIELDS = {
   imageSettings: {
     aspectRatio: 'string',
+    sizeMode: new Set(['ratio', 'custom']),
+    width: [32, 4096],
+    height: [32, 4096],
     turboMode: 'boolean',
     seed: 'number',
     steps: [1, 100],

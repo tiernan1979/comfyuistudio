@@ -12,6 +12,7 @@ export default function DragDivider({
   defaultValue,
   onChange,
   direction = 1,
+  className = '',
 }) {
   const dragRef = useRef(null)
 
@@ -33,17 +34,35 @@ export default function DragDivider({
     document.body.style.userSelect = ''
   }
 
+  // Keyboard resize: arrows nudge, Home/End jump to the bounds.
+  const onKeyDown = (e) => {
+    const step = e.shiftKey ? 32 : 8
+    let next = value
+    if (e.key === 'ArrowLeft') next = value - step * direction
+    else if (e.key === 'ArrowRight') next = value + step * direction
+    else if (e.key === 'Home') next = min
+    else if (e.key === 'End') next = max
+    else return
+    e.preventDefault()
+    onChange(Math.min(max, Math.max(min, next)))
+  }
+
   return (
     <div
       role="separator"
+      tabIndex={0}
       aria-orientation="vertical"
       aria-label={label}
+      aria-valuenow={Math.round(value)}
+      aria-valuemin={min}
+      aria-valuemax={max}
       title="Drag to resize · double-click to reset"
-      className="w-1.5 shrink-0 cursor-col-resize bg-border hover:bg-accent/60 active:bg-accent transition-colors select-none touch-none"
+      className={`w-1.5 shrink-0 cursor-col-resize bg-border hover:bg-accent/60 active:bg-accent focus-visible:bg-accent focus-visible:outline-none transition-colors select-none touch-none ${className}`}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
       onPointerCancel={onPointerUp}
+      onKeyDown={onKeyDown}
       onDoubleClick={() => onChange(defaultValue)}
     />
   )

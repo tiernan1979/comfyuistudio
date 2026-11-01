@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Download, Maximize2, X, Copy, Check, ImagePlus } from 'lucide-react'
+import { Download, Maximize2, X, Copy, Check, ImagePlus, Clapperboard } from 'lucide-react'
 import useStore from '../store/useStore'
 import { fileFromDrop } from '../lib/dropImage'
 
@@ -62,12 +62,17 @@ function copyViaSelection(blob) {
 
 export default function ImageViewer() {
   const outputImage = useStore((s) => s.outputImage)
+  const batchImages = useStore((s) => s.batchImages)
+  const setOutputImage = useStore((s) => s.setOutputImage)
   const generating = useStore((s) => s.generating)
   const progress = useStore((s) => s.progress)
   const setError = useStore((s) => s.setError)
   const mode = useStore((s) => s.mode)
   const sourceImage = useStore((s) => s.sourceImage)
   const setSourceImage = useStore((s) => s.setSourceImage)
+  const setMode = useStore((s) => s.setMode)
+  const setVideoSourceImage = useStore((s) => s.setVideoSourceImage)
+  const videoTitle = useStore((s) => s.titles?.video)
   const [fullscreen, setFullscreen] = useState(false)
   const [copied, setCopied] = useState(false)
   // Edit mode: the whole canvas doubles as a drop target for the source image.
@@ -199,6 +204,28 @@ export default function ImageViewer() {
                 className="w-full h-full object-contain cursor-grab active:cursor-grabbing"
               />
 
+              {/* Batched render: pick which frame fills the canvas. */}
+              {batchImages.length > 1 && (
+                <div className="absolute left-3 top-3 flex max-w-[75%] gap-1.5 overflow-x-auto rounded-xl border border-white/10 bg-black/55 p-1.5 backdrop-blur no-scrollbar">
+                  {batchImages.map((url, i) => (
+                    <button
+                      key={url}
+                      type="button"
+                      onClick={() => setOutputImage(url)}
+                      aria-label={`Show image ${i + 1} of ${batchImages.length}`}
+                      aria-pressed={url === outputImage}
+                      className={`h-11 w-11 shrink-0 overflow-hidden rounded-md border transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/80 ${
+                        url === outputImage
+                          ? 'border-accent ring-1 ring-accent/60'
+                          : 'border-white/15 opacity-75 hover:opacity-100'
+                      }`}
+                    >
+                      <img src={url} alt="" className="h-full w-full object-cover" />
+                    </button>
+                  ))}
+                </div>
+              )}
+
               {/* Overlay controls */}
               <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300">
                 <div className="absolute bottom-3 right-3 flex gap-2">
@@ -210,6 +237,24 @@ export default function ImageViewer() {
                     title="Copy to clipboard"
                   >
                     {copied ? <Check size={16} className="text-green-400" /> : <Copy size={16} />}
+                  </motion.button>
+                  <motion.button
+                    whileHover={{ scale: 1.1 }}
+                    whileTap={{ scale: 0.9 }}
+                    onClick={() => {
+                      setVideoSourceImage({
+                        url: outputImage,
+                        preview: outputImage,
+                        name: videoTitle || 'first-frame',
+                      })
+                      setMode('video')
+                    }}
+                    disabled={generating}
+                    className="p-2 rounded-lg glass hover:bg-white/10 transition-colors disabled:opacity-40"
+                    title={generating ? 'Wait for the current render to finish' : 'Animate this still (image-to-video)'}
+                    aria-label="Animate this still"
+                  >
+                    <Clapperboard size={16} />
                   </motion.button>
                   <motion.button
                     whileHover={{ scale: 1.1 }}

@@ -35,6 +35,7 @@
 // ---------------------------------------------------------------------------
 
 import { SPRITE_ANIMATIONS, directionPhrase, spriteRows } from './workflows.js'
+import { expressionNegative, expressionPhrase } from './expressions.js'
 
 // Valid WAN frame counts (4n+1). Uniform across every row of a video sheet.
 export const WAN_FRAME_COUNTS = [9, 13, 17, 21, 25, 33, 49, 81]
@@ -249,6 +250,10 @@ export function layoutRows(sp = {}) {
     directions: sp.directions,
     frames: sp.frames,
     animFrames: sp.animFrames,
+    expression: sp.expression,
+    animExpressions: sp.animExpressions,
+    frameExpressions: sp.frameExpressions,
+    expressionRows: sp.expressionRows,
   }
   if (sp.engine === 'video') {
     return spriteRows({ ...base, forceFrames: videoFramesOf(sp), maxFrames: WAN_FRAME_COUNTS[WAN_FRAME_COUNTS.length - 1] })
@@ -257,14 +262,21 @@ export function layoutRows(sp = {}) {
 }
 
 // Positive prompt for one row's video: subject + continuous motion + framing.
-export function characterMotionPrompt(subject, animation, direction = '') {
+// The expression phrase is part of the motion prompt (WAN's negative prompt is
+// a fixed anatomy list, so the expression has to be stated positively here).
+export function characterMotionPrompt(subject, animation, direction = '', expression = 'neutral') {
   const anim = SPRITE_ANIMATIONS[animation]
   const motion = WAN_MOTION[animation] || `performing a ${anim?.label || animation} animation loop`
   const who = String(subject || '').trim() || 'a game character'
+  // Sentence position (after the motion + direction clauses) — capitalise the
+  // catalog's lowercase fragment.
+  const phrase = expressionPhrase(expression)
+  const expressionText = phrase.charAt(0).toUpperCase() + phrase.slice(1)
   return (
-    `${who}, ${motion}.${directionPhrase(direction)} Full body, single subject, centred in frame, ` +
-    'plain flat white background, one consistent character throughout, clean 2D game sprite look, ' +
-    'flat colours, even lighting, steady looping animation with no cuts or camera movement.'
+    `${who}, ${motion}.${directionPhrase(direction)} ${expressionText}. Full body, ` +
+    'single subject, centred in frame, plain flat white background, one consistent character ' +
+    'throughout, clean 2D game sprite look, flat colours, even lighting, steady looping animation ' +
+    'with no cuts or camera movement.'
   )
 }
 
@@ -278,6 +290,7 @@ export function characterStartPose(animation) {
 export function buildCharacterKeyframeWorkflow({
   subject = '',
   pose = 'neutral standing pose',
+  expression = 'neutral',
   genSize = 1024,
   seed = -1,
   steps = 20,
@@ -287,12 +300,15 @@ export function buildCharacterKeyframeWorkflow({
 } = {}) {
   const actualSeed = seed === -1 ? Math.floor(Math.random() * 2 ** 48) : seed
   const gen = Math.max(256, Math.min(2048, Math.round(genSize / 8) * 8))
+  // The keyframe bakes the face into every frame of the row (WAN conditions on
+  // it), so the expression belongs in the base prompt, not just the motion.
   const basePrompt =
-    `${subject}, full body, ${pose}, centred, plain flat white background, ` +
-    'single character, game sprite, high detail'
+    `${subject}, full body, ${pose}, ${expressionPhrase(expression)}, centred, ` +
+    'plain flat white background, single character, game sprite, high detail'
   const baseNeg =
     'multiple characters, duplicate, cropped, out of frame, extra limbs, extra arms, ' +
-    'text, watermark, signature, busy background, scenery'
+    'text, watermark, signature, busy background, scenery, ' +
+    expressionNegative(expression)
   return {
     u1: { class_type: 'UNETLoader', inputs: { unet_name: models.unet, weight_dtype: 'default' } },
     cl: { class_type: 'CLIPLoader', inputs: { clip_name: models.clip, type: 'qwen_image', device: 'default' } },

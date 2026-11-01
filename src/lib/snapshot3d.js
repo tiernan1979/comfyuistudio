@@ -54,9 +54,11 @@ function loadFbxLoader() {
   return fbxPromise
 }
 
-// Render one frame of a GLB at `url` and return a PNG data URL (≤ size px).
+// Render one frame of a GLB at `url` and return a small image data URL
+// (≤ size px). Kept small (256px WebP) because history thumbnails are
+// persisted to localStorage — 100 full-size PNGs would blow the quota.
 // Returns null on any failure (offline, CORS, decode error).
-export async function captureGlbSnapshot(url, { size = 512, timeoutMs = 12000 } = {}) {
+export async function captureGlbSnapshot(url, { size = 256, timeoutMs = 12000 } = {}) {
   if (!url || typeof document === 'undefined') return null
   let renderer = null
   try {
@@ -107,7 +109,7 @@ export async function captureGlbSnapshot(url, { size = 512, timeoutMs = 12000 } 
     camera.lookAt(center)
 
     renderer.render(scene, camera)
-    const dataUrl = renderer.domElement.toDataURL('image/png')
+    const dataUrl = renderer.domElement.toDataURL('image/webp', 0.72)
 
     // Cleanup.
     model.traverse((o) => {
@@ -134,7 +136,7 @@ export async function captureGlbSnapshot(url, { size = 512, timeoutMs = 12000 } 
 // Same as captureGlbSnapshot but for FBX (rigged/animated history entries).
 // FBXLoader returns a Group that may carry an AnimationClip; we render the
 // rest pose (frame 0 of whatever action came in with the file).
-export async function captureFbxSnapshot(url, { size = 512, timeoutMs = 20000 } = {}) {
+export async function captureFbxSnapshot(url, { size = 256, timeoutMs = 20000 } = {}) {
   if (!url || typeof document === 'undefined') return null
   let renderer = null
   try {
@@ -181,7 +183,7 @@ export async function captureFbxSnapshot(url, { size = 512, timeoutMs = 20000 } 
     camera.lookAt(center)
 
     renderer.render(scene, camera)
-    const dataUrl = renderer.domElement.toDataURL('image/png')
+    const dataUrl = renderer.domElement.toDataURL('image/webp', 0.72)
 
     model.traverse((o) => {
       if (o.geometry) o.geometry.dispose()

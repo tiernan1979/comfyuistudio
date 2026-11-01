@@ -1,206 +1,28 @@
 import { create } from 'zustand'
-import { persist } from 'zustand/middleware'
-import { STRUCTURE_TAGS } from '../lib/workflows.js'
-import { CHARACTER_MODEL_DEFAULTS } from '../lib/character.js'
-import { viewFromUrl } from '../lib/comfyui.js'
+import { createJSONStorage, persist } from 'zustand/middleware'
 
-// Defaults for the AI prompt writer (used by fresh installs and migrations)
-const DEFAULT_LLM_CONFIGS = {
-  lmstudio: { url: 'http://host.docker.internal:1234', model: '' },
-  openai: { key: '', model: 'gpt-4o-mini' },
-  anthropic: { key: '', model: 'claude-haiku-4-5' },
-  custom: { url: '', key: '', model: '' },
-}
+import {
+  DEFAULT_LLM_CONFIGS,
+  DEFAULT_MODELS,
+  DEFAULT_SPRITE_SETTINGS,
+  DEFAULT_IMAGE_SETTINGS,
+  DEFAULT_SPLIT_SETTINGS,
+  DEFAULT_PARTS_SETTINGS,
+  DEFAULT_PRESETS,
+  DEFAULT_ACTIVE,
+  DEFAULT_LYRICS,
+} from './defaults.js'
+import { STORAGE_KEY, STORAGE_VERSION, migrate, partialize, safeStorage } from './persist.js'
+import { applyServerConfig } from './configSync.js'
+import { createHistoryActions } from './historyActions.js'
+import { createPromptActions } from './promptActions.js'
+import { createEpisodeActions } from './episodeActions.js'
 
-// Default model files per mode. Persisted stores are merged against this
-// (persist v3 migration) so newly added groups — like `music` — appear in
-// browsers saved before the group existed.
-const DEFAULT_MODELS = {
-  image: {
-    unet: 'qwen_image_fp8_e4m3fn.safetensors',
-    clip: 'qwen_2.5_vl_7b_fp8_scaled.safetensors',
-    vae: 'qwen_image_vae.safetensors',
-    lora: '',
-  },
-  video: {
-    unet: 'wan2.1_t2v_1.3B_bf16.safetensors',
-    clip: 'umt5_xxl_fp8_e4m3fn_scaled.safetensors',
-    vae: 'wan_2.1_vae.safetensors',
-    lora: '', // optional H3 turbo LoRA (Settings → Models → Video)
-  },
-  edit: {
-    unet: 'qwen_image_edit_fp8_e4m3fn.safetensors',
-  },
-  music: {
-    unet: 'minimax_music3_dit_int8_convrot.safetensors',
-    clip: 'minimax_music3_text_encoder_pruned_int8_convrot.safetensors',
-    vae: 'minimax_music3_dav.safetensors',
-  },
-  sfx: {
-    // Stable Audio 3 — a checkpoint in models/checkpoints plus a T5Gemma
-    // text encoder loaded via CLIPLoader type 'stable_audio'.
-    unet: 'stable_audio_3_small_sfx.safetensors',
-    clip: 't5gemma_b_b_ul2.safetensors',
-    vae: '',
-  },
-  // WAN 2.2 i2v stack for the Sprites video engine (two A14B lightx2v 4-step
-  // Q4 experts + umt5 + Wan 2.1 VAE). Names mirror the reference pipeline's
-  // downloads; see Settings → Models → Character video.
-  character: { ...CHARACTER_MODEL_DEFAULTS },
-}
+// Backwards-compatible named exports — several components import these
+// straight from the store module.
+export { presetLabel, resolveActiveModels, pushHistoryEntries } from './helpers.js'
 
-// Sprite-sheet settings (game-ready). One base pose, then a per-frame pose
-// edit of it (identity-consistent), background removed and packed — or, with
-// engine 'video', one WAN 2.2 animation video per row from a shared keyframe.
-// `multi` mode renders several animations, one per row.
-const DEFAULT_SPRITE_SETTINGS = {
-  engine: 'pose', // 'pose' (per-frame edits) | 'video' (WAN 2.2 i2v rows)
-  sheetMode: 'single', // 'single' | 'multi'
-  animation: 'walk', // single mode: SPRITE_ANIMATIONS key
-  animations: 'idle,walk,attack', // multi mode: CSV of animation keys
-  directions: 'none', // 'none' | 'lr' | '4way' (locomotion rows)
-  frames: 8, // single mode: frames (columns); multi uses per-animation counts
-  animFrames: 'idle:4,walk:6,run:8,jump:6,attack:6,cast:6,hurt:4,death:4,effect:6,item:1', // "anim:count,…"
-  background: 'transparent', // 'transparent' | 'black' | 'magenta'
-  cellSize: 256,
-  genSize: 1024,
-  fps: 12,
-  seed: -1,
-  steps: 20,
-  cfg: 4,
-  // Video engine only: frames per row (snapped to WAN's 4n+1 rule) and the
-  // square render size WAN samples at before cells are scaled down.
-  videoFrames: 13,
-  videoRes: 512,
-}
-
-// Default named presets for the multi-model pickers. `presets` (per mode)
-// is a list of { name, unet, clip, vae, lora?, engine? } saved alongside the
-// flat group; `active` picks which one generation uses (null = the flat
-// group, i.e. the old single-model behaviour).
-const DEFAULT_PRESETS = {
-  video: [
-    {
-      name: 'Wan 2.1 t2v 1.3B',
-      unet: 'wan2.1_t2v_1.3B_bf16.safetensors',
-      clip: 'umt5_xxl_fp8_e4m3fn_scaled.safetensors',
-      vae: 'wan_2.1_vae.safetensors',
-      lora: '',
-    },
-  ],
-  music: [
-    {
-      name: 'MiniMax Music 3',
-      unet: 'minimax_music3_dit_int8_convrot.safetensors',
-      clip: 'minimax_music3_text_encoder_pruned_int8_convrot.safetensors',
-      vae: 'minimax_music3_dav.safetensors',
-    },
-  ],
-  // SFX mode — Stable Audio 3 (sound effects, not music). The checkpoint
-  // (models/checkpoints) sits in `unet` by convention; the T5Gemma text
-  // encoder is resolved by resolveStableAudioModels.
-  sfx: [
-    {
-      name: 'Stable Audio 3 (SFX)',
-      engine: 'stable_audio',
-      unet: 'stable_audio_3_small_sfx.safetensors',
-      clip: 't5gemma_b_b_ul2.safetensors',
-      vae: '',
-    },
-    {
-      name: 'Stable Audio 3 Medium',
-      engine: 'stable_audio',
-      unet: 'stable_audio_3_medium.safetensors',
-      clip: 't5gemma_b_b_ul2.safetensors',
-      vae: '',
-    },
-  ],
-}
-
-// Build a display label for a preset: engine badge + unet stem.
-export function presetLabel(p) {
-  if (!p) return '(none)'
-  const engine =
-    p.engine === 'ace' || /ace[-_ ]?step/i.test(p.unet || '')
-      ? 'ACE'
-      : p.engine === 'stable_audio' || /stable[-_ ]?audio/i.test(p.unet || '')
-        ? 'Stable Audio'
-        : /minimax/i.test(p.unet || '')
-          ? 'MiniMax'
-          : ''
-  const stem = String(p.unet || '').replace(/\.(safetensors|ckpt|pt|sft|bin)$/i, '')
-  return engine ? `${engine} · ${stem}` : stem || p.name || '(unnamed)'
-}
-
-// Resolve the active model group for a mode. Returns the selected preset's
-// fields (unet/clip/vae/lora/engine) when one is active, else the flat group
-// (single-model, backward compatible). Callers should spread this over the
-// flat group so unset fields (e.g. lora) still fall through.
-export function resolveActiveModels(state, mode) {
-  const flat = state.models?.[mode] || {}
-  const idx = state.active?.[mode]
-  const list = state.presets?.[mode] || []
-  if (idx === null || idx === undefined || !list[idx]) return { ...flat }
-  return { ...flat, ...list[idx] }
-}
-
-// True when this browser has no saved settings yet.
-const FRESH_INSTALL = (() => {
-  try {
-    return !window.localStorage.getItem('comfyui-studio-storage')
-  } catch {
-    return true
-  }
-})()
-
-// Browser without crypto.randomUUID (plain-HTTP LAN access)
-function uid() {
-  try {
-    if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID()
-  } catch {
-    /* fall through */
-  }
-  return `sp-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
-}
-
-// Cross-browser deletion sync: the app's own API (nginx /api → studio-api)
-// keeps a shared, persisted list of deleted history ids. Every browser
-// pushes its deletes here and pulls the list on each history sync, so an
-// item deleted anywhere disappears everywhere. Best-effort — offline the
-// delete still applies locally.
-function pushHiddenIds(ids) {
-  if (typeof window === 'undefined' || !ids?.length) return
-  fetch('/api/hidden-ids', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ ids: ids.map(String) }),
-  }).catch(() => {})
-}
-
-// Cross-browser/origin history: the app's own API keeps a durable,
-// shared copy of generated entries (ComfyUI's own /history is in-memory
-// and resets on restart/cleanup), so every browser — including other
-// origins like https://… vs http://host:5555 — converges on the same
-// list. Entries carry their `view` file params so each browser can
-// rebuild the output URL against its own origin. Best-effort, like
-// pushHiddenIds — offline the entry still lands locally and is re-pushed
-// by the next successful sync's catch-up.
-export function pushHistoryEntries(entries) {
-  if (typeof window === 'undefined' || !entries?.length) return
-  const list = entries
-    .filter((e) => e?.id && e?.data)
-    .slice(0, 200)
-    .map((e) => {
-      const view = e.view || viewFromUrl(e.data)
-      return view ? { ...e, view } : e
-    })
-  if (!list.length) return
-  fetch('/api/history', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ entries: list }),
-  }).catch(() => {})
-}
+const clamp = (v, min, max) => Math.max(min, Math.min(max, Math.round(v)))
 
 const useStore = create(
   persist(
@@ -244,8 +66,26 @@ const useStore = create(
       // (like `prompt`, not persisted).
       prompt: '',
       negativePrompt: '',
-      promptByMode: { image: '', video: '', edit: '', music: '', sfx: '', sprite: '', '3d': '' },
-      negativeByMode: { image: '', video: '', edit: '', music: '', sfx: '', sprite: '', '3d': '' },
+      promptByMode: {
+        image: '',
+        video: '',
+        edit: '',
+        music: '',
+        sfx: '',
+        sprite: '',
+        custom: '',
+        '3d': '',
+      },
+      negativeByMode: {
+        image: '',
+        video: '',
+        edit: '',
+        music: '',
+        sfx: '',
+        sprite: '',
+        custom: '',
+        '3d': '',
+      },
       style: 'photoreal',
       // Web search query picked by the AI rewrite (transient)
       searchQuery: '',
@@ -268,14 +108,16 @@ const useStore = create(
       searchApiKey: '',
       searchCseId: '',
 
-      // Image settings
-      imageSettings: {
-        aspectRatio: '1:1',
-        turboMode: false,
-        seed: -1,
-        steps: 20,
-        cfg: 4,
-      },
+      // Image settings (see DEFAULT_IMAGE_SETTINGS).
+      imageSettings: { ...DEFAULT_IMAGE_SETTINGS },
+
+      // 2D sprite splitting + character-parts library
+      splitSettings: { ...DEFAULT_SPLIT_SETTINGS },
+      partsSettings: { ...DEFAULT_PARTS_SETTINGS },
+      // Generated parts-library variants (session only — object URLs).
+      partsGallery: [],
+      // Image queued for the splitter by the parts library (session only).
+      splitSource: null,
 
       // Video settings
       videoSettings: {
@@ -284,10 +126,12 @@ const useStore = create(
         fps: 16,
         // MiniMax H3 chaining. `duration` (seconds) is the primary control —
         // the builder picks enough chained windows to reach it. `segments` is
-        // the explicit window count used only when duration is 0. Default
-        // duration ≈ one window at the default frames/fps (single clip).
-        duration: 2,
+        // the explicit window count used only when duration is 0.
+        // `windowSeconds` is the per-window H3 length; the model only works
+        // well on its trained 124–362 frame range (≈5.2–15.1s at 24fps).
+        duration: 5,
         segments: 1,
+        windowSeconds: 5.2,
         // Crossfade the per-window soundtracks (needs the AudioCrossfade
         // custom node; ignored/falls back to a hard cut without it).
         crossfadeSeconds: 0.5,
@@ -301,6 +145,9 @@ const useStore = create(
         seed: -1,
         steps: 20,
         cfg: 2.5,
+        // Masked edits only: 1 = fully repaint the masked region. Lower
+        // values keep more of the source inside the mask too.
+        denoise: 1,
       },
 
       // Music settings (MiniMax Music 3 / ACE-Step). quality: 'wav'
@@ -331,7 +178,7 @@ const useStore = create(
       // Sung lyrics for music mode. Default = the section-tag map (also the
       // visible example in the box); tag-only = instrumental at generate
       // time. Not persisted across reloads, so the default always resurfaces.
-      lyrics: STRUCTURE_TAGS,
+      lyrics: DEFAULT_LYRICS,
 
       // AI-generated titles keyed by mode ('music' | 'video'). Set by the
       // AI rewrite; consumed by the download filename + player. Session-only.
@@ -342,7 +189,14 @@ const useStore = create(
       // is the index of the preset generation uses, or null for the flat
       // group above (single-model, backward compatible).
       presets: JSON.parse(JSON.stringify(DEFAULT_PRESETS)),
-      active: { video: 0, music: 0, sfx: 0 },
+      active: { ...DEFAULT_ACTIVE },
+
+      // Imported ComfyUI API workflows (Settings → Workflows). Stored as
+      // { id, name, graph, mapping, createdAt }; the graph is posted as-is
+      // except for the mapped prompt/negative/seed fields.
+      customWorkflows: [],
+      customWorkflowId: null,
+      customSettings: { seed: -1 },
 
       // 3D Generation (optional feature — Settings → 3D Generation).
       // local  = native Pixal3D/TRELLIS.2 (image→GLB, ComfyUI ≥ 0.39)
@@ -408,6 +262,13 @@ const useStore = create(
       // Source image for edit mode (File kept in memory only, never persisted)
       sourceImage: null, // { file, preview, name }
 
+      // First frame for H3 image-to-video (File/object URL kept in memory)
+      videoSourceImage: null, // { file?, url?, preview, name }
+
+      // Episode shot list (persisted; fields: id, prompt, seconds, still,
+      // status, outputUrl, error, timestamps — see EpisodePanel)
+      episodeShots: [],
+
       // Reference audio for ACE-Step (File kept in memory only, never persisted)
       referenceAudio: null, // { file, name }
 
@@ -421,6 +282,8 @@ const useStore = create(
       outputImage: null,
       outputVideo: null,
       outputAudio: null,
+      // Extra images from a batched image render (contact-sheet view)
+      batchImages: [],
 
       // Music editor overlay (transient, never persisted)
       showMusicEditor: false,
@@ -448,82 +311,23 @@ const useStore = create(
       deletedUrls: [],
       selectedHistoryId: null,
 
-      // Saved prompts — the user's reusable prompt library (persisted).
-      // { id, title, prompt, negativePrompt, style, createdAt }
+      // Saved prompts — see createPromptActions.
       savedPrompts: [],
 
       // Settings modal
       showSettings: false,
       showWebSearch: false,
+      // Mobile-only: the sidebar/history drawer. Ignored on desktop, where the
+      // sidebar is always docked.
+      sidebarOpen: false,
 
       // Actions
-      // Apply deployment config (config.json) as shared, cross-browser
-      // settings. Fresh browsers always take it. Browsers saved before
-      // config-sync existed keep their own values until a Settings →
-      // Save marks the server config with `synced: true` — that way a
-      // stale browser can't clobber the server on upgrade.
-      // `config` is pre-sanitized by src/lib/config.js (whitelisted
-      // fields, keys stripped). `{ force: true }` (Settings → Update
-      // from server) applies a synced config regardless of the gate.
-      applyServerConfig: (config, { force = false } = {}) => {
-        if (!config || Object.keys(config).length === 0) return
-        if (!force && !FRESH_INSTALL && config.synced !== true) return
-        set((s) => {
-          const patch = {}
-          for (const key of ['serverUrl', 'useProxy', 'autoUnload', 'vramGuard', 'style', 'searchUrl', 'searchEngine', 'searchApiKey', 'searchCseId', 'llmProvider']) {
-            if (config[key] !== undefined) patch[key] = config[key]
-          }
-          if (config.llmConfigs) {
-            const llmConfigs = {}
-            for (const k of new Set([...Object.keys(s.llmConfigs), ...Object.keys(config.llmConfigs)])) {
-              // server wins for url/model; browser keeps its API keys
-              llmConfigs[k] = { ...(s.llmConfigs[k] || {}), ...(config.llmConfigs[k] || {}) }
-            }
-            patch.llmConfigs = llmConfigs
-          }
-          if (config.models) {
-            const models = {}
-            for (const k of new Set([...Object.keys(s.models), ...Object.keys(config.models)])) {
-              models[k] = { ...(s.models[k] || {}), ...(config.models[k] || {}) }
-            }
-            patch.models = models
-          }
-          if (config.presets) {
-            const presets = { ...s.presets }
-            for (const [k, v] of Object.entries(config.presets)) {
-              if (!Array.isArray(v)) continue
-              // Keep the server's order/entries, but make sure every built-in
-              // ENGINE preset (the ones carrying an explicit `engine`, e.g.
-              // Stable Audio 3) is available. Without this, a device that
-              // loads a saved config never sees an engine added after that
-              // config was written. Non-engine defaults (Wan, MiniMax) are
-              // left to the server list alone, so a deliberately removed
-              // preset doesn't reappear.
-              const engines = new Set(v.map((p) => p?.engine).filter(Boolean))
-              const extra = (DEFAULT_PRESETS[k] || []).filter(
-                (p) => p?.engine && !engines.has(p.engine)
-              )
-              presets[k] = extra.length ? [...v, ...extra] : v
-            }
-            patch.presets = presets
-          }
-          if (config.active && typeof config.active === 'object') {
-            patch.active = { ...s.active, ...config.active }
-          }
-          // Per-mode generation settings — server wins per key.
-          for (const k of ['imageSettings', 'videoSettings', 'editSettings', 'musicSettings', 'sfxSettings', 'spriteSettings']) {
-            if (config[k]) patch[k] = { ...s[k], ...config[k] }
-          }
-          if (config.threeD) {
-            patch.threeD = { ...s.threeD, ...config.threeD }
-          }
-          return patch
-        })
-      },
-      setServerUrl: (url) => set({ serverUrl: url }),
+      applyServerConfig: (config, opts) => applyServerConfig(set, config, opts),
+      setServerUrl: (serverUrl) => set({ serverUrl }),
       setUseProxy: (useProxy) => set({ useProxy }),
       setConnected: (connected) => set({ connected }),
-      setQueueRemaining: (n) => set({ queueRemaining: n }),
+      setQueueRemaining: (queueRemaining) => set({ queueRemaining }),
+
       // Switching tabs swaps in that tab's own prompt/negative text
       // (kept in promptByMode / negativeByMode).
       setMode: (mode) =>
@@ -534,7 +338,9 @@ const useStore = create(
           outputImage: null,
           outputVideo: null,
           outputAudio: null,
+          batchImages: [],
         })),
+
       setGenerating: (generating) => set({ generating }),
       setLastGenAt: (lastGenAt) => set({ lastGenAt }),
       setModelsUnloaded: (modelsUnloaded) => set({ modelsUnloaded }),
@@ -542,355 +348,149 @@ const useStore = create(
       setVramGuard: (vramGuard) => set({ vramGuard }),
       setProgress: (progress) => set({ progress }),
       setProgressLabel: (progressLabel) => set({ progressLabel }),
-      setCurrentPromptId: (id) => set({ currentPromptId: id }),
-      setElapsedTime: (t) => set({ elapsedTime: t }),
+      setCurrentPromptId: (currentPromptId) => set({ currentPromptId }),
+      setElapsedTime: (elapsedTime) => set({ elapsedTime }),
+
       setPrompt: (prompt) =>
         set((s) => ({ prompt, promptByMode: { ...s.promptByMode, [s.mode]: prompt } })),
       setNegativePrompt: (negativePrompt) =>
-        set((s) => ({ negativePrompt, negativeByMode: { ...s.negativeByMode, [s.mode]: negativePrompt } })),
+        set((s) => ({
+          negativePrompt,
+          negativeByMode: { ...s.negativeByMode, [s.mode]: negativePrompt },
+        })),
       setStyle: (style) => set({ style }),
       setSearchQuery: (searchQuery) => set({ searchQuery }),
+
       setLlmProvider: (llmProvider) => set({ llmProvider }),
-      setLlmConfigs: (llmConfigs) => set((s) => ({
-        llmConfigs: { ...s.llmConfigs, ...llmConfigs },
-      })),
+      setLlmConfigs: (llmConfigs) => set((s) => ({ llmConfigs: { ...s.llmConfigs, ...llmConfigs } })),
+
       setSearchUrl: (searchUrl) => set({ searchUrl }),
       setSearchEngine: (searchEngine) => set({ searchEngine }),
       setSearchApiKey: (searchApiKey) => set({ searchApiKey }),
       setSearchCseId: (searchCseId) => set({ searchCseId }),
       setShowWebSearch: (showWebSearch) => set({ showWebSearch }),
-      setImageSettings: (settings) => set((s) => ({ imageSettings: { ...s.imageSettings, ...settings } })),
-      setVideoSettings: (settings) => set((s) => ({ videoSettings: { ...s.videoSettings, ...settings } })),
-      setEditSettings: (settings) => set((s) => ({ editSettings: { ...s.editSettings, ...settings } })),
-      setMusicSettings: (settings) => set((s) => ({ musicSettings: { ...s.musicSettings, ...settings } })),
-      setSfxSettings: (settings) => set((s) => ({ sfxSettings: { ...s.sfxSettings, ...settings } })),
-      setSpriteSettings: (settings) => set((s) => ({ spriteSettings: { ...s.spriteSettings, ...settings } })),
+
+      setImageSettings: (settings) =>
+        set((s) => ({ imageSettings: { ...s.imageSettings, ...settings } })),
+      setVideoSettings: (settings) =>
+        set((s) => ({ videoSettings: { ...s.videoSettings, ...settings } })),
+      setEditSettings: (settings) =>
+        set((s) => ({ editSettings: { ...s.editSettings, ...settings } })),
+      setMusicSettings: (settings) =>
+        set((s) => ({ musicSettings: { ...s.musicSettings, ...settings } })),
+      setSfxSettings: (settings) =>
+        set((s) => ({ sfxSettings: { ...s.sfxSettings, ...settings } })),
+      setSpriteSettings: (settings) =>
+        set((s) => ({ spriteSettings: { ...s.spriteSettings, ...settings } })),
+      setCustomSettings: (settings) =>
+        set((s) => ({ customSettings: { ...s.customSettings, ...settings } })),
+      setSplitSettings: (settings) =>
+        set((s) => ({ splitSettings: { ...s.splitSettings, ...settings } })),
+      setPartsSettings: (settings) =>
+        set((s) => ({ partsSettings: { ...s.partsSettings, ...settings } })),
+
+      addPartsGallery: (items) =>
+        set((s) => ({ partsGallery: [...items, ...s.partsGallery].slice(0, 120) })),
+      removePartsGallery: (id) =>
+        set((s) => ({ partsGallery: s.partsGallery.filter((g) => g.id !== id) })),
+      clearPartsGallery: () => set({ partsGallery: [] }),
+      setSplitSource: (splitSource) => set({ splitSource }),
+
       setLyrics: (lyrics) => set({ lyrics }),
       setTitle: (mode, title) => set((s) => ({ titles: { ...s.titles, [mode]: title } })),
       setShowMusicEditor: (showMusicEditor) => set({ showMusicEditor }),
-      setSidebarWidth: (w) => set({ sidebarWidth: Math.max(200, Math.min(480, Math.round(w))) }),
-      setControlsWidth: (w) => set({ controlsWidth: Math.max(240, Math.min(560, Math.round(w))) }),
+
+      setSidebarWidth: (w) => set({ sidebarWidth: clamp(w, 200, 480) }),
+      setControlsWidth: (w) => set({ controlsWidth: clamp(w, 240, 560) }),
+
       setThreeD: (patch) => set((s) => ({ threeD: { ...s.threeD, ...patch } })),
       setThreeDRun: (patch) => set((s) => ({ threeDRun: { ...s.threeDRun, ...patch } })),
       setSourceImage: (sourceImage) => set({ sourceImage }),
       setReferenceAudio: (referenceAudio) => set({ referenceAudio }),
       setViewing3d: (viewing3d) => set({ viewing3d }),
-      setModels: (mode, models) => set((s) => ({
-        models: { ...s.models, [mode]: { ...s.models[mode], ...models } },
-      })),
-      setPresets: (mode, presets) => set((s) => ({
-        presets: { ...s.presets, [mode]: presets },
-      })),
-      setActivePreset: (mode, index) => set((s) => ({
-        active: { ...s.active, [mode]: index },
-      })),
-      addPreset: (mode, preset) => set((s) => {
-        const list = [...(s.presets?.[mode] || []), preset]
-        return {
-          presets: { ...s.presets, [mode]: list },
-          // Select the new preset immediately.
-          active: { ...s.active, [mode]: list.length - 1 },
-        }
-      }),
-      updatePreset: (mode, index, patch) => set((s) => {
-        const list = [...(s.presets?.[mode] || [])]
-        if (!list[index]) return {}
-        list[index] = { ...list[index], ...patch }
-        return { presets: { ...s.presets, [mode]: list } }
-      }),
-      removePreset: (mode, index) => set((s) => {
-        const list = (s.presets?.[mode] || []).filter((_, i) => i !== index)
-        const cur = s.active?.[mode]
-        let next = cur
-        if (cur === index) next = list.length > 0 ? 0 : null
-        else if (cur !== null && cur !== undefined && cur > index) next = cur - 1
-        return {
-          presets: { ...s.presets, [mode]: list },
-          active: { ...s.active, [mode]: next },
-        }
-      }),
-      setOutputImage: (outputImage) => set({ outputImage, outputVideo: null, outputAudio: null }),
-      setOutputVideo: (outputVideo) => set({ outputVideo, outputImage: null, outputAudio: null }),
-      setOutputAudio: (outputAudio) => set({ outputAudio, outputImage: null, outputVideo: null }),
+
+      setModels: (mode, models) =>
+        set((s) => ({ models: { ...s.models, [mode]: { ...s.models[mode], ...models } } })),
+      setPresets: (mode, presets) => set((s) => ({ presets: { ...s.presets, [mode]: presets } })),
+      setActivePreset: (mode, index) => set((s) => ({ active: { ...s.active, [mode]: index } })),
+
+      // Imported workflows. Adding/removing keeps a valid selection so the
+      // Custom tab never points at a deleted record.
+      addCustomWorkflow: (record) =>
+        set((s) => ({
+          customWorkflows: [...s.customWorkflows, record],
+          customWorkflowId: record.id,
+        })),
+      updateCustomWorkflow: (id, patch) =>
+        set((s) => ({
+          customWorkflows: s.customWorkflows.map((w) => (w.id === id ? { ...w, ...patch } : w)),
+        })),
+      removeCustomWorkflow: (id) =>
+        set((s) => {
+          const list = s.customWorkflows.filter((w) => w.id !== id)
+          return {
+            customWorkflows: list,
+            customWorkflowId:
+              s.customWorkflowId === id ? list[0]?.id || null : s.customWorkflowId,
+          }
+        }),
+      setCustomWorkflowId: (customWorkflowId) => set({ customWorkflowId }),
+
+      addPreset: (mode, preset) =>
+        set((s) => {
+          const list = [...(s.presets?.[mode] || []), preset]
+          return {
+            presets: { ...s.presets, [mode]: list },
+            // Select the new preset immediately.
+            active: { ...s.active, [mode]: list.length - 1 },
+          }
+        }),
+
+      updatePreset: (mode, index, patch) =>
+        set((s) => {
+          const list = [...(s.presets?.[mode] || [])]
+          if (!list[index]) return {}
+          list[index] = { ...list[index], ...patch }
+          return { presets: { ...s.presets, [mode]: list } }
+        }),
+
+      removePreset: (mode, index) =>
+        set((s) => {
+          const list = (s.presets?.[mode] || []).filter((_, i) => i !== index)
+          const cur = s.active?.[mode]
+          let next = cur
+          if (cur === index) next = list.length > 0 ? 0 : null
+          else if (cur !== null && cur !== undefined && cur > index) next = cur - 1
+          return {
+            presets: { ...s.presets, [mode]: list },
+            active: { ...s.active, [mode]: next },
+          }
+        }),
+
+      setOutputImage: (outputImage) =>
+        set({ outputImage, outputVideo: null, outputAudio: null }),
+      setOutputVideo: (outputVideo) =>
+        set({ outputVideo, outputImage: null, outputAudio: null, batchImages: [] }),
+      setOutputAudio: (outputAudio) =>
+        set({ outputAudio, outputImage: null, outputVideo: null, batchImages: [] }),
+      setBatchImages: (batchImages) => set({ batchImages }),
+
       setError: (error) => set({ error }),
       clearError: () => set({ error: null }),
       setShowSettings: (showSettings) => set({ showSettings }),
+      setSidebarOpen: (sidebarOpen) => set({ sidebarOpen }),
 
-      addToHistory: (entry) => {
-        set((s) => ({
-          // Same promptId can arrive twice (local add + server sync) — keep one.
-          history: [entry, ...s.history.filter((h) => h.id !== entry.id)].slice(0, 100),
-        }))
-        // Share the new entry with every other browser/origin.
-        pushHistoryEntries([entry])
-      },
-      removeFromHistory: (id) => {
-        set((s) => {
-          const entry = s.history.find((h) => h.id === id)
-          const patch = {
-            history: s.history.filter((h) => h.id !== id),
-            // Remember the deletion so the next server sync doesn't
-            // resurrect it from ComfyUI's /history.
-            hiddenHistoryIds: s.hiddenHistoryIds.includes(id)
-              ? s.hiddenHistoryIds
-              : [...s.hiddenHistoryIds, id].slice(-200),
-          }
-          if (s.selectedHistoryId === id) patch.selectedHistoryId = null
-          if (entry && entry.data === s.outputImage) patch.outputImage = null
-          if (entry && entry.data === s.outputVideo) patch.outputVideo = null
-          if (entry && entry.data === s.outputAudio) patch.outputAudio = null
-          if (entry?.data && typeof entry.data === 'string') {
-            patch.deletedUrls = [entry.data, ...s.deletedUrls.filter((u) => u !== entry.data)].slice(0, 100)
-          }
-          return patch
-        })
-        // Share the delete with every other logged-in browser.
-        pushHiddenIds([id])
-      },
-      // Fold ids learned from other browsers/servers into the local
-      // hidden set: drop matching history entries (and remember their
-      // urls so an open studio drops those tracks too).
-      mergeHiddenIds: (ids) => set((s) => {
-        const incoming = (Array.isArray(ids) ? ids : []).map(String).filter(Boolean)
-        if (incoming.length === 0) return {}
-        const hidden = new Set([...s.hiddenHistoryIds.map(String), ...incoming])
-        const removed = s.history.filter((h) => hidden.has(String(h.id)))
-        const removedUrls = removed
-          .map((h) => h.data)
-          .filter((u) => typeof u === 'string' && u)
-        return {
-          hiddenHistoryIds: [...hidden].slice(-500),
-          history: s.history.filter((h) => !hidden.has(String(h.id))),
-          ...(removedUrls.length
-            ? {
-                deletedUrls: [
-                  ...removedUrls,
-                  ...s.deletedUrls.filter((u) => !removedUrls.includes(u)),
-                ].slice(0, 100),
-              }
-            : {}),
-        }
-      }),
-      clearHistory: () => {
-        const ids = get().history.map((h) => h.id)
-        set((s) => ({
-          history: [],
-          selectedHistoryId: null,
-          outputImage: null,
-          outputVideo: null,
-          outputAudio: null,
-          hiddenHistoryIds: [...new Set([...s.hiddenHistoryIds, ...s.history.map((h) => h.id)])].slice(-200),
-          deletedUrls: [
-            ...s.history.map((h) => h.data).filter((d) => typeof d === 'string' && d),
-            ...s.deletedUrls,
-          ].slice(0, 100),
-        }))
-        // Share the wipe with every other logged-in browser.
-        pushHiddenIds(ids)
-      },
-      // Merge entries fetched from the ComfyUI server's /history. Local
-      // entries win (they hold extra settings), deletions stick, and the
-      // list is sorted newest-first.
-      mergeServerHistory: (entries) => set((s) => {
-        if (!entries?.length) return {}
-        const have = new Set(s.history.map((h) => h.id))
-        const hidden = new Set(s.hiddenHistoryIds)
-        const fresh = entries.filter((e) => e?.id && !have.has(e.id) && !hidden.has(e.id))
-        if (fresh.length === 0) return {}
-        const merged = [...fresh, ...s.history]
-          .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0))
-          .slice(0, 100)
-        return { history: merged }
-      }),
-      selectHistory: (id) => {
-        const entry = get().history.find((h) => h.id === id)
-        if (entry) {
-          // 3D entries open the GLB viewer modal — they don't map to any
-          // of the image/video/music output slots.
-          if (entry.type === '3d') {
-            set({ selectedHistoryId: id, viewing3d: { url: entry.data, name: entry.prompt || '3D model' } })
-            return
-          }
-          const isVideo = entry.type === 'video'
-          const isMusic = entry.type === 'music'
-          const isSfx = entry.type === 'sfx'
-          const isSprite = entry.type === 'sprite'
-          const isAudio = isMusic || isSfx
-          const mode = isVideo ? 'video' : isMusic ? 'music' : isSfx ? 'sfx' : isSprite ? 'sprite' : entry.type === 'edit' ? 'edit' : 'image'
-          const text = entry.prompt ?? ''
-          set((st) => ({
-            selectedHistoryId: id,
-            // Only video entries are videos and only music/SFX entries are
-            // audio — 'edit' entries are still images.
-            outputImage: isVideo || isAudio ? null : entry.data,
-            outputVideo: isVideo ? entry.data : null,
-            outputAudio: isAudio ? entry.data : null,
-            prompt: text,
-            // also remember it as that tab's own prompt
-            promptByMode: { ...st.promptByMode, [mode]: text },
-            lyrics: isMusic && typeof entry.lyrics === 'string' ? entry.lyrics : st.lyrics,
-            // Restore the AI title snapshotted onto the job so the download
-            // name matches THIS song, not whatever was rewritten since.
-            titles: entry.title
-              ? { ...st.titles, [isVideo ? 'video' : isSfx ? 'sfx' : 'music']: entry.title }
-              : st.titles,
-            mode,
-          }))
-        }
-      },
-
-      // Saved prompts
-      addSavedPrompt: ({ title, prompt, negativePrompt, style } = {}) => {
-        const text = String(prompt ?? get().prompt ?? '').trim()
-        if (!text) return null
-        const firstLine = text.split('\n')[0]
-        const entry = {
-          id: uid(),
-          title: String(title || '').trim() || (firstLine.length > 48 ? `${firstLine.slice(0, 48)}…` : firstLine),
-          prompt: text,
-          negativePrompt: negativePrompt ?? get().negativePrompt,
-          style: style ?? get().style,
-          createdAt: Date.now(),
-        }
-        set((s) => ({ savedPrompts: [entry, ...s.savedPrompts].slice(0, 300) }))
-        return entry
-      },
-      renameSavedPrompt: (id, title) =>
-        set((s) => ({
-          savedPrompts: s.savedPrompts.map((p) =>
-            p.id === id ? { ...p, title: String(title || '').trim() || p.title } : p
-          ),
-        })),
-      removeSavedPrompt: (id) =>
-        set((s) => ({ savedPrompts: s.savedPrompts.filter((p) => p.id !== id) })),
-      // Merge an exported JSON list — existing ids win, new ones are added.
-      importSavedPrompts: (entries) =>
-        set((s) => {
-          const known = new Set(s.savedPrompts.map((p) => p.id))
-          const incoming = (Array.isArray(entries) ? entries : [])
-            .filter((e) => e && typeof e.prompt === 'string' && e.prompt.trim())
-            .filter((e) => !known.has(e.id))
-            .map((e) => ({
-              id: typeof e.id === 'string' && e.id ? e.id : uid(),
-              title: String(e.title || e.prompt.split('\n')[0]).slice(0, 80),
-              prompt: e.prompt,
-              negativePrompt: String(e.negativePrompt || ''),
-              style: typeof e.style === 'string' ? e.style : 'photoreal',
-              createdAt: Number(e.createdAt) || Date.now(),
-            }))
-          if (incoming.length === 0) return {}
-          const all = [...s.savedPrompts, ...incoming].sort((a, b) => b.createdAt - a.createdAt)
-          return { savedPrompts: all.slice(0, 300) }
-        }),
+      ...createEpisodeActions(set),
+      ...createHistoryActions(set, get),
+      ...createPromptActions(set, get),
     }),
     {
-      name: 'comfyui-studio-storage',
-      version: 6,
-      // v0/v1 stored a flat llmUrl/llmModel (Ollama era: port 11434 +
-      // "name:tag" ids). Fold them into the v2 per-provider config.
-      // v3 merges model groups against DEFAULT_MODELS so browsers saved
-      // before a group existed (music) get its defaults.
-      // v6 re-runs that merge (character group) and merges spriteSettings
-      // against DEFAULT_SPRITE_SETTINGS — the shallow persist merge replaces
-      // nested objects wholesale, so saved sprites settings predate the
-      // engine/videoFrames/videoRes fields.
-      migrate: (persisted) => {
-        const s = { ...persisted }
-        if (s.llmConfigs) {
-          const merged = {}
-          for (const k of Object.keys(DEFAULT_LLM_CONFIGS)) {
-            merged[k] = { ...DEFAULT_LLM_CONFIGS[k], ...(s.llmConfigs[k] || {}) }
-          }
-          s.llmConfigs = merged
-        } else if (s.llmUrl !== undefined || s.llmModel !== undefined) {
-          let url = s.llmUrl
-          let model = s.llmModel
-          if (url && url.includes(':11434')) {
-            // was pointing at Ollama — start fresh on LM Studio defaults
-            url = DEFAULT_LLM_CONFIGS.lmstudio.url
-            model = ''
-          }
-          s.llmConfigs = {
-            ...DEFAULT_LLM_CONFIGS,
-            lmstudio: { url: url || DEFAULT_LLM_CONFIGS.lmstudio.url, model: model || '' },
-          }
-        } else {
-          s.llmConfigs = { ...DEFAULT_LLM_CONFIGS }
-        }
-        delete s.llmUrl
-        delete s.llmModel
-        const modelGroups = {}
-        for (const k of new Set([...Object.keys(DEFAULT_MODELS), ...Object.keys(s.models || {})])) {
-          modelGroups[k] = { ...DEFAULT_MODELS[k], ...(s.models?.[k] || {}) }
-        }
-        s.models = modelGroups
-        // Named model presets (multi-model picker). Older saves won't have
-        // them — seed from defaults and merge any existing entries.
-        const presetGroups = {}
-        for (const k of new Set([...Object.keys(DEFAULT_PRESETS), ...Object.keys(s.presets || {})])) {
-          presetGroups[k] = s.presets?.[k]?.length ? s.presets[k] : DEFAULT_PRESETS[k]
-        }
-        // v5: Stable Audio 3 moved out of the Music engine list into its own
-        // SFX mode. Drop any stable_audio engine preset an earlier build
-        // seeded into `music`, and make sure the SFX presets exist.
-        if (Array.isArray(presetGroups.music)) {
-          presetGroups.music = presetGroups.music.filter((p) => p?.engine !== 'stable_audio')
-        }
-        if (!Array.isArray(presetGroups.sfx) || presetGroups.sfx.length === 0) {
-          presetGroups.sfx = DEFAULT_PRESETS.sfx
-        }
-        s.presets = presetGroups
-        if (!s.active || typeof s.active !== 'object') {
-          s.active = { video: 0, music: 0, sfx: 0 }
-        } else {
-          if (s.active.sfx == null && (presetGroups.sfx || []).length > 0) s.active.sfx = 0
-          // Clamp out-of-range indices (e.g. a preset was removed elsewhere).
-          for (const k of Object.keys(DEFAULT_PRESETS)) {
-            const list = presetGroups[k] || []
-            if (s.active[k] != null && (s.active[k] < 0 || s.active[k] >= list.length)) {
-              s.active[k] = list.length > 0 ? 0 : null
-            }
-          }
-        }
-        // Sprite settings saved before the video engine existed (v6): layer
-        // the new fields (engine/videoFrames/videoRes) under the old values.
-        s.spriteSettings = { ...DEFAULT_SPRITE_SETTINGS, ...(s.spriteSettings || {}) }
-        return s
-      },
-      partialize: (state) => ({
-        serverUrl: state.serverUrl,
-        useProxy: state.useProxy,
-        autoUnload: state.autoUnload,
-        vramGuard: state.vramGuard,
-        style: state.style,
-        llmProvider: state.llmProvider,
-        llmConfigs: state.llmConfigs,
-        searchUrl: state.searchUrl,
-        searchEngine: state.searchEngine,
-        searchApiKey: state.searchApiKey,
-        searchCseId: state.searchCseId,
-        models: state.models,
-        presets: state.presets,
-        active: state.active,
-        threeD: state.threeD,
-        imageSettings: state.imageSettings,
-        videoSettings: state.videoSettings,
-        musicSettings: state.musicSettings,
-        sfxSettings: state.sfxSettings,
-        spriteSettings: state.spriteSettings,
-        history: state.history,
-        hiddenHistoryIds: state.hiddenHistoryIds,
-        outputAudio: state.outputAudio,
-        // AI titles ('Platform Nine') survive reloads so the current
-        // output's download name doesn't fall back to track_00001.mp3.
-        titles: state.titles,
-        // Which tab/mode you were on — a new tab (e.g. the Studio's own
-        // window) should come back where you left off.
-        mode: state.mode,
-        savedPrompts: state.savedPrompts,
-        sidebarWidth: state.sidebarWidth,
-        controlsWidth: state.controlsWidth,
-      }),
+      name: STORAGE_KEY,
+      version: STORAGE_VERSION,
+      migrate,
+      partialize,
+      // Quota-safe wrapper: trims history/thumbnails instead of throwing.
+      storage: createJSONStorage(() => safeStorage),
     }
   )
 )

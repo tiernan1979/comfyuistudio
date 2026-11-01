@@ -11,6 +11,14 @@ export default defineConfig({
       // modules are fetched from unpkg at runtime. Externalizing them keeps
       // Rollup from trying to resolve them from node_modules.
       external: [/^three$/, /^https:\/\/unpkg\.com\//],
+      output: {
+        // Keep the framework/runtime in its own long-lived chunk so app
+        // changes don't bust the vendor cache, and so the app chunk stays
+        // small enough to parse quickly on phones.
+        manualChunks: {
+          vendor: ['react', 'react-dom', 'framer-motion', 'zustand', 'clsx'],
+        },
+      },
     },
   },
   server: {

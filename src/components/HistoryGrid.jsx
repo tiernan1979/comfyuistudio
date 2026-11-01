@@ -26,14 +26,22 @@ export default function HistoryGrid() {
         // stills (and 'edit' results) can be dragged into the 3D box
         const canDrag = (entry.type === 'image' || entry.type === 'edit') && !!entry.data
         return (
-        <motion.button
+        <motion.div
           key={entry.id}
+          role="button"
+          tabIndex={0}
           initial={{ opacity: 0, scale: 0.8 }}
           animate={{ opacity: 1, scale: 1 }}
           transition={{ delay: i * 0.03 }}
           whileHover={{ scale: 1.05 }}
           whileTap={{ scale: 0.95 }}
           onClick={() => selectHistory(entry.id)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault()
+              selectHistory(entry.id)
+            }
+          }}
           draggable={canDrag}
           onDragStart={(e) => {
             if (!canDrag) return
@@ -41,23 +49,25 @@ export default function HistoryGrid() {
             e.dataTransfer.setData('text/plain', entry.data)
           }}
           className={clsx(
-            'relative aspect-square rounded-lg overflow-hidden border transition-all group',
+            'relative aspect-square rounded-lg overflow-hidden border transition-all group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60',
             selectedHistoryId === entry.id
               ? 'border-accent ring-1 ring-accent/50'
               : 'border-transparent hover:border-border',
             canDrag && 'cursor-grab active:cursor-grabbing'
           )}
         >
-          <span
+          <button
+            type="button"
             onClick={(e) => {
               e.stopPropagation()
               removeFromHistory(entry.id)
             }}
-            title="Delete"
-            className="absolute top-1 left-1 z-10 p-1 rounded-md bg-black/60 text-white/80 opacity-0 group-hover:opacity-100 hover:bg-red-500 hover:text-white transition-all cursor-pointer"
+            title="Remove from history (file stays on the server)"
+            aria-label={`Remove ${entry.type} generation from history`}
+            className="absolute top-1 left-1 z-10 rounded-md bg-black/60 p-1 text-white/80 opacity-0 transition-all hover:bg-red-500 hover:text-white focus-visible:opacity-100 group-hover:opacity-100"
           >
             <Trash2 size={10} />
-          </span>
+          </button>
           {/* Music entries are audio URLs — no thumbnail, show a tile.
               3D entries are GLB URLs — same, a Box tile; click opens the
               interactive viewer modal.
@@ -128,7 +138,7 @@ export default function HistoryGrid() {
               <Image size={10} className="text-white/70" />
             )}
           </div>
-        </motion.button>
+        </motion.div>
         )
       })}
     </div>

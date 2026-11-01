@@ -2,6 +2,7 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import './index.css'
 import App from './App.jsx'
+import ErrorBoundary from './components/ErrorBoundary.jsx'
 import useStore from './store/useStore.js'
 import { fetchRuntimeConfig } from './lib/config.js'
 
@@ -12,7 +13,9 @@ fetchRuntimeConfig().then((config) => {
   useStore.getState().applyServerConfig(config)
   createRoot(document.getElementById('root')).render(
     <StrictMode>
-      <App />
+      <ErrorBoundary label="ComfyUI Studio crashed">
+        <App />
+      </ErrorBoundary>
     </StrictMode>,
   )
 

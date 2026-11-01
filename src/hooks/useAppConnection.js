@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react'
 import useStore from '../store/useStore'
 import {
   checkConnection,
+  getQueueStatus,
   connectWebSocket,
   disconnectWebSocket,
   resolveApiBase,
@@ -79,6 +80,9 @@ export function useAppConnection() {
       useStore.getState().setConnected(ok)
       if (ok) {
         connectWebSocket(apiBase)
+        // Keep the top-bar queue badge current even when the queue panel is
+        // closed (jobs can be queued from the API or another browser).
+        getQueueStatus(apiBase).then((n) => useStore.getState().setQueueRemaining(n))
         // Shared deletes: pull the hidden-ids list every tick (tiny GET) so
         // history removed on another browser/device disappears here too,
         // even when no new generations are happening. The Studio API

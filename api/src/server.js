@@ -15,7 +15,8 @@
 //   GET  /api/queue             ComfyUI queue depth
 //   POST /api/cancel            interrupt the running prompt
 //   POST /api/generate          run a generation (wait=true default, or wait=false + GET /api/job/:promptId)
-//                               modes: image | edit | video | music | sfx (graphs, wait supported)
+//                               modes: image | edit | video | music | sfx | parts (graphs, wait supported)
+//                               + split  (imageBase64 → part PNGs + metadata; returns `parts`[])
 //                               + 3d | skin | meshupscale (long-lived flows — always block,
 //                                 timeoutSec up to 60min, no promptId/job polling)
 //   GET  /api/job/:promptId     status/outputs of a queued prompt
@@ -43,6 +44,9 @@ import {
   pickModelOverrides,
   loadRuntimeConfig,
   configModelOverrides,
+  IMAGE_INPUT_MODES,
+  PROMPT_OPTIONAL_MODES,
+  SPLIT_MODE,
 } from './lib.mjs'
 import {
   getModelLists,
@@ -240,14 +244,75 @@ export function createApp(opts = {}) {
     )
   }
 
+  // A split run leaves named part PNGs + parts_metadata.json in
+  // output/<output_directory>/<run_id>/ — find that folder from the
+  // orchestrator's ui.autosplit output and read the metadata over /view.
+  async function resolveSplitParts(item) {
+    let ui = null
+    for (const nodeOut of Object.values(item?.outputs || {})) {
+      if (Array.isArray(nodeOut?.autosplit) && nodeOut.autosplit[0]) {
+        ui = nodeOut.autosplit[0]
+        break
+      }
+    }
+    if (!ui) return null
+    const rel = String(ui.folder || '').replace(/\\/g, '/')
+    const marker = '/output/'
+    const subfolder =
+      rel.includes(marker) && rel.slice(rel.lastIndexOf(marker) + marker.length)
+        ? rel.slice(rel.lastIndexOf(marker) + marker.length)
+        : ui.run_id
+          ? `split_parts_sam3/${ui.run_id}`
+          : ''
+    const metaQ = new URLSearchParams({
+      filename: 'parts_metadata.json',
+      subfolder,
+      type: 'output',
+    })
+    let meta
+    try {
+      const res = await fetch(`${cfg.comfyuiUrl}/view?${metaQ}`, {
+        signal: AbortSignal.timeout(15000),
+      })
+      if (!res.ok) return null
+      meta = await res.json()
+    } catch {
+      return null
+    }
+    const parts = (meta?.parts || []).map((p) => {
+      const [x0, y0, x1, y1] = p.xyxy_full || p.xyxy || [0, 0, 0, 0]
+      const params = new URLSearchParams({ filename: p.file, subfolder, type: 'output' })
+      return {
+        name: p.tag,
+        filename: p.file,
+        subfolder,
+        type: 'output',
+        offset: [Math.round(x0), Math.round(y0)],
+        size: [Math.round(x1 - x0), Math.round(y1 - y0)],
+        z: p.draw_index ?? 0,
+        score: p.score ?? null,
+        url: `/api/file?${params.toString()}`,
+      }
+    })
+    return {
+      subfolder,
+      canvas: meta?.image_size || [0, 0],
+      missing: meta?.missing || [],
+      parts,
+    }
+  }
+
   async function runGeneration(body) {
     const mode = String(body?.mode || 'image').toLowerCase()
     if (!MODES.includes(mode)) {
       throw new HttpError(400, `mode must be one of: ${MODES.join(', ')}`)
     }
     const prompt = typeof body.prompt === 'string' ? body.prompt.trim() : ''
-    // Flow modes (3d/skin/meshupscale) are picture-driven pipelines — no prompt.
-    if (!FLOW_MODES.includes(mode) && !prompt) throw new HttpError(400, 'prompt is required')
+    // Flow modes (3d/skin/meshupscale) are picture-driven pipelines — no
+    // prompt. Split is image-driven; parts has a slot-based default prompt.
+    if (!FLOW_MODES.includes(mode) && !PROMPT_OPTIONAL_MODES.has(mode) && !prompt) {
+      throw new HttpError(400, 'prompt is required')
+    }
     const negativePrompt = typeof body.negativePrompt === 'string' ? body.negativePrompt : ''
     const lyrics = typeof body.lyrics === 'string' ? body.lyrics : ''
     const settings = body.settings && typeof body.settings === 'object' ? body.settings : {}
@@ -295,15 +360,15 @@ export function createApp(opts = {}) {
     }
 
     let imageName
-    if (mode === 'edit') {
+    if (IMAGE_INPUT_MODES.has(mode)) {
       if (!body.imageBase64) {
-        throw new HttpError(400, 'imageBase64 is required for edit mode (data URL or raw base64)')
+        throw new HttpError(400, `imageBase64 is required for ${mode} mode (data URL or raw base64)`)
       }
       const { buf, mime } = decodeDataUrl(body.imageBase64)
       try {
         const up = await uploadImage(
           cfg.comfyuiUrl,
-          new File([buf], 'edit-input.png', { type: mime }),
+          new File([buf], mode === 'split' ? 'split-source.png' : 'edit-input.png', { type: mime }),
         )
         imageName = up.name
       } catch (err) {
@@ -329,6 +394,27 @@ export function createApp(opts = {}) {
     const started = Date.now()
     const item = await waitForPrompt(promptId, timeoutMs)
     jobs.set(promptId, { ...(jobs.get(promptId) || { startedAt: started }), finishedAt: Date.now() })
+    const err = extractHistoryError(item) || null
+
+    // Split mode: the orchestrator writes part PNGs + parts_metadata.json to
+    // disk (not a normal ComfyUI image output), so read the run folder off its
+    // ui output and hand back the parts list with per-part download URLs.
+    if (mode === SPLIT_MODE) {
+      const split = err ? null : await resolveSplitParts(item)
+      return {
+        ok: true,
+        promptId,
+        mode,
+        elapsedMs: Date.now() - started,
+        outputs: [],
+        canvas: split?.canvas || [0, 0],
+        missing: split?.missing || [],
+        folder: split?.subfolder || '',
+        parts: split?.parts || [],
+        error: err,
+      }
+    }
+
     return {
       ok: true,
       promptId,
@@ -337,7 +423,7 @@ export function createApp(opts = {}) {
       outputs: outputsOf(item, '/api/file', cfg.comfyuiUrl, mode),
       settings: effSettings,
       models,
-      error: extractHistoryError(item) || null,
+      error: err,
     }
   }
 
@@ -638,8 +724,18 @@ export function createApp(opts = {}) {
 const isMain = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href
 if (isMain) {
   const port = Number(process.env.PORT || 5557)
+  // Local runs bind to loopback by default; the Docker service sets
+  // HOST=0.0.0.0 so nginx (and LAN clients) can reach it. Exposing the API
+  // without API_KEY gives anyone on the network generation + history access.
+  const host = process.env.HOST || '127.0.0.1'
   const app = createApp()
-  app.listen(port, () => {
-    console.log(`Studio API listening on :${port} → ComfyUI ${(process.env.COMFYUI_URL || 'http://10.1.1.102:8188')}`)
+  app.listen(port, host, () => {
+    console.log(`Studio API listening on ${host}:${port} → ComfyUI ${(process.env.COMFYUI_URL || 'http://10.1.1.102:8188')}`)
+    if (!process.env.API_KEY) {
+      console.warn(
+        `[api] API_KEY is not set — every /api route is unauthenticated. ` +
+          (host === '0.0.0.0' ? 'This process is reachable from the network.' : 'Loopback only by default; set HOST=0.0.0.0 to expose it.'),
+      )
+    }
   })
 }

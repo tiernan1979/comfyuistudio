@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { X, Box, Loader2 } from 'lucide-react'
 import useStore from '../store/useStore'
+import { useFocusTrap } from '../hooks/useFocusTrap'
 import FbxViewer from './FbxViewer'
 
 // Fullscreen 3D viewer for history entries. <model-viewer> renders glTF/GLB;
@@ -13,6 +14,8 @@ export default function ModelViewerModal() {
   const [mvReady, setMvReady] = useState(false)
   const [mvFailed, setMvFailed] = useState(false)
   const isFbx = /\.fbx(\?|#|$)/i.test(viewing3d?.url || '')
+  const dialogRef = useRef(null)
+  useFocusTrap(dialogRef, !!viewing3d)
 
   // Lazy-load the model-viewer custom element once.
   useEffect(() => {
@@ -53,10 +56,14 @@ export default function ModelViewerModal() {
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
-          className="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex items-center justify-center p-6"
+          className="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex items-center justify-center p-3 sm:p-6"
           onClick={() => setViewing3d(null)}
         >
           <motion.div
+            ref={dialogRef}
+            role="dialog"
+            aria-modal="true"
+            aria-label={viewing3d.name || '3D model preview'}
             initial={{ scale: 0.92, opacity: 0 }}
             animate={{ scale: 1, opacity: 1 }}
             exit={{ scale: 0.92, opacity: 0 }}
@@ -66,9 +73,11 @@ export default function ModelViewerModal() {
             <div className="absolute top-3 left-4 right-4 flex items-center justify-between z-10 pointer-events-none">
               <p className="text-xs text-text-secondary truncate pr-3">{viewing3d.name}</p>
               <button
+                type="button"
                 onClick={() => setViewing3d(null)}
-                className="pointer-events-auto p-1.5 rounded-lg bg-black/50 text-white/80 hover:bg-red-500 hover:text-white transition-colors"
+                className="pointer-events-auto rounded-lg bg-black/50 p-1.5 text-white/80 transition-colors hover:bg-red-500 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70"
                 title="Close (Esc)"
+                aria-label="Close 3D preview"
               >
                 <X size={16} />
               </button>

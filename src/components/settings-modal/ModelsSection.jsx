@@ -1,0 +1,251 @@
+import { motion } from 'framer-motion'
+import { FolderSearch, HardDrive, RefreshCw } from 'lucide-react'
+import ModelPresets from './ModelPresets'
+import { SectionTitle, Note, ModelField } from './fields'
+
+function Divider() {
+  return <hr className="border-border" />
+}
+
+export default function ModelsSection({
+  localUrl,
+  loadModelLists,
+  loadingLists,
+  listsError,
+  modelLists,
+  localModels,
+  setLocalModels,
+  editDraft,
+  setEditDraft,
+  videoDraft,
+  setVideoDraft,
+  sfxDraft,
+  setSfxDraft,
+}) {
+  const editModel = (key, patch) => setLocalModels((m) => ({ ...m, [key]: { ...(m[key] || {}), ...patch } }))
+  const count = (key) => (modelLists[key] || []).length
+
+  return (
+    <>
+      <div className="rounded-lg border border-border bg-bg-card px-3 py-2.5">
+        <div className="flex items-center justify-between gap-3">
+          <span className="flex items-center gap-2 text-xs text-text-secondary">
+            <FolderSearch size={14} className="text-accent" />
+            Model files on your ComfyUI server
+          </span>
+          <motion.button
+            type="button"
+            whileHover={{ scale: 1.05 }}
+            whileTap={{ scale: 0.95 }}
+            onClick={() => loadModelLists(localUrl)}
+            disabled={loadingLists}
+            className="flex items-center gap-1.5 rounded-lg border border-border bg-bg-hover px-2.5 py-1 text-[11px] transition-colors hover:border-accent/40 hover:bg-accent/20 hover:text-accent disabled:opacity-50"
+          >
+            <RefreshCw size={12} className={loadingLists ? 'animate-spin' : ''} />
+            {loadingLists ? 'Loading...' : 'Refresh'}
+          </motion.button>
+        </div>
+        {listsError && <p className="mt-1.5 text-[11px] text-warning">{listsError}</p>}
+        {!listsError && !loadingLists && (
+          <p className="mt-1.5 text-[11px] text-text-muted">
+            UNET: {count('unet')} · GGUF: {count('gguf')} · CLIP: {count('clip')} · VAE: {count('vae')} · LoRA:{' '}
+            {count('lora')}
+          </p>
+        )}
+      </div>
+
+      <div className="space-y-3">
+        <SectionTitle icon={HardDrive} title="Image Models (Qwen-Image)" />
+        <ModelField
+          label="Diffusion Model (UNET)"
+          value={localModels.image.unet}
+          onChange={(v) => editModel('image', { unet: v })}
+          options={modelLists.unet}
+          placeholder="qwen_image_fp8_e4m3fn.safetensors"
+        />
+        <ModelField
+          label="Text Encoder (CLIP)"
+          value={localModels.image.clip}
+          onChange={(v) => editModel('image', { clip: v })}
+          options={modelLists.clip}
+          placeholder="qwen_2.5_vl_7b_fp8_scaled.safetensors"
+        />
+        <ModelField
+          label="VAE"
+          value={localModels.image.vae}
+          onChange={(v) => editModel('image', { vae: v })}
+          options={modelLists.vae}
+          placeholder="qwen_image_vae.safetensors"
+        />
+        <ModelField
+          label="LoRA (optional, for turbo mode)"
+          value={localModels.image.lora}
+          onChange={(v) => editModel('image', { lora: v })}
+          options={modelLists.lora}
+          placeholder="Qwen-Image-Lightning-8steps-V1.0.safetensors"
+        />
+      </div>
+
+      <Divider />
+
+      <div className="space-y-3">
+        <SectionTitle icon={HardDrive} title="Image Edit Model (Qwen-Image-Edit)" tone="text-green-400" />
+        <p className="text-[11px] text-text-muted">Uses the same text encoder + VAE as image mode above.</p>
+        <ModelField
+          label="Edit Diffusion Model (UNET)"
+          value={localModels.edit?.unet || ''}
+          onChange={(v) => editModel('edit', { unet: v })}
+          options={modelLists.unet}
+          placeholder="qwen_image_edit_fp8_e4m3fn.safetensors"
+        />
+      </div>
+
+      <Divider />
+
+      <div className="space-y-3">
+        <SectionTitle icon={HardDrive} title="Video Models" tone="text-purple-400" />
+        <Note>
+          The dropdowns list what's actually inside ComfyUI's <span className="font-mono">models/unet</span> folder —
+          if you only see one file, that's all the server has (your qwen file is an <em>image</em> model, which is
+          why video generation refuses to start). Video mode needs a VIDEO model plus its text encoder and VAE. Good
+          picks for a 16GB card: <span className="text-text-secondary">Wan 2.1 t2v 1.3B</span> (fast, ~7GB),{' '}
+          <span className="text-text-secondary">Wan 2.2 TI2V-5B</span> (best quality/VRAM balance),{' '}
+          <span className="text-text-secondary">Wan 2.1/2.2 14B GGUF Q4</span> (highest quality, ~10–12GB), or{' '}
+          <span className="text-text-secondary">LTX-Video 13B Q4</span> (very fast). All of them need{' '}
+          <span className="font-mono">umt5_xxl</span> as CLIP and <span className="font-mono">wan_2.1_vae</span>.
+        </Note>
+        <ModelPresets mode="video" editDraft={videoDraft} setEditDraft={setVideoDraft} />
+        <ModelField
+          label="Diffusion Model (UNET)"
+          value={videoDraft.unet || ''}
+          onChange={(v) => setVideoDraft((d) => ({ ...d, unet: v }))}
+          options={modelLists.unet}
+          placeholder="wan2.1_t2v_1.3B_bf16.safetensors"
+        />
+        <ModelField
+          label="Text Encoder (CLIP)"
+          value={videoDraft.clip || ''}
+          onChange={(v) => setVideoDraft((d) => ({ ...d, clip: v }))}
+          options={modelLists.clip}
+          placeholder="umt5_xxl_fp8_e4m3fn_scaled.safetensors"
+        />
+        <ModelField
+          label="VAE"
+          value={videoDraft.vae || ''}
+          onChange={(v) => setVideoDraft((d) => ({ ...d, vae: v }))}
+          options={modelLists.vae}
+          placeholder="wan_2.1_vae.safetensors"
+        />
+        <ModelField
+          label="Turbo LoRA (optional — MiniMax H3, sample at 4–8 steps)"
+          value={videoDraft.lora || ''}
+          onChange={(v) => setVideoDraft((d) => ({ ...d, lora: v }))}
+          options={modelLists.lora}
+          placeholder="minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors"
+        />
+      </div>
+
+      <Divider />
+
+      <div className="space-y-3">
+        <SectionTitle icon={HardDrive} title="Character video (WAN 2.2 — Sprites engine)" tone="text-orange-400" />
+        <Note>
+          Used by Sprites → Engine → <span className="text-text-secondary">Video (WAN 2.2)</span>: two GGUF experts
+          (high-noise + low-noise, 4-step lightx2v distill — ~9.7 GB each from{' '}
+          <span className="font-mono">jayn7/WAN2.2-I2V_A14B-DISTILL-LIGHTX2V-4STEP-GGUF</span> in{' '}
+          <span className="font-mono">models/unet/</span>) plus the <span className="font-mono">umt5_xxl</span> text
+          encoder and the <span className="font-mono">Wan 2.1 VAE</span>. Requires the ComfyUI-GGUF node pack.
+        </Note>
+        <ModelField
+          label="High-noise expert (GGUF)"
+          value={localModels.character?.high || ''}
+          onChange={(v) => editModel('character', { high: v })}
+          options={modelLists.gguf || []}
+          placeholder="wan2.2_i2v_A14b_high_noise_lightx2v_4step-Q4_K_M.gguf"
+        />
+        <ModelField
+          label="Low-noise expert (GGUF)"
+          value={localModels.character?.low || ''}
+          onChange={(v) => editModel('character', { low: v })}
+          options={modelLists.gguf || []}
+          placeholder="wan2.2_i2v_A14b_low_noise_lightx2v_4step-Q4_K_M.gguf"
+        />
+        <ModelField
+          label="WAN text encoder (CLIP)"
+          value={localModels.character?.clip || ''}
+          onChange={(v) => editModel('character', { clip: v })}
+          options={modelLists.clip}
+          placeholder="umt5_xxl_fp8_e4m3fn_scaled.safetensors"
+        />
+        <ModelField
+          label="WAN VAE"
+          value={localModels.character?.vae || ''}
+          onChange={(v) => editModel('character', { vae: v })}
+          options={modelLists.vae}
+          placeholder="Wan2.1_VAE.safetensors"
+        />
+      </div>
+
+      <Divider />
+
+      <div className="space-y-3">
+        <SectionTitle icon={HardDrive} title="Music Models" tone="text-pink-400" />
+        <Note>
+          Music mode generates full songs (style + optional sung lyrics) locally on your ComfyUI. Pick a preset below
+          to load its model files into the fields, then tweak and Save. ACE-Step 1.5 assets resolve automatically
+          (single AIO checkpoint, or split qwen encoders + ACE VAE). Generated tracks open in the built-in Studio
+          editor for multi-track arrangement (split, trim, fades, layers, WAV export).
+        </Note>
+        <ModelPresets mode="music" editDraft={editDraft} setEditDraft={setEditDraft} />
+        <ModelField
+          label="Music Diffusion Model (UNET)"
+          value={editDraft.unet || ''}
+          onChange={(v) => setEditDraft((d) => ({ ...d, unet: v }))}
+          options={[...new Set([...(modelLists.unet || []), ...(modelLists.checkpoint || [])])]}
+          placeholder="minimax_music3_dit_int8_convrot.safetensors"
+        />
+        <ModelField
+          label="Music Text Encoder (CLIP)"
+          value={editDraft.clip || ''}
+          onChange={(v) => setEditDraft((d) => ({ ...d, clip: v }))}
+          options={modelLists.clip}
+          placeholder="minimax_music3_text_encoder_pruned_int8_convrot.safetensors"
+        />
+        <ModelField
+          label="Audio VAE"
+          value={editDraft.vae || ''}
+          onChange={(v) => setEditDraft((d) => ({ ...d, vae: v }))}
+          options={modelLists.vae}
+          placeholder="minimax_music3_dav.safetensors"
+        />
+      </div>
+
+      <Divider />
+
+      <div className="space-y-3">
+        <SectionTitle icon={HardDrive} title="SFX Models" tone="text-amber-400" />
+        <Note>
+          The SFX tab renders short, high-quality sound effects with Stable Audio 3 — a checkpoint in{' '}
+          <span className="font-mono">models/checkpoints/</span> plus the T5Gemma text encoder in{' '}
+          <span className="font-mono">models/text_encoders/</span> (loaded via CLIPLoader type{' '}
+          <span className="font-mono">stable_audio</span>). Pick a preset, tweak the file names, then Save.
+        </Note>
+        <ModelPresets mode="sfx" editDraft={sfxDraft} setEditDraft={setSfxDraft} />
+        <ModelField
+          label="Stable Audio Checkpoint"
+          value={sfxDraft.unet || ''}
+          onChange={(v) => setSfxDraft((d) => ({ ...d, unet: v }))}
+          options={modelLists.checkpoint}
+          placeholder="stable_audio_3_small_sfx.safetensors"
+        />
+        <ModelField
+          label="Text Encoder (T5Gemma)"
+          value={sfxDraft.clip || ''}
+          onChange={(v) => setSfxDraft((d) => ({ ...d, clip: v }))}
+          options={modelLists.clip}
+          placeholder="t5gemma_b_b_ul2.safetensors"
+        />
+      </div>
+    </>
+  )
+}

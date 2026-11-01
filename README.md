@@ -20,12 +20,15 @@ Static frontend (React + Vite) served by nginx; every external request (ComfyUI,
     - *AI split* (server) — htdemucs 6-source → UVR Karaoke → FoxJoy Reverb gives **drums / bass / guitar / piano / other / reverb / lead / backing**
   - **AI part presets** — generate a bassline, drum beat, guitar riff, keys, pad, lead, strings or percussion loop into the timeline (MiniMax Music 3)
   - export the arrangement as a WAV mixdown
-- **Video generation** — Wan 2.1 text-to-video, or MiniMax H3 (videos carry audio) with resolution, frames, FPS controls, and last-frame-chained windows for longer clips with crossfaded audio
-- **Edit mode** — upload an image (or pick one from the web) and change it with Qwen-Image-Edit. Sources can be **dragged straight in**: a PNG/JPG from your file manager, or an existing tile from the history grid — drop onto the source box *or* the big canvas (the whole panel is a drop target; a stray drop anywhere else no longer navigates the page away)
+- **Video generation** — Wan 2.1 text-to-video, or MiniMax H3 (videos carry audio) with resolution, frames, FPS controls, and last-frame-chained windows for longer clips with crossfaded audio. H3 also accepts a **first frame** (upload a still or click **Animate this still** on any generated image) for image-to-video. The **Episode shots** planner queues shots one at a time, retries failures independently, and exports a manifest plus an ffmpeg stitch kit for assembling a longer episode
+- **Edit mode** — upload an image (or pick one from the web) and change it with Qwen-Image-Edit. Sources can be **dragged straight in**: a PNG/JPG from your file manager, or an existing tile from the history grid — drop onto the source box *or* the big canvas (the whole panel is a drop target; a stray drop anywhere else no longer navigates the page away). **Paint a mask** to repaint only part of the image: the rest is composited back untouched, with a denoise control for how much of the masked area is replaced
+- **Batch renders** — Image mode can render 1/2/4/8 images in one job and shows them as a contact sheet; every result lands in history separately
+- **Queue manager** — the top-bar queue shows the running job and everything pending, with per-job cancel, clear-pending and stop-running controls (jobs queued from the API or another browser appear too)
+- **Imported workflows** — Settings → Workflows imports any ComfyUI **API-format** JSON, maps its prompt/negative/seed fields, and adds a **Custom** tab that runs the graph as-is; export it again with one click. Missing nodes/models are reported by ComfyUI on queue
 - **3D generation** (optional) — character image → 3D model → auto-rig → walk/run/jump animation:
   - *Local pipeline*: [TRELLIS.2](https://huggingface.co/Comfy-Org/TRELLIS.2) or [Pixal3D](https://github.com/TencentARC/Pixal3D) image → GLB (engines are built into ComfyUI ≥ 0.39), optional face fix (MediaPipe mask), ESRGAN enhance, UltraShape upscale, then MIA/UniRig auto-rig (+ Mixamo animations) on your own ComfyUI
   - *Tripo pipeline*: one cloud job — image → model → rig → 116 preset animations (needs ComfyUI signed in to comfy.org)
-- **History** — last 100 generations kept in the browser, synced live across **every browser, window, origin and device**: the UI refreshes ~1s after any job finishes anywhere (each session watches the ComfyUI websocket), with a 20s safety-net poll on top; entries are shared through the Studio API's durable store (so they survive ComfyUI restarts and match on `http://host:5555` and `https://…` alike), deletions sync through the shared hidden-ids list; plus saved prompts/bookmarks
+- **History** — last 100 generations kept in the browser, synced live across **every browser, window, origin and device**: the UI refreshes ~1s after any job finishes anywhere (each session watches the ComfyUI websocket), with a 20s safety-net poll on top; entries are shared through the Studio API's durable store (so they survive ComfyUI restarts and match on `http://host:5555` and `https://…` alike), deletions sync through the shared hidden-ids list; plus saved prompts/bookmarks. Clearing history removes entries everywhere but leaves the generated files in ComfyUI's output folder
 - **Style presets + offline Enhance** — expand a plain sentence into a detailed prompt without any AI server
 - **AI prompt writer** (optional) — rewrites your idea into a full prompt and picks a web search query. Providers:
   - LM Studio (local, default)
@@ -328,16 +331,28 @@ time (H3 needs its own `qwen3vl_32b_*` text encoder and the H3 video VAE — fee
 the *music* encoder crashes the sampler with a `mat1 and mat2 shapes cannot be
 multiplied` error).
 
-**Longer clips — chained windows.** A single H3 pass tops out at ~5 s in training.
-Settings → Video exposes a **Length** slider (seconds); the app chains enough windows
-end-to-end to reach it, conditioning each window on the previous one's last frame (the
-`first_frame` input — the reason the model file is `fl2va`) so motion continues across
-the cut. The result is **one continuous video file** — the windows are internal sampling
-passes, and a single `CreateVideo` muxes the whole concatenated run, not one clip per
-window. Each window is a full sampling pass (~3 min on a 16 GB box), so cost grows with
-length — the slider shows the window count and achieved duration. The hard ceiling is 12
-windows (~a minute). This is the only fully-local way to go past a few seconds; it is
-*not* a path to 10-minute video.
+**Longer clips — chained windows.** H3 is trained on **124–362 frame** windows
+(≈5.2–15.1 s at 24 fps). Shorter windows are out of distribution: the subject drifts and
+the clip falls apart after a couple of seconds, which is exactly what the old 56-frame
+default produced. Settings → Video now exposes a **Window length** slider for that trained
+range; the app ignores the generic Frames/FPS controls for H3 because H3 always runs at 24 fps.
+
+The **Length** slider (seconds) chains enough windows end-to-end to reach the target,
+conditioning each window on the previous one's last frame (the `first_frame` input — the
+reason the model file is `fl2va`) so motion continues across the cut. The result is **one
+continuous video file** — the windows are internal sampling passes, and a single
+`CreateVideo` muxes the whole concatenated run, not one clip per window. Each window is a
+full sampling pass (~3 min on a 16 GB box), so cost grows with length — the slider shows the
+window count and achieved duration.
+
+The hard ceiling is 12 windows **per job**: ~1 minute with the default 5.2 s windows, or
+~3 minutes at the 15.1 s maximum. That ceiling is RAM, not a UI choice: every decoded frame
+stays in memory until the single save, so a longer single graph exhausts the 16 GB box.
+**30 minutes is not possible as one H3 render** — it is ≈43,200 frames, or 120–350 sampling
+passes and tens of GB of decoded frames. Genuinely long video needs job-level chunking
+(generate minutes-long chunks, carry the last frame forward, stitch with ffmpeg) plus a
+storyboard with per-shot prompts; even then, render time is many hours and consistency
+drifts across shots. For production-length work, use the cloud API nodes or an editor.
 
 **Seamless joins (video + audio).** Consecutive windows match closely at the seam, but
 each window generates its *own* frames and its *own* soundtrack, so a naive join can
@@ -592,7 +607,10 @@ its own docker volume:
 | `GET /api/file` | fetch a generated file |
 | `GET/POST /api/hidden-ids` | shared delete list — history deletions sync across browsers/devices |
 
-Set `API_KEY` in compose to require `Authorization: Bearer <key>` on every route.
+Set `API_KEY` in compose to require `Authorization: Bearer <key>` on every route — **without
+it the API is unauthenticated**. The service binds `127.0.0.1` by default; the Docker image
+sets `HOST=0.0.0.0` so the compose network can reach it. If you publish the port beyond
+your LAN, set `API_KEY`.
 The web UI itself uses `/api/history` + `/api/hidden-ids` (nginx forwards `/api/` to this
 service), so running it gives every browser/origin the same history — deletions included —
 and history survives ComfyUI restarts (its own `/history` is in-memory).

@@ -1,9 +1,10 @@
 import { useMemo, useRef, useState } from 'react'
 import { motion } from 'framer-motion'
-import { Settings, Trash2, BookmarkPlus, Upload, Download, FileText, Search, RefreshCw } from 'lucide-react'
+import { Settings, Trash2, BookmarkPlus, Upload, Download, FileText, Search, RefreshCw, X, Sparkles } from 'lucide-react'
 import useStore from '../store/useStore'
 import clsx from 'clsx'
 import Dropdown from './Dropdown'
+import ConfirmDialog from './ui/ConfirmDialog'
 import { syncServerHistory } from '../hooks/useComfyUI'
 import ConnectionBadge from './ConnectionBadge'
 import HistoryGrid from './HistoryGrid'
@@ -14,8 +15,9 @@ const SORTS = [
   ['az', 'A–Z'],
 ]
 
-export default function Sidebar() {
+export default function Sidebar({ drawer = false }) {
   const setShowSettings = useStore((s) => s.setShowSettings)
+  const setSidebarOpen = useStore((s) => s.setSidebarOpen)
   const history = useStore((s) => s.history)
   const clearHistory = useStore((s) => s.clearHistory)
 
@@ -35,6 +37,10 @@ export default function Sidebar() {
   const [syncing, setSyncing] = useState(false)
   const [syncNote, setSyncNote] = useState(null)
   const [notice, setNotice] = useState(null)
+  const [editingId, setEditingId] = useState(null)
+  const [editDraft, setEditDraft] = useState('')
+  const [confirmClear, setConfirmClear] = useState(false)
+  const cancelRenameRef = useRef(false)
   const importRef = useRef(null)
 
   const visible = useMemo(() => {
@@ -65,11 +71,31 @@ export default function Sidebar() {
     if (typeof p.negativePrompt === 'string') setNegativePrompt(p.negativePrompt)
     if (p.style) setStyle(p.style)
     flash(`Loaded “${p.title}”`)
+    if (drawer) setSidebarOpen(false)
+  }
+
+  // In the mobile drawer, picking something should get out of the way.
+  const closeDrawer = () => {
+    if (drawer) setSidebarOpen(false)
   }
 
   const rename = (p) => {
-    const next = window.prompt('Name this prompt:', p.title)
-    if (next !== null) renameSavedPrompt(p.id, next)
+    cancelRenameRef.current = false
+    setEditingId(p.id)
+    setEditDraft(p.title)
+  }
+
+  const commitRename = (id) => {
+    if (cancelRenameRef.current) {
+      cancelRenameRef.current = false
+      setEditingId(null)
+      return
+    }
+    const next = editDraft.trim()
+    if (next && next !== savedPrompts.find((p) => p.id === id)?.title) {
+      renameSavedPrompt(id, next)
+    }
+    setEditingId(null)
   }
 
   const exportPrompts = () => {
@@ -107,24 +133,47 @@ export default function Sidebar() {
   return (
     <div
       data-testid="sidebar"
-      style={{ width: sidebarWidth }}
-      className="shrink-0 h-full flex flex-col bg-bg-secondary min-w-0"
+      style={drawer ? undefined : { width: sidebarWidth }}
+      className={clsx('h-full flex flex-col bg-bg-secondary min-w-0', drawer ? 'w-full' : 'shrink-0')}
     >
       {/* Header */}
       <div className="p-4 border-b border-border">
-        <div className="flex items-center justify-between mb-3">
-          <h1 className="text-base font-bold bg-gradient-to-r from-accent to-purple-400 bg-clip-text text-transparent">
-            ComfyUI Studio
-          </h1>
-          <motion.button
-            whileHover={{ scale: 1.1, rotate: 90 }}
-            whileTap={{ scale: 0.9 }}
-            onClick={() => setShowSettings(true)}
-            className="p-1.5 rounded-lg hover:bg-bg-hover transition-colors"
-            title="Settings"
-          >
-            <Settings size={16} className="text-text-muted" />
-          </motion.button>
+        <div className="flex items-center justify-between gap-2 mb-3">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <div className="grid h-8 w-8 shrink-0 place-items-center rounded-lg border border-accent/25 bg-accent/15">
+              <Sparkles size={15} className="text-accent" />
+            </div>
+            <div className="min-w-0">
+              <h1 className="truncate text-sm font-semibold leading-tight tracking-tight text-text-primary">
+                ComfyUI Studio
+              </h1>
+              <p className="truncate text-[10px] leading-tight text-text-muted">Local generation workspace</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-1 shrink-0">
+            {drawer && (
+              <motion.button
+                type="button"
+                whileTap={{ scale: 0.94 }}
+                onClick={() => setSidebarOpen(false)}
+                className="rounded-lg p-1.5 text-text-muted transition-colors hover:bg-bg-hover hover:text-text-primary"
+                aria-label="Close menu"
+                title="Close"
+              >
+                <X size={16} />
+              </motion.button>
+            )}
+            <motion.button
+              type="button"
+              whileTap={{ scale: 0.94 }}
+              onClick={() => setShowSettings(true)}
+              className="rounded-lg p-1.5 text-text-muted transition-colors hover:bg-bg-hover hover:text-text-primary"
+              aria-label="Open settings"
+              title="Settings"
+            >
+              <Settings size={16} />
+            </motion.button>
+          </div>
         </div>
         <ConnectionBadge />
       </div>
@@ -132,41 +181,44 @@ export default function Sidebar() {
       {/* Saved prompts */}
       <div className="p-3 border-b border-border shrink-0">
         <div className="flex items-center justify-between mb-2">
-          <h2 className="text-xs font-semibold text-text-secondary uppercase tracking-wider">
+          <h2 className="text-[10px] font-semibold uppercase tracking-[0.12em] text-text-muted">
             Saved prompts
           </h2>
           <div className="flex items-center gap-1">
-            <span className="text-[10px] text-text-muted bg-bg-card px-1.5 py-0.5 rounded-full">
+            <span className="rounded-full border border-border bg-bg-card px-1.5 py-0.5 text-[10px] tabular-nums text-text-muted">
               {savedPrompts.length}
             </span>
             <motion.button
-              whileHover={{ scale: 1.1 }}
-              whileTap={{ scale: 0.9 }}
+              type="button"
+              whileTap={{ scale: 0.92 }}
               onClick={() => importRef.current?.click()}
-              className="p-1 rounded-md hover:bg-bg-hover text-text-muted hover:text-accent transition-colors"
+              className="rounded-md p-1 text-text-muted transition-colors hover:bg-bg-hover hover:text-accent"
+              aria-label="Import prompts from JSON"
               title="Import prompts from JSON"
             >
-              <Upload size={12} />
+              <Upload size={13} />
             </motion.button>
             <motion.button
-              whileHover={{ scale: 1.1 }}
-              whileTap={{ scale: 0.9 }}
+              type="button"
+              whileTap={{ scale: 0.92 }}
               onClick={exportPrompts}
               disabled={savedPrompts.length === 0}
-              className="p-1 rounded-md hover:bg-bg-hover text-text-muted hover:text-accent transition-colors disabled:opacity-40"
+              className="rounded-md p-1 text-text-muted transition-colors hover:bg-bg-hover hover:text-accent disabled:opacity-40 disabled:hover:bg-transparent"
+              aria-label="Export prompts as JSON"
               title="Export prompts as JSON"
             >
-              <Download size={12} />
+              <Download size={13} />
             </motion.button>
             <motion.button
-              whileHover={{ scale: 1.1 }}
-              whileTap={{ scale: 0.9 }}
+              type="button"
+              whileTap={{ scale: 0.92 }}
               onClick={saveCurrent}
               disabled={!prompt.trim()}
-              className="p-1 rounded-md hover:bg-bg-hover text-text-muted hover:text-accent transition-colors disabled:opacity-40"
+              className="rounded-md p-1 text-text-muted transition-colors hover:bg-bg-hover hover:text-accent disabled:opacity-40 disabled:hover:bg-transparent"
+              aria-label="Save the current prompt"
               title="Save the current prompt"
             >
-              <BookmarkPlus size={12} />
+              <BookmarkPlus size={13} />
             </motion.button>
           </div>
         </div>
@@ -179,7 +231,8 @@ export default function Sidebar() {
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
                 placeholder="Search..."
-                className="w-full pl-6 pr-2 py-1 rounded-lg bg-bg-card border border-border text-[11px] text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-1 focus:ring-accent"
+                aria-label="Search saved prompts"
+                className="w-full rounded-lg border border-border bg-bg-card py-1 pl-6 pr-2 text-[11px] text-text-primary placeholder:text-text-muted focus:border-accent/60 focus:outline-none focus:ring-1 focus:ring-accent/30"
               />
             </div>
             <Dropdown
@@ -193,7 +246,11 @@ export default function Sidebar() {
         )}
 
         {/* Show at most 5 prompts at once — the list scrolls for the rest */}
-        <div data-testid="saved-prompts-list" className="space-y-1 max-h-[186px] overflow-y-auto pr-0.5">
+        <div
+          data-testid="saved-prompts-list"
+          className="space-y-1 max-h-[186px] overflow-y-auto pr-0.5"
+          onClick={closeDrawer}
+        >
           {visible.length === 0 ? (
             <p className="text-[11px] text-text-muted px-1 py-1.5">
               {savedPrompts.length === 0
@@ -201,38 +258,70 @@ export default function Sidebar() {
                 : 'No matches.'}
             </p>
           ) : (
-            visible.map((p) => (
-              <div
-                key={p.id}
-                role="button"
-                tabIndex={0}
-                onClick={() => loadPrompt(p)}
-                onDoubleClick={() => rename(p)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' || e.key === ' ') {
-                    e.preventDefault()
-                    loadPrompt(p)
-                  }
-                }}
-                className="group flex items-center gap-2 px-2.5 py-2 rounded-lg bg-bg-card border border-border hover:border-accent/50 hover:bg-bg-hover transition-colors cursor-pointer focus:outline-none focus:ring-1 focus:ring-accent"
-                title="Click to load · double-click to rename"
-              >
-                <FileText size={12} className="text-accent shrink-0" />
-                <span className="flex-1 min-w-0 truncate text-xs text-text-secondary group-hover:text-text-primary">
-                  {p.title}
-                </span>
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    removeSavedPrompt(p.id)
-                  }}
-                  className="p-0.5 rounded opacity-0 group-hover:opacity-100 hover:bg-red-500/20 text-text-muted hover:text-red-400 transition-opacity"
-                  title="Delete prompt"
+            visible.map((p) =>
+              editingId === p.id ? (
+                <div
+                  key={p.id}
+                  className="flex items-center gap-2 rounded-lg border border-accent/50 bg-bg-card px-2.5 py-1.5"
                 >
-                  <Trash2 size={11} />
-                </button>
-              </div>
-            ))
+                  <FileText size={12} className="shrink-0 text-accent" />
+                  <input
+                    autoFocus
+                    value={editDraft}
+                    onChange={(e) => setEditDraft(e.target.value)}
+                    onClick={(e) => e.stopPropagation()}
+                    onKeyDown={(e) => {
+                      e.stopPropagation()
+                      if (e.key === 'Enter') {
+                        e.preventDefault()
+                        commitRename(p.id)
+                      } else if (e.key === 'Escape') {
+                        e.preventDefault()
+                        cancelRenameRef.current = true
+                        setEditDraft(p.title)
+                        setEditingId(null)
+                      }
+                    }}
+                    onBlur={() => commitRename(p.id)}
+                    aria-label="Prompt name"
+                    className="min-w-0 flex-1 rounded border border-border bg-bg-secondary px-1.5 py-1 text-xs text-text-primary focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent/40"
+                  />
+                </div>
+              ) : (
+                <div
+                  key={p.id}
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => loadPrompt(p)}
+                  onDoubleClick={() => rename(p)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault()
+                      loadPrompt(p)
+                    }
+                  }}
+                  className="group flex items-center gap-2 rounded-lg border border-border bg-bg-card px-2.5 py-2 transition-colors hover:border-accent/40 hover:bg-bg-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 cursor-pointer"
+                  title="Click to load · double-click to rename"
+                >
+                  <FileText size={12} className="shrink-0 text-accent" />
+                  <span className="min-w-0 flex-1 truncate text-xs text-text-secondary group-hover:text-text-primary">
+                    {p.title}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      removeSavedPrompt(p.id)
+                    }}
+                    className="rounded p-0.5 text-text-muted opacity-0 transition-opacity hover:bg-red-500/20 hover:text-red-400 group-hover:opacity-100 focus-visible:opacity-100"
+                    aria-label={`Delete prompt ${p.title}`}
+                    title="Delete prompt"
+                  >
+                    <Trash2 size={11} />
+                  </button>
+                </div>
+              )
+            )
           )}
         </div>
 
@@ -248,13 +337,13 @@ export default function Sidebar() {
       </div>
 
       {/* History */}
-      <div className="flex-1 overflow-y-auto p-3">
+      <div className="flex-1 overflow-y-auto p-3" onClick={closeDrawer}>
         <div className="flex items-center justify-between mb-2">
-          <h2 className="text-xs font-semibold text-text-secondary uppercase tracking-wider">History</h2>
+          <h2 className="text-[10px] font-semibold uppercase tracking-[0.12em] text-text-muted">History</h2>
           <div className="flex items-center gap-1.5">
             <motion.button
-              whileHover={{ scale: 1.1 }}
-              whileTap={{ scale: 0.9 }}
+              type="button"
+              whileTap={{ scale: 0.92 }}
               onClick={async () => {
                 setSyncing(true)
                 const r = await syncServerHistory()
@@ -263,28 +352,28 @@ export default function Sidebar() {
                 setTimeout(() => setSyncNote(null), 3000)
               }}
               className={clsx(
-                'p-1 rounded-md text-text-muted hover:text-accent transition-colors',
+                'rounded-md p-1 text-text-muted transition-colors hover:text-accent',
                 syncing ? 'bg-bg-card' : 'hover:bg-bg-card'
               )}
+              aria-label="Sync history from server"
               title="Pull generations from the ComfyUI server (shared by every machine)"
             >
-              <RefreshCw size={12} className={syncing ? 'animate-spin' : ''} />
+              <RefreshCw size={13} className={syncing ? 'animate-spin' : ''} />
             </motion.button>
             {history.length > 0 && (
               <>
-                <span className="text-[10px] text-text-muted bg-bg-card px-1.5 py-0.5 rounded-full">
+                <span className="rounded-full border border-border bg-bg-card px-1.5 py-0.5 text-[10px] tabular-nums text-text-muted">
                   {history.length}
                 </span>
                 <motion.button
-                  whileHover={{ scale: 1.1 }}
-                  whileTap={{ scale: 0.9 }}
-                  onClick={() => {
-                    if (window.confirm('Delete all generation history?')) clearHistory()
-                  }}
-                  className="p-1 rounded-md hover:bg-red-500/20 text-text-muted hover:text-red-400 transition-colors"
+                  type="button"
+                  whileTap={{ scale: 0.92 }}
+                  onClick={() => setConfirmClear(true)}
+                  className="rounded-md p-1 text-text-muted transition-colors hover:bg-red-500/20 hover:text-red-400"
+                  aria-label="Clear all history"
                   title="Clear all history"
                 >
-                  <Trash2 size={12} />
+                  <Trash2 size={13} />
                 </motion.button>
               </>
             )}
@@ -302,6 +391,19 @@ export default function Sidebar() {
         )}
         <HistoryGrid />
       </div>
+
+      <ConfirmDialog
+        open={confirmClear}
+        title="Clear all history?"
+        message={`This removes all ${history.length} entries from every synced browser.`}
+        note="Generated files are not deleted — they stay in ComfyUI's output folder on the server."
+        confirmLabel="Clear history"
+        onConfirm={() => {
+          clearHistory()
+          setConfirmClear(false)
+        }}
+        onCancel={() => setConfirmClear(false)}
+      />
     </div>
   )
 }

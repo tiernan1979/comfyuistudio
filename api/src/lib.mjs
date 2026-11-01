@@ -9,13 +9,25 @@ import {
   buildEditWorkflow,
   buildVideoWorkflow,
   buildMusicWorkflow,
+  buildAutoSplitWorkflow,
+  AUTOSPLIT_LABEL_PRESETS,
   isMiniMaxH3,
   isAceStepModel,
   isStableAudioModel,
 } from '../../src/lib/workflows.js'
+import { buildPartPrompt, PARTS_SLOTS, PARTS_NEG } from '../../src/lib/parts.js'
 import { resolveAceStepModels, resolveStableAudioModels } from '../../src/lib/comfyui.js'
 
-export const MODES = ['image', 'edit', 'video', 'music', 'sfx', '3d', 'skin', 'meshupscale']
+export const MODES = ['image', 'edit', 'video', 'music', 'sfx', 'split', 'parts', '3d', 'skin', 'meshupscale']
+
+// Character-part slot keys (name, default size, prompt phrase) for API clients.
+export const PART_SLOTS = PARTS_SLOTS
+
+// Modes that take an uploaded image and produce NON-picture output (part PNGs
+// + metadata). `split` requires imageBase64; `parts` behaves like image mode.
+export const SPLIT_MODE = 'split'
+export const IMAGE_INPUT_MODES = new Set(['edit', 'split'])
+export const PROMPT_OPTIONAL_MODES = new Set(['split', 'parts'])
 
 // Music + SFX share the audio engines (ACE-Step preferred; MiniMax music-only).
 export const AUDIO_MODES = new Set(['music', 'sfx'])
@@ -60,6 +72,16 @@ export const DEFAULT_MODELS = {
     clip: 't5gemma_b_b_ul2.safetensors',
     vae: '',
   },
+  // 2D part splitting: SAM 3 + Depth Anything V2 do the work; models resolve
+  // from node combos, not the unet/clip/vae groups.
+  split: {},
+  // Character parts: image mode with a slot-composed prompt.
+  parts: {
+    unet: 'qwen_image_fp8_e4m3fn.safetensors',
+    clip: 'qwen_2.5_vl_7b_fp8_scaled.safetensors',
+    vae: 'qwen_image_vae.safetensors',
+    lora: '',
+  },
   // Flow modes: node/model availability is validated by the pipeline itself
   // (assertWorkflowNodes); nothing to resolve up front.
   '3d': {},
@@ -68,7 +90,17 @@ export const DEFAULT_MODELS = {
 }
 
 export const DEFAULT_SETTINGS = {
-  image: { aspectRatio: '1:1', turboMode: false, seed: -1, steps: 20, cfg: 4, upscale: '' },
+  image: {
+    aspectRatio: '1:1',
+    sizeMode: 'ratio',
+    width: 1024,
+    height: 1024,
+    turboMode: false,
+    seed: -1,
+    steps: 20,
+    cfg: 4,
+    upscale: '',
+  },
   edit: { seed: -1, steps: 20, cfg: 2.5 },
   video: { resolution: '480p', frames: 33, fps: 16, seed: -1, steps: 20, cfg: 6 },
   // duration: planner cap for both engines (MiniMax max_duration / ACE
@@ -77,6 +109,32 @@ export const DEFAULT_SETTINGS = {
   music: { duration: 300, seed: -1, steps: 30, cfgScale: 1.7, quality: '320k' },
   // SFX: short exact-length ACE render, WAV for game engines.
   sfx: { duration: 6, seed: -1, quality: 'wav' },
+  // 2D part splitting (ComfyUI-AutoSplit-Orchestrator + SAM 3). `labels` is a
+  // newline list; anatomical presets come from AUTOSPLIT_LABEL_PRESETS.
+  split: {
+    labelPreset: 'anatomy',
+    labels: AUTOSPLIT_LABEL_PRESETS.anatomy.join('\n'),
+    characterName: 'character',
+    outputDirectory: 'split_parts_sam3',
+    runId: '',
+    padding: 8,
+    confidence: 0.3,
+    retryConfidence: 0.2,
+    sam3Model: 'sam3.pt',
+    depthModel: 'depth_anything_v2_vitl.pth',
+  },
+  // Character parts library: slot → prompt + exact size (needs image models).
+  parts: {
+    slot: 'armour',
+    direction: '',
+    base: 'cute stylized soft matte clay 3D game character',
+    negative: '',
+    width: 512,
+    height: 512,
+    seed: -1,
+    steps: 20,
+    cfg: 4,
+  },
   // 3D flow defaults mirror src/store/useStore.js (threeD).
   '3d': {
     meshMode: 'pixal3d',
@@ -125,6 +183,12 @@ export const MODEL_PREFS = {
   },
   edit: {
     unet: [/qwen.*edit/i, /qwen.*2.*int8/i, /qwen/i],
+    clip: [/qwen_2\.5_vl/i, /qwen3vl_8b/i, /qwen3vl(?!.*minimax)/i, /qwen(?!.*minimax)/i],
+    vae: [/qwen.*image.*vae/i, /qwen.*vae/i],
+  },
+  // Character parts use the same Qwen-Image stack as image mode.
+  parts: {
+    unet: [/qwen.*image/i, /flux/i],
     clip: [/qwen_2\.5_vl/i, /qwen3vl_8b/i, /qwen3vl(?!.*minimax)/i, /qwen(?!.*minimax)/i],
     vae: [/qwen.*image.*vae/i, /qwen.*vae/i],
   },
@@ -327,7 +391,7 @@ const CONFIG_MODEL_GROUPS = new Set(['unet', 'clip', 'clip1', 'clip2', 'vae', 'l
 // model-ish keys are excluded: unet/clip/vae live under models, and upscale
 // is resolved separately against the server's UpscaleModelLoader list.
 const CONFIG_SETTING_KEYS = {
-  image: new Set(['aspectRatio', 'turboMode', 'seed', 'steps', 'cfg']),
+  image: new Set(['aspectRatio', 'sizeMode', 'width', 'height', 'turboMode', 'seed', 'steps', 'cfg']),
   edit: new Set(['seed', 'steps', 'cfg']),
   video: new Set(['resolution', 'frames', 'fps', 'seed', 'steps', 'cfg']),
   music: new Set(['duration', 'seed', 'steps', 'cfgScale', 'quality']),
@@ -502,10 +566,13 @@ export function decodeDataUrl(input) {
 export function workflowFor(mode, { prompt, negativePrompt = '', lyrics = '', settings = {}, models, imageName }) {
   const s = { ...DEFAULT_SETTINGS[mode], ...settings }
   if (mode === 'image') {
+    const custom = s.sizeMode === 'custom'
     return buildImageWorkflow({
       prompt,
       negativePrompt,
       aspectRatio: s.aspectRatio,
+      width: custom ? s.width : undefined,
+      height: custom ? s.height : undefined,
       seed: s.seed,
       steps: s.steps,
       cfg: s.cfg,
@@ -563,6 +630,32 @@ export function workflowFor(mode, { prompt, negativePrompt = '', lyrics = '', se
       seed: s.seed,
       quality: s.quality || 'wav',
       sfx: true,
+      models,
+    })
+  }
+  if (mode === 'split') {
+    return buildAutoSplitWorkflow({
+      imageName,
+      labels: s.labels,
+      characterName: s.characterName,
+      outputDirectory: s.outputDirectory,
+      runId: s.runId || `api-${Date.now().toString(36)}`,
+      padding: s.padding,
+      confidence: s.confidence,
+      retryConfidence: s.retryConfidence,
+      sam3Model: s.sam3Model,
+      depthModel: s.depthModel,
+    })
+  }
+  if (mode === 'parts') {
+    return buildImageWorkflow({
+      prompt: prompt || buildPartPrompt(s.slot, s.base, '', s.direction),
+      negativePrompt: (s.negative || '').trim() || PARTS_NEG,
+      width: s.width,
+      height: s.height,
+      seed: s.seed,
+      steps: s.steps,
+      cfg: s.cfg,
       models,
     })
   }

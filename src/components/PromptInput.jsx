@@ -7,45 +7,7 @@ import { rewritePrompt, resolveLlmConfig, PROVIDERS, pickDefaultModel, padInstru
 import { STABLE_AUDIO_MAX_SECONDS } from '../lib/workflows'
 import { searchText } from '../lib/search'
 import Dropdown from './Dropdown'
-
-const EXAMPLES = [
-  'A majestic dragon flying over a medieval castle at sunset, dramatic lighting, highly detailed',
-  'Cyberpunk city street at night with neon reflections in puddles, cinematic',
-  'A cozy coffee shop interior with warm lighting, plants, and rain outside the window',
-  'Portrait of a futuristic astronaut floating in space with nebula reflections on the helmet',
-]
-
-// The image examples above are nonsense as sound effects ("dramatic
-// lighting" is not a sound) — SFX gets its own.
-const SFX_EXAMPLES = [
-  'a close lightning crack followed by a deep rolling thunder rumble',
-  'heavy steel door slamming shut, hard impact, concrete room echo',
-  'glass shattering on a tile floor, close and bright',
-  'catapult firing — rope whip, wooden clack, distant stone impact',
-  'a leather book dropping onto a thick rug, soft muffled thud',
-  'crowd cheering swelling then fading, stadium reverb',
-]
-
-const PLACEHOLDERS = {
-  image: 'Describe what you want to create...',
-  edit: "Describe the change... e.g. 'change the background to a beach at sunset, keep the person the same'",
-  video: 'Describe the video... e.g. a fox running through snowy woods at sunset',
-  music:
-    'Describe the song in plain words — the AI button turns it into a full package\n' +
-    '(metadata + arrangement + tagged lyrics + length). For example:\n' +
-    '4 min progressive trance, Avicii-style, 25% of the song for lyrics, euphoric\n' +
-    'or just: a sad piano ballad about a rainy train station, instrumental',
-  sfx:
-    'Describe a single sound effect — what is heard, not music. For example:\n' +
-    'a close lightning crack followed by a deep rolling thunder rumble\n' +
-    'heavy steel door slamming shut, hard impact\n' +
-    'glass shattering on a tile floor, close and bright',
-  sprite:
-    'Describe one character or subject for the sprite sheet — full body, no scene.\n' +
-    'For example: a knight in blue plate armour with a red plume and a round shield\n' +
-    'a small green slime creature with big eyes\n' +
-    'a sci-fi soldier in white armour holding a rifle',
-}
+import { EXAMPLES, SFX_EXAMPLES, PLACEHOLDERS, buildSelectionContext } from './prompt/context'
 
 export default function PromptInput() {
   const prompt = useStore((s) => s.prompt)
@@ -193,6 +155,7 @@ export default function PromptInput() {
           styleLabel: STYLES[style]?.label || 'photorealistic',
           mode,
           research,
+          context: buildSelectionContext(useStore.getState()),
         },
         controller.signal
       )
@@ -259,7 +222,15 @@ export default function PromptInput() {
         if (out.negative && !negativePrompt.trim()) setNegativePrompt(out.negative)
         setSuggestions(out.suggestions || [])
       }
-      if (mode !== 'sfx' && mode !== 'sprite' && !negativePrompt.trim() && STYLES[style]?.negative) {
+      // Image / video / edit: the AI now writes a negative too. Prefer its
+      // take-ruining list; only fall back to the style preset when it gave none.
+      if (mode === 'image' || mode === 'video' || mode === 'edit' || mode === 'custom') {
+        if (!negativePrompt.trim()) {
+          if (out.negative) setNegativePrompt(out.negative)
+          else if (STYLES[style]?.negative) setNegativePrompt(STYLES[style].negative)
+        }
+        setShowNegative(true)
+      } else if (mode !== 'sfx' && mode !== 'sprite' && !negativePrompt.trim() && STYLES[style]?.negative) {
         setNegativePrompt(STYLES[style].negative)
       }
       // End-to-end: in image mode continue straight into the web reference search

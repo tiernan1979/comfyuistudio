@@ -24,19 +24,65 @@ body {
   color: var(--color-text-primary);
   font-family: 'Inter', system-ui, -apple-system, sans-serif;
   overflow: hidden;
+  /* 100vh is taller than the visible area on mobile browsers (URL bar), which
+     pushes the layout under the toolbar; dvh tracks the real viewport. */
   height: 100vh;
+  height: 100dvh;
+  -webkit-text-size-adjust: 100%;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+/* Native controls (selects, range inputs, scrollbars) follow the dark theme. */
+:root {
+  color-scheme: dark;
+}
+
+::selection {
+  background: color-mix(in srgb, var(--color-accent) 38%, transparent);
+  color: var(--color-text-primary);
+}
+
+/* Keyboard-only focus ring; Tailwind's focus:outline-none utilities still win
+   on inputs that draw their own accent border. */
+:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+button {
+  -webkit-tap-highlight-color: transparent;
 }
 
 #root {
   height: 100vh;
+  height: 100dvh;
+}
+
+/* Hide the scrollbar on the horizontal tab strip (phones) while keeping it
+   swipe-scrollable. */
+.no-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
 }
 
 /* Scrollbar */
 /* Scrollbar: a clear capsule thumb with a gap around it — a bare 6px
    border-colored bar read as a plain divider line and was hard to grab. */
 ::-webkit-scrollbar {
-  width: 12px;
-  height: 12px;
+  width: 10px;
+  height: 10px;
 }
 ::-webkit-scrollbar-track {
   background: transparent;

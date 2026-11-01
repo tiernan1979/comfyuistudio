@@ -1,8 +1,9 @@
 import { useRef, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Upload, X, ImagePlus, Loader2 } from 'lucide-react'
+import { Upload, X, ImagePlus, Loader2, Brush } from 'lucide-react'
 import useStore from '../store/useStore'
 import { fileFromDrop } from '../lib/dropImage'
+import MaskEditor from './MaskEditor'
 
 export default function ImageUpload() {
   const sourceImage = useStore((s) => s.sourceImage)
@@ -11,6 +12,7 @@ export default function ImageUpload() {
   const fileRef = useRef(null)
   const [dragOver, setDragOver] = useState(false)
   const [busy, setBusy] = useState(false)
+  const [maskOpen, setMaskOpen] = useState(false)
   // dragenter/leave fire for every child the pointer crosses — count them so
   // the highlight doesn't flicker (and only clears when we truly leave).
   const dragDepth = useRef(0)
@@ -82,6 +84,21 @@ export default function ImageUpload() {
                 <Upload size={16} /> Drop to replace
               </div>
             )}
+            {sourceImage.mask && (
+              <div className="absolute left-2 top-2 flex items-center gap-1 rounded-md bg-black/65 px-2 py-1 text-[10px] font-medium text-white backdrop-blur">
+                <Brush size={11} /> Masked
+              </div>
+            )}
+            {!generating && (
+              <button
+                type="button"
+                onClick={() => setMaskOpen(true)}
+                className="absolute right-2 top-2 rounded-lg bg-black/55 px-2 py-1.5 text-[10px] font-medium text-white/90 backdrop-blur transition-colors hover:bg-accent/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70"
+                title={sourceImage.mask ? 'Edit mask' : 'Paint a mask'}
+              >
+                {sourceImage.mask ? 'Edit mask' : 'Mask'}
+              </button>
+            )}
             <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/70 to-transparent px-3 pt-6 pb-2 flex items-center justify-between">
               <span className="text-[10px] text-white/80 truncate max-w-[180px]">
                 {sourceImage.name}
@@ -134,6 +151,16 @@ export default function ImageUpload() {
         accept="image/*"
         className="hidden"
         onChange={(e) => acceptFile(e.target.files?.[0])}
+      />
+      <MaskEditor
+        open={maskOpen && !!sourceImage?.preview}
+        image={sourceImage?.preview}
+        initialMask={sourceImage?.mask || ''}
+        onClose={() => setMaskOpen(false)}
+        onApply={(mask) => {
+          if (sourceImage) setSourceImage({ ...sourceImage, mask: mask || undefined })
+          setMaskOpen(false)
+        }}
       />
     </div>
   )
