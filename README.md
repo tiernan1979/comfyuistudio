@@ -597,7 +597,7 @@ its own docker volume:
 | Route | Purpose |
 |---|---|
 | `GET /api/health` | Studio API + ComfyUI reachability |
-| `POST /api/generate` | generate image / edit / video / music / sfx (blocks until done, or `wait=false` + poll). Per-mode knobs live in `settings` (e.g. `settings.upscale: "auto"` detail-upscales images when 4x-UltraSharp is installed) |
+| `POST /api/generate` | generate image / edit / video / music / sfx (blocks until done, or `wait=false` + poll). Per-mode knobs live in `settings` (e.g. `settings.upscale: "auto"` detail-upscales images when 4x-UltraSharp is installed; `settings.batchCount: 4` renders a batch in one job) |
 | `POST /api/generate` (modes `3d` / `skin` / `meshupscale`) | 3D flows — image→GLB, picture→skinned GLB, UltraShape mesh refine. Always block (5–45 min, `timeoutSec` up to 60min); `3d` takes `imageBase64`, `skin`/`meshupscale` take `imageBase64` + `mesh: {filename, subfolder?, type?}` (or `meshBase64`) |
 | `GET /api/job/:promptId` | status of one graph generation (optional `?wait=true`) |
 | `GET /api/models` | model files per mode + the defaults the API would use |

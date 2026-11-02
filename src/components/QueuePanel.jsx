@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { ListOrdered, Loader2, RefreshCw, Square, Trash2, X } from 'lucide-react'
 import clsx from 'clsx'
 import useStore from '../store/useStore'
@@ -135,14 +136,15 @@ export default function QueuePanel() {
         )}
       </button>
 
-      {open && (
-        <>
-          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-          <div
-            role="dialog"
-            aria-label="ComfyUI queue"
-            className="absolute right-0 top-full z-50 mt-2 w-[min(92vw,22rem)] overflow-hidden rounded-xl border border-border bg-bg-secondary shadow-2xl"
-          >
+      {open &&
+        createPortal(
+          <>
+            <div className="fixed inset-0 z-[90]" onClick={() => setOpen(false)} />
+            <div
+              role="dialog"
+              aria-label="ComfyUI queue"
+              className="fixed right-2 top-16 z-[100] w-[min(92vw,22rem)] overflow-hidden rounded-xl border border-border bg-bg-secondary shadow-2xl sm:right-4"
+            >
             <div className="flex items-center justify-between gap-2 border-b border-border px-3 py-2.5">
               <div>
                 <p className="text-xs font-semibold text-text-primary">Render queue</p>
@@ -216,9 +218,10 @@ export default function QueuePanel() {
                 </button>
               </div>
             )}
-          </div>
-        </>
-      )}
+            </div>
+          </>,
+          document.body,
+        )}
     </div>
   )
 }

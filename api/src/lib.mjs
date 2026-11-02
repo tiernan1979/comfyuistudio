@@ -100,6 +100,7 @@ export const DEFAULT_SETTINGS = {
     steps: 20,
     cfg: 4,
     upscale: '',
+    batchCount: 1,
   },
   edit: { seed: -1, steps: 20, cfg: 2.5 },
   video: { resolution: '480p', frames: 33, fps: 16, seed: -1, steps: 20, cfg: 6 },
@@ -578,6 +579,7 @@ export function workflowFor(mode, { prompt, negativePrompt = '', lyrics = '', se
       cfg: s.cfg,
       turboMode: !!s.turboMode,
       upscaleModel: models.upscale || '',
+      batchSize: s.batchCount || 1,
       models,
     })
   }

@@ -14,6 +14,7 @@ COPY src/lib/hybridSkin ./src/lib/hybridSkin
 COPY src/lib/llm ./src/lib/llm
 COPY src/lib/parts.js ./src/lib/parts.js
 COPY src/lib/expressions.js ./src/lib/expressions.js
+COPY src/lib/modelFamily.js ./src/lib/modelFamily.js
 COPY src/lib/workflows.js ./src/lib/workflows.js
 COPY src/lib/comfyui.js ./src/lib/comfyui.js
 COPY src/lib/threed.js ./src/lib/threed.js

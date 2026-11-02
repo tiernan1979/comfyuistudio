@@ -9,6 +9,7 @@ import {
   addExecutionListener,
 } from '../lib/comfyui'
 import { syncServerHistory } from './useComfyUI'
+import { setLoadedFamily } from '../lib/modelFamily'
 
 const STORAGE_KEY = 'comfyui-studio-storage'
 
@@ -36,6 +37,19 @@ export function useAppConnection() {
   // burst costs one GET /history, not one per prompt.
   useEffect(() => {
     const off = addExecutionListener((msg) => {
+      // Any execution traffic means ComfyUI has a model resident/loading.
+      // Refresh the activity stamp so the 5-minute idle timer starts from
+      // the real last use, including jobs queued by the API or another tab.
+      const active =
+        msg?.type === 'execution_start' ||
+        msg?.type === 'execution_cached' ||
+        msg?.type === 'executing' ||
+        msg?.type === 'progress'
+      if (active) {
+        const s = useStore.getState()
+        s.setLastGenAt(Date.now())
+        if (s.modelsUnloaded) s.setModelsUnloaded(false)
+      }
       const finished =
         (msg?.type === 'executing' && msg.data?.node === null && !!msg.data?.prompt_id) ||
         msg?.type === 'execution_error'
@@ -82,7 +96,14 @@ export function useAppConnection() {
         connectWebSocket(apiBase)
         // Keep the top-bar queue badge current even when the queue panel is
         // closed (jobs can be queued from the API or another browser).
-        getQueueStatus(apiBase).then((n) => useStore.getState().setQueueRemaining(n))
+        const queued = await getQueueStatus(apiBase)
+        useStore.getState().setQueueRemaining(queued)
+        if (queued > 0) {
+          // A remote job keeps the models alive; don't let the idle timer
+          // unload them while ComfyUI is still working through the queue.
+          useStore.getState().setLastGenAt(Date.now())
+          useStore.getState().setModelsUnloaded(false)
+        }
         // Shared deletes: pull the hidden-ids list every tick (tiny GET) so
         // history removed on another browser/device disappears here too,
         // even when no new generations are happening. The Studio API
@@ -119,15 +140,28 @@ export function useAppConnection() {
     }
   }, [apiBase])
 
-  // Auto-unload ComfyUI models after 5 minutes without generating:
+  // Auto-unload ComfyUI models after 5 minutes of no activity:
   // POST /free with { unload_models: true } drops model weights from
-  // VRAM/RAM (the next generation reloads them).
+  // VRAM/RAM (the next generation reloads them). Activity includes local
+  // renders, jobs from the API/another browser, and websocket execution
+  // traffic tracked above.
   useEffect(() => {
     const IDLE_MS = 5 * 60 * 1000
     const interval = setInterval(async () => {
       const s = useStore.getState()
       if (!s.autoUnload || !s.connected || s.generating) return
-      if (s.modelsUnloaded || !s.lastGenAt) return
+      if (s.queueRemaining > 0) {
+        s.setLastGenAt(Date.now())
+        if (s.modelsUnloaded) s.setModelsUnloaded(false)
+        return
+      }
+      if (s.modelsUnloaded) return
+      // First connection with pre-loaded models: start the countdown now
+      // rather than never unloading (lastGenAt is 0 on a fresh page).
+      if (!s.lastGenAt) {
+        s.setLastGenAt(Date.now())
+        return
+      }
       if (Date.now() - s.lastGenAt < IDLE_MS) return
       try {
         const base = resolveApiBase(s.serverUrl, s.useProxy)
@@ -137,6 +171,7 @@ export function useAppConnection() {
           body: JSON.stringify({ unload_models: true, free_memory: false }),
         })
         if (res.ok) {
+          setLoadedFamily('')
           s.setModelsUnloaded(true)
         }
         // Non-OK: leave modelsUnloaded false and retry next tick

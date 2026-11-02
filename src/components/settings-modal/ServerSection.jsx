@@ -23,10 +23,12 @@ export default function ServerSection({
         onChange={setUseProxy}
       />
       <ToggleRow
-        title="Auto-unload models (5 min idle)"
+        title="Auto-unload models (idle / pipeline switch)"
         description={
           <>
-            Frees ComfyUI memory when idle — next generate reloads the model
+            Reuses loaded weights for repeated jobs of the same type. Unloads before a different
+            pipeline (image → video/music/SFX) and after 5 minutes without activity; checks free
+            VRAM first.
             {modelsUnloaded && <span className="font-medium text-warning"> · currently unloaded</span>}
           </>
         }

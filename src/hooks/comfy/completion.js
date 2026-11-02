@@ -5,7 +5,7 @@ import { layoutRows } from '../../lib/character'
 import useStore from '../../store/useStore'
 import { publishSpriteSheet } from './publishSprite.js'
 
-export function createCompletionHandler({ freeModelsAfterRun, timerRef }) {
+export function createCompletionHandler({ timerRef }) {
   return async (promptId) => {
     const state = useStore.getState()
     const base = resolveApiBase(state.serverUrl, state.useProxy)
@@ -188,9 +188,10 @@ export function createCompletionHandler({ freeModelsAfterRun, timerRef }) {
       console.error('Failed to fetch output:', err)
       state.setError(`Failed to process results: ${err.message}`)
     } finally {
-      // Run finished (any path) → drop models from VRAM immediately so
-      // the next run — often a different pipeline — starts clean.
-      await freeModelsAfterRun()
+      // Mark activity at completion rather than freeing immediately: the
+      // idle-unload timer keeps the weights for 5 minutes so follow-up
+      // renders reuse them, then drops them if no job arrives.
+      state.setLastGenAt(Date.now())
       state.setGenerating(false)
       state.setProgress(null)
       state.setProgressLabel(null)

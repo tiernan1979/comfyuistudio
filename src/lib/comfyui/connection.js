@@ -1,4 +1,5 @@
 import { getClientId, state } from './state.js'
+import { setLoadedFamily } from '../modelFamily.js'
 
 // Resolve the effective API base. When useProxy is on, traffic goes through
 // this app's own origin via the nginx dynamic proxy, with the ComfyUI
@@ -199,9 +200,46 @@ export async function freeLoadedModels(serverUrl) {
       body: JSON.stringify({ unload_models: true, free_memory: true }),
       signal: AbortSignal.timeout(8000),
     })
+    if (res.ok) setLoadedFamily('')
     return res.ok
   } catch {
     /* best effort */
     return false
+  }
+}
+
+// Drop cached allocations (intermediates, prompt caches) without evicting
+// loaded weights. Used when the same model family needs a little headroom.
+export async function freeCachedMemory(serverUrl) {
+  try {
+    const res = await fetch(`${serverUrl}/free`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ unload_models: false, free_memory: true }),
+      signal: AbortSignal.timeout(8000),
+    })
+    return res.ok
+  } catch {
+    /* best effort */
+    return false
+  }
+}
+
+// GPU memory snapshot (bytes). Returns null when /system_stats is missing or
+// the server is unreachable — callers must treat that as "unknown", not "full".
+export async function getSystemStats(serverUrl) {
+  try {
+    const res = await fetch(`${serverUrl}/system_stats`, { signal: AbortSignal.timeout(5000) })
+    if (!res.ok) return null
+    const data = await res.json()
+    const device = data?.devices?.[0] || {}
+    return {
+      vramTotal: Number(device.vram_total) || 0,
+      vramFree: Number(device.vram_free) || 0,
+      ramTotal: Number(data?.system?.ram_total) || 0,
+      ramFree: Number(data?.system?.ram_free) || 0,
+    }
+  } catch {
+    return null
   }
 }

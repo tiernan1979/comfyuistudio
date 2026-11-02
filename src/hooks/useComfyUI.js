@@ -1,12 +1,15 @@
 import { useEffect, useRef, useCallback, useMemo } from 'react'
 import {
+  freeCachedMemory,
   freeLoadedModels,
+  getSystemStats,
   queuePrompt,
   resolveApiBase,
   setCompletionCallback,
   setPhaseCallback,
   setProgressCallback,
 } from '../lib/comfyui'
+import { familyForRun, familyLabel, getLoadedFamily, setLoadedFamily } from '../lib/modelFamily'
 import useStore from '../store/useStore'
 import { checkVramGuard } from './useVramGuard'
 import { prepareRun } from './comfy/prepareRun.js'
@@ -46,8 +49,8 @@ export function useComfyUI() {
     [freeModelsAfterRun]
   )
   const handleCompletion = useMemo(
-    () => createCompletionHandler({ freeModelsAfterRun, timerRef }),
-    [freeModelsAfterRun]
+    () => createCompletionHandler({ timerRef }),
+    [timerRef]
   )
 
   // Connection polling, the shared WebSocket and the idle-unload timer
@@ -161,26 +164,45 @@ export function useComfyUI() {
 
     try {
       const base = resolveApiBase(state.serverUrl, state.useProxy)
-      // Belt & braces: if the previous run (or an unknown state after a
-      // fresh page load) left models in VRAM and the post-run free didn't
-      // go through, free them NOW — before queueing. Cross-pipeline
-      // leftovers push long jobs into OOM; skipping when the last free
-      // succeeded keeps the happy path at one /free per run.
-      if (state.autoUnload && (!state.lastGenAt || !state.modelsUnloaded)) {
-        await freeLoadedModels(base)
-      }
 
       const prep = await prepareRun(base, state)
+
+      // Workload-aware VRAM handling: consecutive jobs in the same family
+      // (image → image, parts → image) reuse the resident weights. A switch
+      // to video/music/SFX or a different UNET unloads first, so both stacks
+      // are never resident at once. Low free VRAM within one family only
+      // clears cached allocations; the weights stay loaded.
+      const family = familyForRun(state, prep)
+      const previous = getLoadedFamily()
+      const stats = await getSystemStats(base).catch(() => null)
+      const lowVram = !!stats && stats.vramFree > 0 && stats.vramFree < 1.5 * 1024 ** 3
+      if (state.autoUnload) {
+        if (previous && previous !== family) {
+          state.setProgressLabel(`Unloading models for ${familyLabel(family)}…`)
+          if (await freeLoadedModels(base)) state.setModelsUnloaded(true)
+        } else if (lowVram) {
+          state.setProgressLabel(
+            previous ? 'Freeing cached GPU memory…' : 'Clearing GPU before loading models…',
+          )
+          if (previous) await freeCachedMemory(base)
+          else if (await freeLoadedModels(base)) state.setModelsUnloaded(true)
+        }
+      }
+
       if (prep.chainPlan) {
         // Sprites video engine: it owns completions from here on.
         chainRef.current = prep.chainPlan
         chainStageRef.current = null
         await chain.submitChainStage(base)
+        setLoadedFamily(family)
+        state.setModelsUnloaded(false)
         return
       }
 
       const promptId = await queuePrompt(base, prep.workflow)
       state.setCurrentPromptId(promptId)
+      setLoadedFamily(family)
+      state.setModelsUnloaded(false)
     } catch (err) {
       console.error('Generation failed:', err)
       // The video chain's first submission lives inside this try — a failure

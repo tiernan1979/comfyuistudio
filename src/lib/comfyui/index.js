@@ -13,6 +13,8 @@ export {
   queuePrompt,
   stopGeneration,
   freeLoadedModels,
+  freeCachedMemory,
+  getSystemStats,
 } from './connection.js'
 export {
   getHistory,
