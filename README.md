@@ -7,6 +7,7 @@ Static frontend (React + Vite) served by nginx; every external request (ComfyUI,
 ## Features
 
 - **Image generation** — Qwen-Image (or the lighter Qwen-Image-2.1) workflows with aspect ratio, steps, CFG, turbo mode, seed control
+- **Pixel Art mode** — a separate **Pixel Art** entry in the mode menu for 2D game terrain and sprites. Uses an SDXL checkpoint + **Pixel Art XL** LoRA (not the Qwen image stack), renders square 512–1280² batches, and feeds the viewer's grid button for a 32×32 seamless-ish ground tile. The mode menu groups the other tabs into Create / Animate / Audio / Tools so the top bar stays compact
 - **Music generation** — MiniMax Music 3 or ACE-Step 1.5 XL (turbo) with prompt, lyrics (with structure tags), output quality (`wav` / `320k` / `V0` / `128k`); MiniMax exposes steps + guidance. Lossless renders download as real `.wav` files
 - **SFX generation** — its own **SFX** tab: Stable Audio 3 (small_sfx default, medium selectable) via a Stable Audio checkpoint + T5Gemma text encoder, tuned for short high-quality sound effects (≤ 47 s, native `ConditioningStableAudio` nodes); falls back to ACE-Step 1.5 when Stable Audio isn't installed. The AI prompt writer fills in the sound-only caption, a **sized clip length (1–47 s)**, the negative prompt and the filename title — and when the box is empty it invents effects plus clickable alternatives. Downloads are real `.wav` (ComfyUI stores FLAC; the browser converts), with the untouched `.flac` one click away. Models: [SFX generation — Stable Audio 3](#sfx-generation--stable-audio-3)
 - **Sprite sheets (game-ready)** — a **Sprites** tab with two engines:
@@ -233,7 +234,7 @@ Instance configuration lives in **[`public/config.json`](public/config.json)**, 
 
 **Precedence:** a fresh browser (no saved settings yet) always seeds from `config.json`. After any **Settings → Save** the file carries `synced: true`, and from then on every browser applies it on load — change a setting once, it shows up everywhere. **Settings → Update from server** force-pulls the saved config on demand (useful when another device saved after this one loaded). Settings you made before that still win until the first Save. To re-seed one browser from scratch, clear the site's local storage.
 
-**What syncs:** server URL, proxy/auto-unload/VRAM-guard toggles, models (image / video / edit / music / sfx and the Sprites video `character` stack), 3D options, per-mode generation settings (steps/cfg/seeds/resolution/quality — sprite engine, frames, render size and cell size included), style, search and AI-provider config. **API keys never sync** — they stay in the browser that typed them.
+**What syncs:** server URL, proxy/auto-unload/VRAM-guard toggles, models (image / pixel / video / edit / music / sfx and the Sprites video `character` stack), 3D options, per-mode generation settings (steps/cfg/seeds/resolution/quality — pixel size/LoRA strength, sprite engine, frames, render size and cell size included), style, search and AI-provider config. **API keys never sync** — they stay in the browser that typed them.
 
 **API keys are never read from disk.** OpenAI / Anthropic keys are typed into the Settings screen and stay in that browser's local storage — `config.json` only carries non-secret values, and the loader strips any `key` fields defensively.
 
@@ -710,7 +711,7 @@ Tools: `generate_image` (with optional `upscale`), `edit_image`, `generate_video
 
 ```
 public/config.json        deployment config seed (baked into the image; live copy lives in the studio-config volume, updated by Settings → Save)
-src/lib/                  comfyui client, workflows (image/video/music/sfx/sprite pose), character.js (Sprites video-engine WAN 2.2 chain), sprite.js (sheet packer + Godot .tres + atlas), dropImage.js (drag-drop), stems (DSP) + stemsAI (server chain), llm, search, config loader
+src/lib/                  comfyui client, workflows (image/pixel/video/music/sfx/sprite pose), character.js (Sprites video-engine WAN 2.2 chain), sprite.js (sheet packer + Godot .tres + atlas), dropImage.js (drag-drop), stems (DSP) + stemsAI (server chain), llm, search, config loader
 src/components/           UI (MusicEditor = multi-track timeline, ThreeDPanel, ImageUpload/ImageViewer with drag-drop, SpritePlayer, players, settings)
 src/hooks/                useComfyUI (run + history), useAppConnection (socket/idle-unload), useVramGuard
 src/store/useStore.js     persisted app state (Zustand)

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { Fragment, useEffect, useRef, useState } from 'react'
 import { ChevronDown, Check } from 'lucide-react'
 import clsx from 'clsx'
 
@@ -6,10 +6,13 @@ import clsx from 'clsx'
 // at text-sm height and options open in a styled, scrollable popup where
 // every row is legible — the OS's default menu was too small to read.
 //
-//   options: [{ value, label }]
+//   options: [{ value, label, group?, icon? }]
 //   editable: the trigger is a text input (combobox) — pick from the list
 //             or type a value the server hasn't indexed yet. Typing filters
 //             the open list; blur commits the typed text.
+//   group: optional heading rendered above the first option in that group.
+//          Used by the top-bar mode menu to keep related modes together.
+//   icon: optional lucide component shown beside the label.
 export default function Dropdown({
   value,
   onChange,
@@ -25,6 +28,7 @@ export default function Dropdown({
 
   const selectedIdx = options.findIndex((o) => o.value === value)
   const selected = options[selectedIdx]
+  const SelectedIcon = selected?.icon
 
   const text = selected ? selected.label : String(value ?? '')
   const [inputValue, setInputValue] = useState(text)
@@ -151,7 +155,10 @@ export default function Dropdown({
           onKeyDown={onKeyDown}
           className={triggerCls}
         >
-          <span className="truncate">{text}</span>
+          <span className="flex min-w-0 items-center gap-2">
+            {SelectedIcon && <SelectedIcon size={14} className="shrink-0 text-accent" />}
+            <span className="truncate">{text}</span>
+          </span>
           {chevron}
         </button>
       )}
@@ -161,28 +168,44 @@ export default function Dropdown({
           role="listbox"
           className="absolute z-40 mt-1 w-full min-w-44 max-h-60 overflow-y-auto rounded-lg bg-bg-card border border-border shadow-xl shadow-black/50 py-1"
         >
-          {visible.map((o, i) => (
-            <li
-              key={o.value === '' ? '__none__' : o.value}
-              role="option"
-              aria-selected={o.value === value}
-              data-active={i === active}
-              onMouseEnter={() => setActive(i)}
-              onMouseDown={(e) => {
-                // Keep focus in the input so onBlur doesn't commit typed
-                // text over the click.
-                e.preventDefault()
-              }}
-              onClick={() => select(o.value)}
-              className={clsx(
-                'flex items-center justify-between gap-2 px-3 py-2 text-sm cursor-pointer transition-colors',
-                i === active ? 'bg-accent/20 text-text-primary' : 'text-text-secondary hover:bg-bg-hover'
-              )}
-            >
-              <span className="truncate">{o.label}</span>
-              {o.value === value && <Check size={14} className="shrink-0 text-accent" />}
-            </li>
-          ))}
+          {visible.map((o, i) => {
+            const Icon = o.icon
+            const newGroup = o.group && o.group !== visible[i - 1]?.group
+            return (
+              <Fragment key={o.value === '' ? '__none__' : o.value}>
+                {newGroup && (
+                  <li
+                    role="presentation"
+                    className="px-3 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wider text-text-muted"
+                  >
+                    {o.group}
+                  </li>
+                )}
+                <li
+                  role="option"
+                  aria-selected={o.value === value}
+                  data-active={i === active}
+                  onMouseEnter={() => setActive(i)}
+                  onMouseDown={(e) => {
+                    // Keep focus in the input so onBlur doesn't commit typed
+                    // text over the click.
+                    e.preventDefault()
+                  }}
+                  onClick={() => select(o.value)}
+                  className={clsx(
+                    'flex items-center justify-between gap-2 px-3 py-2 text-sm cursor-pointer transition-colors',
+                    i === active ? 'bg-accent/20 text-text-primary' : 'text-text-secondary hover:bg-bg-hover'
+                  )}
+                >
+                  <span className="flex min-w-0 items-center gap-2">
+                    {Icon && <Icon size={14} className="shrink-0 text-accent" />}
+                    <span className="truncate">{o.label}</span>
+                  </span>
+                  {o.value === value && <Check size={14} className="shrink-0 text-accent" />}
+                </li>
+              </Fragment>
+            )
+          })}
           {visible.length === 0 && <li className="px-3 py-2 text-sm text-text-muted">No matching options</li>}
         </ul>
       )}

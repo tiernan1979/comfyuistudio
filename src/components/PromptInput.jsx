@@ -71,7 +71,7 @@ export default function PromptInput() {
     if (prompt.trim()) setPrompt(enhancePrompt(prompt, styleKey))
     // Fill the negative prompt from the style, but never overwrite user text.
     // SFX/sprites have their own negative fields with no style defaults.
-    if (mode !== 'sfx' && mode !== 'sprite' && !negativePrompt.trim() && STYLES[styleKey]?.negative) {
+    if (mode !== 'sfx' && mode !== 'sprite' && mode !== 'pixel' && !negativePrompt.trim() && STYLES[styleKey]?.negative) {
       setNegativePrompt(STYLES[styleKey].negative)
     }
   }
@@ -79,7 +79,7 @@ export default function PromptInput() {
   const handleEnhance = () => {
     if (!prompt.trim()) return
     setPrompt(enhancePrompt(prompt, style))
-    if (mode !== 'sfx' && mode !== 'sprite' && !negativePrompt.trim() && STYLES[style]?.negative) {
+    if (mode !== 'sfx' && mode !== 'sprite' && mode !== 'pixel' && !negativePrompt.trim() && STYLES[style]?.negative) {
       setNegativePrompt(STYLES[style].negative)
     }
   }
@@ -235,7 +235,7 @@ export default function PromptInput() {
           else if (STYLES[style]?.negative) setNegativePrompt(STYLES[style].negative)
         }
         setShowNegative(true)
-      } else if (mode !== 'sfx' && mode !== 'sprite' && !negativePrompt.trim() && STYLES[style]?.negative) {
+      } else if (mode !== 'sfx' && mode !== 'sprite' && mode !== 'pixel' && !negativePrompt.trim() && STYLES[style]?.negative) {
         setNegativePrompt(STYLES[style].negative)
       }
       // End-to-end: in image mode continue straight into the web reference search
@@ -254,7 +254,7 @@ export default function PromptInput() {
   return (
     <div className="space-y-2">
       <div className="flex items-center gap-2 flex-wrap">
-        {mode !== 'edit' && mode !== 'music' && mode !== 'sfx' && mode !== 'sprite' && (
+        {mode !== 'edit' && mode !== 'music' && mode !== 'sfx' && mode !== 'sprite' && mode !== 'pixel' && (
           <>
             <span className="text-xs text-text-muted shrink-0">Style</span>
             <div className="flex-1 min-w-36">
@@ -273,7 +273,7 @@ export default function PromptInput() {
               {/* Enhance appends image-style quality tags — meaningless for
                   music and sound-effect captions, so the offline button stays
                   hidden there (the AI button below writes proper prompts). */}
-              {mode !== 'music' && mode !== 'sfx' && mode !== 'sprite' && (
+              {mode !== 'music' && mode !== 'sfx' && mode !== 'sprite' && mode !== 'pixel' && (
                 <motion.button
                   whileHover={{ scale: 1.05 }}
                   whileTap={{ scale: 0.95 }}

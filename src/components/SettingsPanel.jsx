@@ -2,6 +2,7 @@ import useStore from '../store/useStore'
 import CustomSettings from './settings/CustomSettings'
 import EditSettings from './settings/EditSettings'
 import ImageSettings from './settings/ImageSettings'
+import PixelSettings from './settings/PixelSettings'
 import MusicSettings from './settings/MusicSettings'
 import SfxSettings from './settings/SfxSettings'
 import SpriteSettings from './settings/SpriteSettings'
@@ -14,6 +15,7 @@ const PANELS = {
   custom: CustomSettings,
   edit: EditSettings,
   image: ImageSettings,
+  pixel: PixelSettings,
   music: MusicSettings,
   sfx: SfxSettings,
   sprite: SpriteSettings,

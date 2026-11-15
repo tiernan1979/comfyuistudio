@@ -22,6 +22,7 @@ import {
   buildEditWorkflow,
   buildImageWorkflow,
   buildMusicWorkflow,
+  buildPixelArtWorkflow,
   buildSpriteWorkflow,
   buildVideoWorkflow,
   isAceStepModel,
@@ -150,6 +151,25 @@ export async function prepareRun(base, state) {
           clip: models.image.clip,
           vae: models.image.vae,
         },
+      }),
+    }
+  }
+
+  if (state.mode === 'pixel') {
+    const ps = state.pixelSettings || {}
+    return {
+      workflow: buildPixelArtWorkflow({
+        // Pixel Art has its own prompt suffix — deliberately skip the global
+        // Style preset here so a photo/ground style can't fight the 16-bit look.
+        prompt: state.prompt,
+        negativePrompt: state.negativePrompt,
+        size: ps.size,
+        seed: ps.seed,
+        steps: ps.steps,
+        cfg: ps.cfg,
+        batchSize: ps.batchCount || 1,
+        loraStrength: ps.loraStrength,
+        models: state.models.pixel,
       }),
     }
   }

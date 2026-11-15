@@ -6,6 +6,7 @@ import {
   DEFAULT_MODELS,
   DEFAULT_SPRITE_SETTINGS,
   DEFAULT_IMAGE_SETTINGS,
+  DEFAULT_PIXEL_SETTINGS,
   DEFAULT_SPLIT_SETTINGS,
   DEFAULT_PARTS_SETTINGS,
   DEFAULT_PRESETS,
@@ -73,6 +74,7 @@ const useStore = create(
       negativePrompt: '',
       promptByMode: {
         image: '',
+        pixel: '',
         video: '',
         edit: '',
         music: '',
@@ -83,6 +85,7 @@ const useStore = create(
       },
       negativeByMode: {
         image: '',
+        pixel: '',
         video: '',
         edit: '',
         music: '',
@@ -115,6 +118,8 @@ const useStore = create(
 
       // Image settings (see DEFAULT_IMAGE_SETTINGS).
       imageSettings: { ...DEFAULT_IMAGE_SETTINGS },
+      // Pixel-art settings (SDXL + Pixel Art XL; see DEFAULT_PIXEL_SETTINGS).
+      pixelSettings: { ...DEFAULT_PIXEL_SETTINGS },
 
       // 2D sprite splitting + character-parts library
       splitSettings: { ...DEFAULT_SPLIT_SETTINGS },
@@ -377,6 +382,8 @@ const useStore = create(
 
       setImageSettings: (settings) =>
         set((s) => ({ imageSettings: { ...s.imageSettings, ...settings } })),
+      setPixelSettings: (settings) =>
+        set((s) => ({ pixelSettings: { ...s.pixelSettings, ...settings } })),
       setVideoSettings: (settings) =>
         set((s) => ({ videoSettings: { ...s.videoSettings, ...settings } })),
       setEditSettings: (settings) =>

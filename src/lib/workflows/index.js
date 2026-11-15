@@ -2,6 +2,7 @@
 // this file; workflows.js re-exports them so existing imports keep working.
 export { snap8, ASPECT_RATIOS, VIDEO_RESOLUTIONS } from './common.js'
 export { buildImageWorkflow, buildEditWorkflow } from './image.js'
+export { PIXEL_NEGATIVE, pixelAssetPrompt, buildPixelArtWorkflow } from './pixel.js'
 export {
   SPRITE_ANIMATIONS,
   DIRECTIONAL_ANIMS,

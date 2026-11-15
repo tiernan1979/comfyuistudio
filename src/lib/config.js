@@ -17,7 +17,7 @@
 import { SEARCH_ENGINES } from './search.js'
 
 const LLM_PROVIDERS = new Set(['lmstudio', 'openai', 'anthropic', 'custom'])
-const MODEL_GROUPS = new Set(['image', 'video', 'edit', 'music', 'sfx'])
+const MODEL_GROUPS = new Set(['image', 'pixel', 'video', 'edit', 'music', 'sfx'])
 
 // Quality presets for the local native 3D pipeline (Pixal3D/TRELLIS.2).
 // Each preset fills the individual pixal* fields below — the fields are
@@ -159,6 +159,16 @@ const MODE_SETTING_FIELDS = {
     steps: [1, 100],
     cfg: [0, 30],
     batchCount: [1, 16],
+  },
+  // Pixel Art mode is the separate SDXL + Pixel Art XL path (not Qwen).
+  // Square output only; size is stepped to 64 px by the builder.
+  pixelSettings: {
+    size: [256, 1536],
+    seed: 'number',
+    steps: [1, 100],
+    cfg: [0, 30],
+    batchCount: [1, 16],
+    loraStrength: [0, 2],
   },
   videoSettings: {
     resolution: 'string',
@@ -389,6 +399,7 @@ export function configFromState(state) {
     // shallow spread is enough (the sanitizer in applyServerConfig clamps
     // each field against MODE_SETTING_FIELDS).
     imageSettings: { ...(state.imageSettings || {}) },
+    pixelSettings: { ...(state.pixelSettings || {}) },
     videoSettings: { ...(state.videoSettings || {}) },
     editSettings: { ...(state.editSettings || {}) },
     musicSettings: { ...(state.musicSettings || {}) },

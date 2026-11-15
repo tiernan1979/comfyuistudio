@@ -21,6 +21,12 @@ export const DEFAULT_MODELS = {
     vae: 'qwen_image_vae.safetensors',
     lora: '',
   },
+  // Pixel Art mode uses an SDXL checkpoint + Pixel Art XL, not the Qwen
+  // Image stack. Both files live under models/checkpoints and models/loras.
+  pixel: {
+    ckpt: 'sd_xl_base_1.0_0.9vae.safetensors',
+    lora: 'pixel-art-xl.safetensors',
+  },
   video: {
     unet: 'wan2.1_t2v_1.3B_bf16.safetensors',
     clip: 'umt5_xxl_fp8_e4m3fn_scaled.safetensors',
@@ -96,6 +102,18 @@ export const DEFAULT_IMAGE_SETTINGS = {
   // One ComfyUI job can decode several latents in a single batch; the
   // results arrive as one history entry per image and render as a grid.
   batchCount: 1,
+}
+
+// Pixel Art mode: SDXL + Pixel Art XL. Square output only — 32×32 game
+// assets are downscaled from this in the viewer; 512–1024 is the useful
+// range (SDXL was trained at 1024).
+export const DEFAULT_PIXEL_SETTINGS = {
+  size: 1024,
+  seed: -1,
+  steps: 30,
+  cfg: 7,
+  batchCount: 1,
+  loraStrength: 1,
 }
 
 // 2D part splitting (ComfyUI-AutoSplit-Orchestrator + SAM 3): turn one flat
@@ -180,6 +198,7 @@ export const DEFAULT_LYRICS = STRUCTURE_TAGS
 // Per-mode generation settings that config.json can override.
 export const SETTING_GROUPS = [
   'imageSettings',
+  'pixelSettings',
   'videoSettings',
   'editSettings',
   'musicSettings',

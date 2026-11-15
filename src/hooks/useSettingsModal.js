@@ -356,6 +356,7 @@ export default function useSettingsModal() {
     }
     setServerUrl(localUrl)
     setModels('image', localModels.image)
+    if (localModels.pixel) setModels('pixel', localModels.pixel)
     // Video/music/SFX fields edit their own drafts (not localModels), so
     // merge the drafts into the flat group too. Without this a model picked
     // with no active preset was discarded on Save and generation fell back

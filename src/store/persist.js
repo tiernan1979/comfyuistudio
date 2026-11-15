@@ -7,6 +7,7 @@ import {
   DEFAULT_PRESETS,
   DEFAULT_SPRITE_SETTINGS,
   DEFAULT_IMAGE_SETTINGS,
+  DEFAULT_PIXEL_SETTINGS,
   DEFAULT_SPLIT_SETTINGS,
   DEFAULT_PARTS_SETTINGS,
   DEFAULT_ACTIVE,
@@ -14,7 +15,7 @@ import {
 import { AUTOSPLIT_LABEL_PRESETS } from '../lib/workflows.js'
 
 export const STORAGE_KEY = 'comfyui-studio-storage'
-export const STORAGE_VERSION = 12
+export const STORAGE_VERSION = 13
 
 // v0/v1 stored a flat llmUrl/llmModel (Ollama era: port 11434 + "name:tag"
 // ids). Fold them into the v2 per-provider config.
@@ -36,6 +37,7 @@ export const STORAGE_VERSION = 12
 // already supplies them, but the version bump marks saves that need it.
 // v12 merges the Character Parts view direction (front/side/threeQuarter/
 // back) via the partsSettings defaults merge below.
+// v13 adds the Pixel Art settings/model group (SDXL + Pixel Art XL).
 export function migrate(persisted) {
   const s = { ...persisted }
 
@@ -105,6 +107,7 @@ export function migrate(persisted) {
   // v7: custom image size + the split/parts settings (nested objects are
   // replaced wholesale by the shallow persist merge).
   s.imageSettings = { ...(DEFAULT_IMAGE_SETTINGS || {}), ...(s.imageSettings || {}) }
+  s.pixelSettings = { ...DEFAULT_PIXEL_SETTINGS, ...(s.pixelSettings || {}) }
   s.editSettings = {
     seed: -1,
     steps: 20,
@@ -150,6 +153,7 @@ export function partialize(state) {
     customSettings: state.customSettings,
     threeD: state.threeD,
     imageSettings: state.imageSettings,
+    pixelSettings: state.pixelSettings,
     videoSettings: state.videoSettings,
     editSettings: state.editSettings,
     episodeShots: state.episodeShots,

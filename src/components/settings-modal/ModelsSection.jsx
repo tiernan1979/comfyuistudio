@@ -49,7 +49,7 @@ export default function ModelsSection({
         {!listsError && !loadingLists && (
           <p className="mt-1.5 text-[11px] text-text-muted">
             UNET: {count('unet')} · GGUF: {count('gguf')} · CLIP: {count('clip')} · VAE: {count('vae')} · LoRA:{' '}
-            {count('lora')}
+            {count('lora')} · Checkpoint: {count('checkpoint')}
           </p>
         )}
       </div>
@@ -83,6 +83,31 @@ export default function ModelsSection({
           onChange={(v) => editModel('image', { lora: v })}
           options={modelLists.lora}
           placeholder="Qwen-Image-Lightning-8steps-V1.0.safetensors"
+        />
+      </div>
+
+      <Divider />
+
+      <div className="space-y-3">
+        <SectionTitle icon={HardDrive} title="Pixel Art Models (SDXL + Pixel Art XL)" tone="text-amber-400" />
+        <p className="text-[11px] text-text-muted">
+          Separate from the Qwen image stack. Pixel Art mode loads an SDXL checkpoint from{' '}
+          <span className="font-mono">models/checkpoints</span> and the Pixel Art XL LoRA from{' '}
+          <span className="font-mono">models/loras</span>.
+        </p>
+        <ModelField
+          label="SDXL Checkpoint"
+          value={localModels.pixel?.ckpt || ''}
+          onChange={(v) => editModel('pixel', { ckpt: v })}
+          options={modelLists.checkpoint}
+          placeholder="sd_xl_base_1.0_0.9vae.safetensors"
+        />
+        <ModelField
+          label="Pixel Art XL LoRA"
+          value={localModels.pixel?.lora || ''}
+          onChange={(v) => editModel('pixel', { lora: v })}
+          options={modelLists.lora}
+          placeholder="pixel-art-xl.safetensors"
         />
       </div>
 

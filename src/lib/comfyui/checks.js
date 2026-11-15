@@ -66,7 +66,15 @@ export async function assertModelsAvailable(base, mode, models) {
   } catch {
     return
   }
-  if (!lists || lists.unet.length === 0) return
+  if (!lists) return
+  // Pixel Art uses checkpoints/LoRAs, not the Qwen UNET list. A failed list
+  // fetch returns empty arrays; treat that as "unknown" and let ComfyUI's own
+  // prompt validation be the fallback, same as the image path.
+  if (mode === 'pixel') {
+    if (!lists.checkpoint?.length && !lists.lora?.length) return
+  } else if (lists.unet.length === 0) {
+    return
+  }
 
   const wants = (() => {
     if (mode === 'edit') {
@@ -122,6 +130,14 @@ export async function assertModelsAvailable(base, mode, models) {
         ['unet', models.image?.unet, 'Sprite diffusion model'],
         ['clip', models.image?.clip, 'Sprite text encoder'],
         ['vae', models.image?.vae, 'Sprite VAE'],
+      ]
+    }
+    if (mode === 'pixel') {
+      // SDXL path: the checkpoint supplies model/CLIP/VAE; Pixel Art XL is an
+      // optional LoRA. These are separate files from the Qwen image group.
+      return [
+        ['checkpoint', models.pixel?.ckpt, 'Pixel art checkpoint'],
+        ...(models.pixel?.lora ? [['lora', models.pixel.lora, 'Pixel art LoRA']] : []),
       ]
     }
     return [
@@ -205,7 +221,9 @@ export async function assertModelsAvailable(base, mode, models) {
               ? 'SFX generation'
               : mode === 'sprite'
                 ? 'Sprite generation'
-                : 'Image generation'
+                : mode === 'pixel'
+                  ? 'Pixel art generation'
+                  : 'Image generation'
     const fileIssues = missing.some((m) => m.includes('is not on the server'))
     let tail = fileIssues ? ' Fix them in Settings → Models.' : ''
     if (mode === 'video' && fileIssues && !missing.some((m) => m.includes('is not a supported video model'))) {

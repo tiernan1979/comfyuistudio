@@ -1,9 +1,7 @@
 import { lazy, Suspense, useEffect } from 'react'
-import { motion } from 'framer-motion'
-import { Image, Film, Wand2, Box, Music, AudioWaveform, LayoutGrid, Menu, Scissors, Shirt, FileJson2 } from 'lucide-react'
+import { Image, Film, Wand2, Box, Music, AudioWaveform, LayoutGrid, Menu, Scissors, Shirt, FileJson2, Grid3X3 } from 'lucide-react'
 import useStore from '../store/useStore'
 import useKeepMounted from '../hooks/useKeepMounted'
-import clsx from 'clsx'
 import PromptInput from './PromptInput'
 import SettingsPanel from './SettingsPanel'
 import GenerateButton from './GenerateButton'
@@ -21,6 +19,7 @@ import PartsPanel from './PartsPanel'
 import DragDivider from './DragDivider'
 import PanelLoader from './PanelLoader'
 import QueuePanel from './QueuePanel'
+import Dropdown from './Dropdown'
 
 // Heavy, rarely-needed panels are split out of the main bundle: the 3D
 // workspace, the music editor and the 3D model viewer. Each is only fetched
@@ -58,17 +57,23 @@ export default function Layout() {
     if (mode !== effectiveMode) setMode(effectiveMode)
   }, [mode, effectiveMode, setMode])
 
-  const tabs = [
-    { key: 'image', label: 'Image', icon: Image },
-    { key: 'edit', label: 'Image Edit', icon: Wand2 },
-    ...(customWorkflows.length ? [{ key: 'custom', label: 'Custom', icon: FileJson2 }] : []),
-    { key: 'video', label: 'Video', icon: Film },
-    { key: 'music', label: 'Music', icon: Music },
-    { key: 'sfx', label: 'SFX', icon: AudioWaveform },
-    { key: 'sprite', label: 'Sprites', icon: LayoutGrid },
-    { key: 'parts', label: 'Character Parts', icon: Shirt },
-    { key: 'split', label: 'Split', icon: Scissors },
-    ...(threeDEnabled ? [{ key: '3d', label: '3D Image', icon: Box }] : []),
+  // One grouped menu instead of a rail of tabs: the bar stays readable on a
+  // phone and related modes sit together (create / animate / audio / tools).
+  // Custom and 3D only appear while they are available.
+  const modeOptions = [
+    { value: 'image', label: 'Image', group: 'Create', icon: Image },
+    { value: 'edit', label: 'Image Edit', group: 'Create', icon: Wand2 },
+    ...(customWorkflows.length
+      ? [{ value: 'custom', label: 'Custom Workflow', group: 'Create', icon: FileJson2 }]
+      : []),
+    { value: 'pixel', label: 'Pixel Art', group: 'Create', icon: Grid3X3 },
+    { value: 'video', label: 'Video', group: 'Animate', icon: Film },
+    { value: 'sprite', label: 'Sprites', group: 'Animate', icon: LayoutGrid },
+    { value: 'music', label: 'Music', group: 'Audio', icon: Music },
+    { value: 'sfx', label: 'SFX', group: 'Audio', icon: AudioWaveform },
+    { value: 'parts', label: 'Character Parts', group: 'Tools', icon: Shirt },
+    { value: 'split', label: 'Split', group: 'Tools', icon: Scissors },
+    ...(threeDEnabled ? [{ value: '3d', label: '3D Image', group: 'Tools', icon: Box }] : []),
   ]
 
   return (
@@ -84,25 +89,13 @@ export default function Layout() {
         >
           <Menu size={18} />
         </button>
-        <div className="flex items-center gap-0.5 p-1 rounded-xl bg-bg-card/70 border border-border/70 overflow-x-auto no-scrollbar min-w-0 flex-1 md:flex-none">
-          {tabs.map(({ key, label, icon: Icon }) => (
-            <motion.button
-              key={key}
-              type="button"
-              whileTap={{ scale: 0.985 }}
-              onClick={() => setMode(key)}
-              aria-current={effectiveMode === key ? 'page' : undefined}
-              className={clsx(
-                'flex items-center gap-2 px-2.5 sm:px-3.5 py-1.5 rounded-lg text-xs font-medium transition-colors shrink-0 whitespace-nowrap',
-                effectiveMode === key
-                  ? 'bg-accent text-white shadow-sm ring-1 ring-inset ring-white/15'
-                  : 'text-text-secondary hover:text-text-primary hover:bg-bg-hover/70'
-              )}
-            >
-              <Icon size={14} />
-              <span className="hidden sm:inline">{label}</span>
-            </motion.button>
-          ))}
+        <div className="w-40 sm:w-56 min-w-0">
+          <Dropdown
+            value={effectiveMode}
+            onChange={setMode}
+            options={modeOptions}
+            ariaLabel="Generation mode"
+          />
         </div>
         <div className="ml-auto flex items-center gap-1 shrink-0">
           <QueuePanel />

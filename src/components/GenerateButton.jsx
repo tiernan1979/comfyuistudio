@@ -95,7 +95,9 @@ export default function GenerateButton() {
                   ? 'Generate SFX'
                   : mode === 'sprite'
                     ? 'Generate Sprites'
-                    : 'Generate'}
+                    : mode === 'pixel'
+                      ? 'Generate Pixel Art'
+                      : 'Generate'}
             </>
           )}
         </span>
