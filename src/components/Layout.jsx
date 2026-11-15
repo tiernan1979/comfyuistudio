@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect } from 'react'
-import { Image, Film, Wand2, Box, Music, AudioWaveform, LayoutGrid, Menu, Scissors, Shirt, FileJson2, Grid3X3 } from 'lucide-react'
+import { Menu } from 'lucide-react'
 import useStore from '../store/useStore'
 import useKeepMounted from '../hooks/useKeepMounted'
 import PromptInput from './PromptInput'
@@ -19,7 +19,7 @@ import PartsPanel from './PartsPanel'
 import DragDivider from './DragDivider'
 import PanelLoader from './PanelLoader'
 import QueuePanel from './QueuePanel'
-import Dropdown from './Dropdown'
+import ModeMenubar from './ModeMenubar'
 
 // Heavy, rarely-needed panels are split out of the main bundle: the 3D
 // workspace, the music editor and the 3D model viewer. Each is only fetched
@@ -57,25 +57,8 @@ export default function Layout() {
     if (mode !== effectiveMode) setMode(effectiveMode)
   }, [mode, effectiveMode, setMode])
 
-  // One grouped menu instead of a rail of tabs: the bar stays readable on a
-  // phone and related modes sit together (create / animate / audio / tools).
-  // Custom and 3D only appear while they are available.
-  const modeOptions = [
-    { value: 'image', label: 'Image', group: 'Create', icon: Image },
-    { value: 'edit', label: 'Image Edit', group: 'Create', icon: Wand2 },
-    ...(customWorkflows.length
-      ? [{ value: 'custom', label: 'Custom Workflow', group: 'Create', icon: FileJson2 }]
-      : []),
-    { value: 'pixel', label: 'Pixel Art', group: 'Create', icon: Grid3X3 },
-    { value: 'video', label: 'Video', group: 'Animate', icon: Film },
-    { value: 'sprite', label: 'Sprites', group: 'Animate', icon: LayoutGrid },
-    { value: 'music', label: 'Music', group: 'Audio', icon: Music },
-    { value: 'sfx', label: 'SFX', group: 'Audio', icon: AudioWaveform },
-    { value: 'parts', label: 'Character Parts', group: 'Tools', icon: Shirt },
-    { value: 'split', label: 'Split', group: 'Tools', icon: Scissors },
-    ...(threeDEnabled ? [{ value: '3d', label: '3D Image', group: 'Tools', icon: Box }] : []),
-  ]
-
+  // Menubar groups related modes (Image / Video / Music / More); Custom and
+  // 3D only appear while they are available.
   return (
     <div className="flex-1 flex flex-col h-full overflow-hidden">
       {/* Top bar */}
@@ -89,14 +72,7 @@ export default function Layout() {
         >
           <Menu size={18} />
         </button>
-        <div className="w-40 sm:w-56 min-w-0">
-          <Dropdown
-            value={effectiveMode}
-            onChange={setMode}
-            options={modeOptions}
-            ariaLabel="Generation mode"
-          />
-        </div>
+        <ModeMenubar />
         <div className="ml-auto flex items-center gap-1 shrink-0">
           <QueuePanel />
         </div>
