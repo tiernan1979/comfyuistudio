@@ -7,6 +7,7 @@ import {
   ChevronDown,
   FileJson2,
   Film,
+  Gamepad2,
   Grid3X3,
   Image,
   LayoutGrid,
@@ -14,7 +15,6 @@ import {
   Scissors,
   Shirt,
   Wand2,
-  Wrench,
 } from 'lucide-react'
 import clsx from 'clsx'
 import useStore from '../store/useStore'
@@ -53,9 +53,9 @@ const MENUS = [
     ],
   },
   {
-    key: 'tools',
-    label: 'More',
-    icon: Wrench,
+    key: 'games',
+    label: 'Game Assets',
+    icon: Gamepad2,
     modes: [
       { key: 'parts', label: 'Character Parts', icon: Shirt },
       { key: 'split', label: 'Split', icon: Scissors },
@@ -72,9 +72,9 @@ const MENU_FOR_MODE = {
   sprite: 'video',
   music: 'music',
   sfx: 'music',
-  parts: 'tools',
-  split: 'tools',
-  '3d': 'tools',
+  parts: 'games',
+  split: 'games',
+  '3d': 'games',
 }
 
 export default function ModeMenubar() {
@@ -97,7 +97,7 @@ export default function ModeMenubar() {
     }
     return { ...menu, modes }
   }).map((menu) => {
-    if (menu.key !== 'tools' || !threeDEnabled) return menu
+    if (menu.key !== 'games' || !threeDEnabled) return menu
     return {
       ...menu,
       modes: [...menu.modes, { key: '3d', label: '3D Image', icon: Box }],

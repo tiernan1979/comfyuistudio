@@ -57,8 +57,8 @@ export default function Layout() {
     if (mode !== effectiveMode) setMode(effectiveMode)
   }, [mode, effectiveMode, setMode])
 
-  // Menubar groups related modes (Image / Video / Music / More); Custom and
-  // 3D only appear while they are available.
+  // Menubar groups related modes (Image / Video / Music / Game Assets); Custom
+  // and 3D only appear while they are available.
   return (
     <div className="flex-1 flex flex-col h-full overflow-hidden">
       {/* Top bar */}
