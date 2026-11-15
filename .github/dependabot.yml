@@ -1,0 +1,46 @@
+version: 2
+updates:
+  # Keep the app, API and MCP dependency trees current. Grouped so a quiet
+  # week produces one PR per project instead of a dozen tiny ones.
+  - package-ecosystem: npm
+    directory: '/'
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      root-minor:
+        patterns: ['*']
+        update-types: ['minor', 'patch']
+  - package-ecosystem: npm
+    directory: '/api'
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      api-minor:
+        patterns: ['*']
+        update-types: ['minor', 'patch']
+  - package-ecosystem: npm
+    directory: '/mcp'
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      mcp-minor:
+        patterns: ['*']
+        update-types: ['minor', 'patch']
+
+  # Base images carry the OS packages, so keep those patched too.
+  - package-ecosystem: docker
+    directory: '/'
+    schedule:
+      interval: weekly
+  - package-ecosystem: docker
+    directory: '/api'
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: github-actions
+    directory: '/'
+    schedule:
+      interval: weekly

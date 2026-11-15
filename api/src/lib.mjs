@@ -103,7 +103,22 @@ export const DEFAULT_SETTINGS = {
     batchCount: 1,
   },
   edit: { seed: -1, steps: 20, cfg: 2.5 },
-  video: { resolution: '480p', frames: 33, fps: 16, seed: -1, steps: 20, cfg: 6 },
+  video: {
+    resolution: '480p',
+    frames: 33,
+    fps: 16,
+    seed: -1,
+    steps: 20,
+    cfg: 6,
+    // MiniMax H3 chaining (ignored by the Wan graph): total length, explicit
+    // window count when duration is 0, per-window seconds, seam crossfade.
+    // Crossfade defaults to 0 over the API — the bundled AudioCrossfade /
+    // VideoCrossfade nodes may not be installed, and this helper can't probe.
+    duration: 5,
+    segments: 1,
+    windowSeconds: 5.2,
+    crossfadeSeconds: 0,
+  },
   // duration: planner cap for both engines (MiniMax max_duration / ACE
   // planner max_duration; exact render length when no planner is
   // available). Default 300 = 5 minutes; range 10–360.
@@ -230,6 +245,20 @@ export const MODEL_PREFS = {
   },
 }
 
+// MiniMax H3 shares the `video` mode but none of its files: the DiT needs the
+// Qwen3-VL-32B H3 text encoder and an H3 video VAE (plus the audio VAE below).
+// The generic video preferences start with Wan (umt5 / wan_2.1_vae), which the
+// H3 CLIPLoader/VAELoader reject at execution time — so H3 gets its own list.
+const H3_VIDEO_PREFS = {
+  clip: [/qwen3vl.*minimax.*h3/i, /qwen.*minimax.*h3/i, /minimax.*h3.*qwen/i, /h3.*qwen/i],
+  vae: [/h3.*video.*vae/i, /minimax.*video.*vae/i, /video[-_ ]?vae/i],
+}
+const H3_CLIP_RE = /(qwen|vl).*h\d|h\d.*(qwen|vl)/i
+// Exclude the audio VAE: it is H3-shaped too, and when it sorts first the
+// generic `h\d.*vae` branch would put it in the video slot.
+const H3_VIDEO_VAE_RE = /video[-_ ]?vae|h\d(?!.*audio).*vae/i
+const H3_AUDIO_VAE_RE = /audio[-_ ]?vae/i
+
 const STEM_RE = /\.(safetensors|ckpt|pt|sft|bin)$/i
 
 function stem(name) {
@@ -262,10 +291,20 @@ export function resolveModels(lists, mode, overrides = {}) {
   const base = DEFAULT_MODELS[mode]
   if (!base) throw new Error(`Unknown mode "${mode}"`)
   const prefs = MODEL_PREFS[mode] || {}
+  const h3Video = mode === 'video' && isMiniMaxH3(overrides.unet || base.unet)
   const out = {}
   for (const group of Object.keys(base)) {
     if (group === 'lora') {
-      out.lora = overrides.lora !== undefined ? overrides.lora : base.lora
+      const want = overrides.lora !== undefined ? overrides.lora : base.lora
+      if (!want) {
+        out.lora = ''
+        continue
+      }
+      const hit = (Array.isArray(lists?.lora) ? lists.lora : []).find(
+        (m) => m === want || stem(m) === stem(want),
+      )
+      if (!hit) throw new Error(`Model not on server (lora): ${want}`)
+      out.lora = hit
       continue
     }
     // ACE-Step music: clip/vae ride inside the ACE assets (AIO checkpoint or
@@ -300,6 +339,15 @@ export function resolveModels(lists, mode, overrides = {}) {
           (m) => m === overrides[group] || stem(m) === stem(overrides[group]),
         )
       if (!hit) throw new Error(`Model not on server (${group}): ${overrides[group]}`)
+      // H3's loaders only accept its own assets. Fail loudly here instead of
+      // queueing an umt5/Wan-VAE graph that dies in the sampler with a shape
+      // error (the exact trap this repackaging hit before).
+      if (h3Video && group === 'clip' && !H3_CLIP_RE.test(hit)) {
+        throw new Error(`Model "${hit}" is not a MiniMax H3 text encoder (expected qwen3vl_32b_minimax_h3_*)`)
+      }
+      if (h3Video && group === 'vae' && !H3_VIDEO_VAE_RE.test(hit)) {
+        throw new Error(`Model "${hit}" is not a MiniMax H3 video VAE (expected minimax_h3_video_vae_*)`)
+      }
       out[group] = hit
       continue
     }
@@ -317,7 +365,10 @@ export function resolveModels(lists, mode, overrides = {}) {
         : Array.isArray(lists?.[group])
           ? lists[group]
           : []
-    const picked = pickModel(arr, base[group], prefs[group])
+    // H3 must not fall back to the Wan defaults in `base`: both umt5 and
+    // wan_2.1_vae exist on mixed servers and would win the exact-name check.
+    const groupPrefs = h3Video ? H3_VIDEO_PREFS[group] || prefs[group] : prefs[group]
+    const picked = pickModel(arr, h3Video ? '' : base[group], groupPrefs)
     if (!picked) {
       if (arr.length === 0) {
         throw new Error(`No ${group} models found on the ComfyUI server — is it reachable?`)
@@ -355,7 +406,10 @@ export function resolveModels(lists, mode, overrides = {}) {
   // Not a settings group — resolve it straight from the server's VAE list.
   if (mode === 'video' && isMiniMaxH3(out.unet)) {
     const vaes = Array.isArray(lists?.vae) ? lists.vae : []
-    const audio = vaes.find((m) => /audio[-_ ]?vae/i.test(m))
+    const want = typeof overrides.vaeAudio === 'string' ? overrides.vaeAudio : ''
+    const audio = want
+      ? vaes.find((m) => m === want || stem(m) === stem(want))
+      : vaes.find((m) => H3_AUDIO_VAE_RE.test(m))
     if (!audio) {
       throw new Error(
         'MiniMax H3 video needs the H3 audio VAE (minimax_h3_audio_vae_*.safetensors) on the ComfyUI server — install it or pick another video model.'
@@ -387,7 +441,7 @@ export function pickModelOverrides(mode, bodyModels) {
 // ---------------------------------------------------------------------------
 
 const CONFIG_MODES = new Set(['image', 'edit', 'video', 'music', 'sfx'])
-const CONFIG_MODEL_GROUPS = new Set(['unet', 'clip', 'clip1', 'clip2', 'vae', 'lora'])
+const CONFIG_MODEL_GROUPS = new Set(['unet', 'clip', 'clip1', 'clip2', 'vae', 'vaeAudio', 'lora'])
 // Flat per-mode generation settings (steps, cfg, duration, quality…). The
 // model-ish keys are excluded: unet/clip/vae live under models, and upscale
 // is resolved separately against the server's UpscaleModelLoader list.
@@ -439,7 +493,7 @@ function sanitizeConfigPresets(raw) {
       if (!p || typeof p !== 'object') continue
       const e = {}
       if (typeof p.name === 'string') e.name = p.name.slice(0, 80)
-      for (const k of ['unet', 'clip', 'vae', 'lora']) {
+      for (const k of ['unet', 'clip', 'vae', 'vaeAudio', 'lora']) {
         if (typeof p[k] === 'string' && p[k]) e[k] = p[k]
       }
       if (typeof p.engine === 'string') e.engine = p.engine
@@ -460,7 +514,7 @@ function sanitizeConfigActive(raw) {
   return out
 }
 
-let configCache = { at: 0, models: {}, settings: {} }
+let configCache = { at: 0, models: {}, settings: {}, autoUnload: true }
 
 // Read config.json from disk. Cached for a few seconds so a burst of API
 // calls doesn't re-read the file each time; a missing file (plain `docker
@@ -468,7 +522,9 @@ let configCache = { at: 0, models: {}, settings: {} }
 export async function loadRuntimeConfig(configPath, { ttlMs = 3000 } = {}) {
   const now = Date.now()
   if (now - configCache.at < ttlMs) return configCache
-  const empty = { at: now, models: {}, settings: {} }
+  // autoUnload matters to the API's own idle watchdog, not just the
+  // browser: the API runs even when no Studio tab is open.
+  const empty = { at: now, models: {}, settings: {}, autoUnload: true }
   if (!configPath) {
     configCache = empty
     return configCache
@@ -488,7 +544,14 @@ export async function loadRuntimeConfig(configPath, { ttlMs = 3000 } = {}) {
   }
   const presets = sanitizeConfigPresets(raw?.presets)
   const active = sanitizeConfigActive(raw?.active)
-  configCache = { at: now, models, settings, presets, active }
+  configCache = {
+    at: now,
+    models,
+    settings,
+    presets,
+    active,
+    autoUnload: raw?.autoUnload !== false,
+  }
   return configCache
 }
 
@@ -601,6 +664,10 @@ export function workflowFor(mode, { prompt, negativePrompt = '', lyrics = '', se
       resolution: s.resolution,
       frames: s.frames,
       fps: s.fps,
+      windowSeconds: s.windowSeconds,
+      segments: s.segments,
+      duration: s.duration,
+      crossfade: s.crossfadeSeconds || 0,
       seed: s.seed,
       steps: s.steps,
       cfg: s.cfg,

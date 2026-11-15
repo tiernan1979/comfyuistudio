@@ -111,8 +111,11 @@ export default function ModelsSection({
           picks for a 16GB card: <span className="text-text-secondary">Wan 2.1 t2v 1.3B</span> (fast, ~7GB),{' '}
           <span className="text-text-secondary">Wan 2.2 TI2V-5B</span> (best quality/VRAM balance),{' '}
           <span className="text-text-secondary">Wan 2.1/2.2 14B GGUF Q4</span> (highest quality, ~10–12GB), or{' '}
-          <span className="text-text-secondary">LTX-Video 13B Q4</span> (very fast). All of them need{' '}
+          <span className="text-text-secondary">LTX-Video 13B Q4</span> (very fast). Wan needs{' '}
           <span className="font-mono">umt5_xxl</span> as CLIP and <span className="font-mono">wan_2.1_vae</span>.
+          MiniMax H3 uses a different stack (<span className="font-mono">qwen3vl_32b_minimax_h3</span> text encoder,
+          an H3 video VAE and an H3 audio VAE) — it auto-corrects a mismatched pick but the fields below let you pin
+          the exact files.
         </Note>
         <ModelPresets mode="video" editDraft={videoDraft} setEditDraft={setVideoDraft} />
         <ModelField
@@ -135,6 +138,13 @@ export default function ModelsSection({
           onChange={(v) => setVideoDraft((d) => ({ ...d, vae: v }))}
           options={modelLists.vae}
           placeholder="wan_2.1_vae.safetensors"
+        />
+        <ModelField
+          label="Audio VAE (MiniMax H3)"
+          value={videoDraft.vaeAudio || ''}
+          onChange={(v) => setVideoDraft((d) => ({ ...d, vaeAudio: v }))}
+          options={modelLists.vae}
+          placeholder="minimax_h3_audio_vae_fp32.safetensors (empty = auto)"
         />
         <ModelField
           label="Turbo LoRA (optional — MiniMax H3, sample at 4–8 steps)"

@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion'
 import { X, Search, Loader2, Globe, ExternalLink, ImageOff, Bot } from 'lucide-react'
 import useStore from '../store/useStore'
 import { searchImages, downloadImage, searchEngineInfo } from '../lib/search'
+import { useFocusTrap } from '../hooks/useFocusTrap'
 
 export default function WebSearchPanel() {
   const show = useStore((s) => s.showWebSearch)
@@ -24,6 +25,16 @@ export default function WebSearchPanel() {
   const abortRef = useRef(null)
   const queryAtOpen = useRef('')
   const aiPicked = useRef(false)
+  const dialogRef = useRef(null)
+  const searchRef = useRef(null)
+
+  useFocusTrap(dialogRef, show)
+
+  // The trap starts on the first control (the close button); opening the
+  // panel should still land in the search field.
+  useEffect(() => {
+    if (show) searchRef.current?.focus()
+  }, [show])
 
   const runSearch = async (q) => {
     const term = (q ?? query).trim()
@@ -109,11 +120,25 @@ export default function WebSearchPanel() {
     setShow(false)
   }
 
+  useEffect(() => {
+    if (!show) return
+    const onKey = (e) => {
+      if (e.key === 'Escape') close()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [show])
+
   if (!show) return null
 
   return (
     <AnimatePresence>
       <motion.div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Find a reference image"
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
@@ -140,7 +165,9 @@ export default function WebSearchPanel() {
               </p>
             </div>
             <button
+              type="button"
               onClick={close}
+              aria-label="Close image search"
               className="p-2 rounded-lg hover:bg-bg-hover text-text-muted hover:text-text-primary transition-colors"
             >
               <X size={16} />
@@ -161,10 +188,10 @@ export default function WebSearchPanel() {
                 className="absolute left-3 top-1/2 -translate-y-1/2 text-text-muted"
               />
               <input
+                ref={searchRef}
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
                 placeholder="Describe the image you're looking for..."
-                autoFocus
                 className="w-full pl-9 pr-3 py-2.5 rounded-xl bg-bg-card border border-border text-sm text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-2 focus:ring-accent"
               />
             </div>

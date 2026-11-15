@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Scissors, Loader2, AlertTriangle } from 'lucide-react'
 import clsx from 'clsx'
@@ -24,6 +25,31 @@ export default function SplitPanel() {
   const setControlsWidth = useStore((s) => s.setControlsWidth)
 
   const base = resolveApiBase(serverUrl, useProxy)
+  // Object URL owned by the picked source preview (PartsPanel sets a server
+  // `url` instead, which is never revoked here).
+  const previewUrlRef = useRef('')
+
+  useEffect(() => {
+    const preview = splitSource?.preview || ''
+    if (previewUrlRef.current && previewUrlRef.current !== preview) {
+      URL.revokeObjectURL(previewUrlRef.current)
+    }
+    previewUrlRef.current = preview
+  }, [splitSource])
+
+  // splitSource lives in the store, so switching modes unmounts this panel but
+  // keeps the picked image: only revoke on unmount when the store no longer
+  // points at the preview, otherwise the image would come back broken.
+  useEffect(
+    () => () => {
+      const url = previewUrlRef.current
+      previewUrlRef.current = ''
+      if (url && useStore.getState().splitSource?.preview !== url) {
+        URL.revokeObjectURL(url)
+      }
+    },
+    [],
+  )
 
   const getSourceFile = async () => {
     if (splitSource?.file) return splitSource.file
@@ -46,13 +72,11 @@ export default function SplitPanel() {
     .filter(Boolean)
 
   const acceptFile = (file) => {
-    if (splitSource?.preview) URL.revokeObjectURL(splitSource.preview)
     setSplitSource({ file, preview: URL.createObjectURL(file), name: file.name })
     split.reset()
   }
 
   const clearSource = () => {
-    if (splitSource?.preview) URL.revokeObjectURL(splitSource.preview)
     setSplitSource(null)
     split.reset()
   }

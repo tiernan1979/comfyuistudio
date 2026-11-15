@@ -5,6 +5,11 @@ import App from './App.jsx'
 import ErrorBoundary from './components/ErrorBoundary.jsx'
 import useStore from './store/useStore.js'
 import { fetchRuntimeConfig } from './lib/config.js'
+import { initPwa } from './lib/pwa.js'
+
+// Capture the install prompt and register the service worker before React
+// mounts, so the sidebar button is live as soon as the app is on screen.
+initPwa()
 
 // Deployment config (config.json, baked into the container) is shared
 // across browsers: fresh browsers seed from it, and once it's been marked

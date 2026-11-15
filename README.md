@@ -30,6 +30,7 @@ Static frontend (React + Vite) served by nginx; every external request (ComfyUI,
   - *Tripo pipeline*: one cloud job — image → model → rig → 116 preset animations (needs ComfyUI signed in to comfy.org)
 - **History** — last 100 generations kept in the browser, synced live across **every browser, window, origin and device**: the UI refreshes ~1s after any job finishes anywhere (each session watches the ComfyUI websocket), with a 20s safety-net poll on top; entries are shared through the Studio API's durable store (so they survive ComfyUI restarts and match on `http://host:5555` and `https://…` alike), deletions sync through the shared hidden-ids list; plus saved prompts/bookmarks. Clearing history removes entries everywhere but leaves the generated files in ComfyUI's output folder
 - **Style presets + offline Enhance** — expand a plain sentence into a detailed prompt without any AI server
+- **Install as an app (PWA)** — add ComfyUI Studio to your desktop or phone home screen from the sidebar install button; the app shell loads offline, while generation and history stay live
 - **AI prompt writer** (optional) — rewrites your idea into a full prompt and picks a web search query. Providers:
   - LM Studio (local, default)
   - OpenAI (ChatGPT)
@@ -39,7 +40,7 @@ Static frontend (React + Vite) served by nginx; every external request (ComfyUI,
 - **Web image search → edit** — search [SearXNG](https://github.com/searxng/searxng), Serper, SerpAPI, Brave or Google CSE, click a result, and use it as the edit source
 - **LAN REST API** (optional) — generate image/edit/video/music, read models/history/queue from any device on your LAN ([api/](api/))
 - **MCP server** (optional) — drive the Studio REST API from Claude / any MCP client ([mcp/](mcp/))
-- **Idle model unloading** — tells ComfyUI to free VRAM after 5 minutes without generations (configurable)
+- **Idle model unloading** — the API watchdog (and the browser, while open) tells ComfyUI to free VRAM after 5 minutes of no queue/history activity; checks actual VRAM before deciding (configurable)
 - **On-disk deployment config** — instance settings live in a `config.json` file, not in the code; Settings → Save writes it back so every browser shares it
 
 ## Hardware & VRAM
@@ -47,9 +48,9 @@ Static frontend (React + Vite) served by nginx; every external request (ComfyUI,
 Every feature here is sized for a single **16 GB consumer GPU** (RTX 4060 Ti / 5060 Ti / 4070 Ti Super class) with ~16 GB of system RAM — the reference box this was built and tested on is an **RTX 5060 Ti 16 GB**. Nothing needs more, and where a model family is larger than the card the app *sequences* it rather than loading it all at once, so "it fits" is a design rule, not an accident:
 
 - **Quantized models by default.** Every preset points at an `int8_convrot` / `fp8` / `Q4_K_M` GGUF file (see [Models](#models)) — that's what lets the 14B-class video and music models fit. Full-precision variants are offered where they exist if you have the headroom; the dropdowns list whatever your server actually has.
-- **One model family resident at a time.** Each run POSTs `/free` (`unload_models` + `free_memory`) to ComfyUI before it starts and releases the weights again as soon as it finishes, so moving Image → Video → Music → Sprites never stacks models on the card.
+- **One model family resident at a time.** Consecutive jobs in the same family (image → image, edit → image) reuse the loaded weights; switching to video, music, SFX, a different UNET or a sprite chain unloads the previous family first, so models never stack on the card. An idle timer frees them after 5 minutes without activity.
 - **Multi-model chains sequence their weights.** The **Sprites → Video** engine samples with the ~9.7 GB high-noise WAN expert, `/free`s the card, then loads the ~9.7 GB low-noise expert for the second pass — the two never coexist. That's exactly why the run is split into a keyframe prompt + one prompt per stage instead of one large graph.
-- **Idle unload.** After 5 minutes with no generation (`autoUnload`, on by default) the app asks ComfyUI to release its VRAM, so the card is free for other work without you doing anything.
+- **Idle unload.** After 5 minutes with no generation (`autoUnload`, on by default) the API watchdog asks ComfyUI to release its VRAM, so the card is free even after you close the Studio tab. It checks the actual VRAM first and also reconciles the browser's cached "unloaded" state, so a stale flag can't stop it.
 - **VRAM guard.** When the prompt-writer LLM (LM Studio) shares the card with ComfyUI, the guard frees ComfyUI's weights before a run if a big LLM is resident — and refuses to start, with a clear message, if a ComfyUI job is already running, instead of racing two models into an out-of-memory crash.
 - **Modest default sizes.** 512² WAN clips, 1024² images, fixed per-row sprite cells — big enough to look right, small enough to leave headroom. The sliders stop where the card would choke (e.g. H3 video is capped at 12 windows ≈ 1 minute; sprite sheets at 48 pose / 96 video frames).
 
@@ -89,6 +90,12 @@ services:
       - "5555:80"
     environment:
       - NODE_ENV=production
+      # Optional hardening — leave empty to disable (see below).
+      - STUDIO_AUTH_USER=${STUDIO_AUTH_USER:-}
+      - STUDIO_AUTH_PASSWORD=${STUDIO_AUTH_PASSWORD:-}
+      - STUDIO_API_KEY=${STUDIO_API_KEY:-}
+      # Only for internal HTTPS services with self-signed certificates.
+      - STUDIO_PROXY_INSECURE=${STUDIO_PROXY_INSECURE:-}
     extra_hosts:
       # Lets the container reach services on the Docker host by name,
       # e.g. LM Studio at http://host.docker.internal:1234
@@ -105,10 +112,11 @@ services:
       context: .
       dockerfile: api/Dockerfile
     ports:
-      - "5557:5557"
+      # Loopback by default. Set STUDIO_API_BIND=0.0.0.0 for remote clients.
+      - "${STUDIO_API_BIND:-127.0.0.1}:5557:5557"
     environment:
       - COMFYUI_URL=http://10.1.1.102:8188   # your ComfyUI server
-      - API_KEY=                             # set to require Bearer auth
+      - API_KEY=${STUDIO_API_KEY:-}         # optional; same key as the Studio
     restart: unless-stopped
     volumes:
       - studio-api-data:/app/data
@@ -136,6 +144,37 @@ npm install
 npm run dev        # dev server with hot reload
 npm run build      # production build into dist/
 ```
+
+### Install as an app (PWA)
+
+ComfyUI Studio ships a web app manifest and a service worker, so it can run in its own window without browser chrome.
+
+- **Desktop (Chrome / Edge):** click the install icon in the sidebar header, or the install button in the address bar.
+- **Android (Chrome):** menu → **Install app** / **Add to Home screen**.
+- **iOS / iPadOS (Safari):** Share → **Add to Home Screen** (Safari does not expose an in-page install prompt).
+
+Installability requires a **secure context**: `http://localhost:5555` and `http://127.0.0.1:5555` work, but a plain-HTTP LAN address such as `http://192.168.1.10:5555` does not — use HTTPS if you want to install on another device. The service worker caches only the app shell and static assets; ComfyUI, the Studio API, proxy traffic and `config.json` always go to the network.
+
+### Optional hardening (basic auth / API key)
+
+Both gates are **off by default** and configured through the environment (a `.env` file next to `docker-compose.yml` works):
+
+```bash
+# Protect the whole Studio UI with HTTP basic auth.
+STUDIO_AUTH_USER=studio
+STUDIO_AUTH_PASSWORD=change-me
+
+# Require a key on the REST API. nginx adds it automatically for the
+# Studio UI's own /api/ calls; direct API clients send
+# Authorization: Bearer <key> (or X-Api-Key: <key>).
+STUDIO_API_KEY=change-me-too
+```
+
+`docker compose up -d` recreates the Studio container with the gate enabled. The basic-auth prompt is handled by the browser, so it also covers `/config.json`, the PWA and the ComfyUI/LLM proxy. Leave either value empty to disable that gate.
+
+The REST API binds to **127.0.0.1:5557** by default, so it is reachable by local MCP/API clients and by nginx over the Docker network but not from the LAN. To expose it to a remote client, set `STUDIO_API_BIND=0.0.0.0` **and** set `STUDIO_API_KEY` — without a key the REST API is unauthenticated. If you already front the stack with Traefik and only need HTTPS, leave both unset.
+
+The `/proxy/https/` route verifies upstream certificates by default. If an internal service uses a self-signed certificate, opt out explicitly with `STUDIO_PROXY_INSECURE=1`; this weakens those proxied connections, so prefer installing the internal CA in the container. Common cloud metadata addresses (`169.254.0.0/16`, `metadata.google.internal`, Azure instance metadata and `100.100.100.200`) are blocked from the proxy.
 
 ## Configuration
 
@@ -325,11 +364,13 @@ native H3 workflow (videos carry an audio track):
 | `minimax_h3_video_vae_fp16.safetensors` | `models/vae/` | [Comfy-Org/MiniMax-H3](https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/vae/minimax_h3_video_vae_fp16.safetensors) |
 | `minimax_h3_audio_vae_fp32.safetensors` | `models/vae/` | [Comfy-Org/MiniMax-H3](https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/vae/minimax_h3_audio_vae_fp32.safetensors) |
 
-The audio VAE is required — the app checks for it before queueing. If you have the
-model but leave the clip/VAE slots on stale values, the app overrides them at build
-time (H3 needs its own `qwen3vl_32b_*` text encoder and the H3 video VAE — feeding it
-the *music* encoder crashes the sampler with a `mat1 and mat2 shapes cannot be
-multiplied` error).
+The audio VAE is required — the app checks for it before queueing. Settings → Video
+Models exposes all four slots (UNET, text encoder, video VAE, audio VAE). A configured
+file is used when it is a valid H3 asset that exists on the server; a stale one
+(classically the Wan `umt5` encoder or `wan_2.1_vae`) is replaced with the server's H3
+match and written back to the preset, so `config.json` stops disagreeing with what the
+graph actually loaded. Feeding H3 the *music* encoder still crashes the sampler with a
+`mat1 and mat2 shapes cannot be multiplied` error, which is what this correction prevents.
 
 **Longer clips — chained windows.** H3 is trained on **124–362 frame** windows
 (≈5.2–15.1 s at 24 fps). Shorter windows are out of distribution: the subject drifts and
@@ -607,10 +648,12 @@ its own docker volume:
 | `GET /api/file` | fetch a generated file |
 | `GET/POST /api/hidden-ids` | shared delete list — history deletions sync across browsers/devices |
 
-Set `API_KEY` in compose to require `Authorization: Bearer <key>` on every route — **without
-it the API is unauthenticated**. The service binds `127.0.0.1` by default; the Docker image
-sets `HOST=0.0.0.0` so the compose network can reach it. If you publish the port beyond
-your LAN, set `API_KEY`.
+Set `API_KEY` (or `STUDIO_API_KEY` in compose, which also wires the Studio UI) to require
+`Authorization: Bearer <key>` on every route — **without it the API is unauthenticated**.
+The service binds `127.0.0.1` by default; the Docker image sets `HOST=0.0.0.0` so the compose
+network can reach it. If you publish the port beyond your LAN, set the key.
+Cross-origin browser clients are rejected unless their origin is listed in
+`STUDIO_CORS_ORIGINS` (comma-separated); same-origin Studio traffic needs no entry.
 The web UI itself uses `/api/history` + `/api/hidden-ids` (nginx forwards `/api/` to this
 service), so running it gives every browser/origin the same history — deletions included —
 and history survives ComfyUI restarts (its own `/history` is in-memory).

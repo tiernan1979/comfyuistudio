@@ -39,10 +39,26 @@ test('checkpoint graphs and character chains are tracked separately', () => {
   )
   assert.match(sfx, /^sfx:ckpt:stable_audio/)
   const chain = familyForRun(
-    { mode: 'sprite', models: { character: { unet: 'wan22.safetensors' } } },
+    {
+      mode: 'sprite',
+      models: {
+        character: { high: 'wan_high.gguf', low: 'wan_low.gguf' },
+      },
+    },
     { chainPlan: { phase: 'keyframe' } },
   )
-  assert.equal(chain, 'character:wan22.safetensors')
+  assert.equal(chain, 'character:wan_high.gguf|wan_low.gguf')
+
+  const otherChain = familyForRun(
+    {
+      mode: 'sprite',
+      models: {
+        character: { high: 'wan_high.gguf', low: 'other_low.gguf' },
+      },
+    },
+    { chainPlan: { phase: 'keyframe' } },
+  )
+  assert.notEqual(chain, otherChain)
 })
 
 test('loaded family tracker stores the last queued family', () => {

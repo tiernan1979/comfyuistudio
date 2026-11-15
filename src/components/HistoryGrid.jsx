@@ -32,7 +32,9 @@ export default function HistoryGrid() {
           tabIndex={0}
           initial={{ opacity: 0, scale: 0.8 }}
           animate={{ opacity: 1, scale: 1 }}
-          transition={{ delay: i * 0.03 }}
+          // Cap the stagger: large histories would otherwise take seconds
+          // before the last tiles appear.
+          transition={{ delay: Math.min(i, 12) * 0.03 }}
           whileHover={{ scale: 1.05 }}
           whileTap={{ scale: 0.95 }}
           onClick={() => selectHistory(entry.id)}

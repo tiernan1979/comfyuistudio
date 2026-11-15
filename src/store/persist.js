@@ -216,8 +216,65 @@ const withoutHistory = (value) =>
     return true
   })
 
+// Zustand persist calls setItem on every store update. Progress arrives
+// several times per second during a render, and each write serializes the
+// whole history (including large 3D thumbnails). Keep the first write
+// immediate, then coalesce bursts into one trailing write so the main
+// thread isn't stringifying the same state dozens of times per second.
+const WRITE_DELAY_MS = 300
+let pendingWrite = null
+let writeTimer = null
+let lastWriteAt = 0
+
+function writeItem(name, value) {
+  lastWriteAt = Date.now()
+  try {
+    window.localStorage.setItem(name, value)
+    return
+  } catch (err) {
+    if (!isQuotaError(err)) {
+      console.warn('[studio] could not save settings', err)
+      return
+    }
+  }
+  const trimmed = withoutThumbnails(value)
+  if (trimmed) {
+    try {
+      window.localStorage.setItem(name, trimmed)
+      console.warn('[studio] localStorage full — saved history without 3D thumbnails')
+      return
+    } catch {
+      /* still too big — fall through */
+    }
+  }
+  const minimal = withoutHistory(value)
+  if (minimal) {
+    try {
+      window.localStorage.setItem(name, minimal)
+      console.warn('[studio] localStorage full — saved settings with an empty history')
+      return
+    } catch {
+      /* give up; the session keeps working in memory */
+    }
+  }
+  console.warn('[studio] localStorage is full — settings will not persist until space is freed')
+}
+
+function flushSafeStorage() {
+  if (writeTimer) {
+    clearTimeout(writeTimer)
+    writeTimer = null
+  }
+  if (!pendingWrite) return
+  const { name, value } = pendingWrite
+  pendingWrite = null
+  writeItem(name, value)
+}
+
 export const safeStorage = {
   getItem: (name) => {
+    // Hydration should see a queued write from the same page load.
+    flushSafeStorage()
     try {
       return window.localStorage.getItem(name)
     } catch {
@@ -225,42 +282,34 @@ export const safeStorage = {
     }
   },
   setItem: (name, value) => {
-    try {
-      window.localStorage.setItem(name, value)
+    if (!writeTimer && Date.now() - lastWriteAt >= WRITE_DELAY_MS) {
+      writeItem(name, value)
       return
-    } catch (err) {
-      if (!isQuotaError(err)) {
-        console.warn('[studio] could not save settings', err)
-        return
-      }
     }
-    const trimmed = withoutThumbnails(value)
-    if (trimmed) {
-      try {
-        window.localStorage.setItem(name, trimmed)
-        console.warn('[studio] localStorage full — saved history without 3D thumbnails')
-        return
-      } catch {
-        /* still too big — fall through */
-      }
-    }
-    const minimal = withoutHistory(value)
-    if (minimal) {
-      try {
-        window.localStorage.setItem(name, minimal)
-        console.warn('[studio] localStorage full — saved settings with an empty history')
-        return
-      } catch {
-        /* give up; the session keeps working in memory */
-      }
-    }
-    console.warn('[studio] localStorage is full — settings will not persist until space is freed')
+    pendingWrite = { name, value }
+    if (!writeTimer) writeTimer = setTimeout(flushSafeStorage, WRITE_DELAY_MS)
   },
   removeItem: (name) => {
+    if (pendingWrite?.name === name) {
+      pendingWrite = null
+      if (writeTimer) {
+        clearTimeout(writeTimer)
+        writeTimer = null
+      }
+    }
     try {
       window.localStorage.removeItem(name)
     } catch {
       /* ignore */
     }
   },
+}
+
+// Don't lose the last progress/state change when the tab closes or is
+// backgrounded while a trailing write is still queued.
+if (typeof window !== 'undefined') {
+  window.addEventListener('beforeunload', flushSafeStorage)
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') flushSafeStorage()
+  })
 }

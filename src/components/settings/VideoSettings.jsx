@@ -128,9 +128,12 @@ function H3DurationControls() {
   // Old saves stored duration 2 (below one trained window) — show the real
   // minimum instead of a slider value the builder cannot honour.
   const duration = Math.max(oneWindow, settings.duration ?? oneWindow)
-  const maxDuration = Math.ceil(h3ChainedSeconds(H3_MAX_SEGMENTS, frames, fps, windowSeconds))
-  const windows = h3SegmentsForDuration(duration, frames, fps, windowSeconds)
-  const achieved = h3ChainedSeconds(windows, frames, fps, windowSeconds)
+  const crossfade = settings.crossfadeSeconds ?? 0
+  const maxDuration = Math.ceil(
+    h3ChainedSeconds(H3_MAX_SEGMENTS, frames, fps, windowSeconds, crossfade),
+  )
+  const windows = h3SegmentsForDuration(duration, frames, fps, windowSeconds, crossfade)
+  const achieved = h3ChainedSeconds(windows, frames, fps, windowSeconds, crossfade)
 
   return (
     <>

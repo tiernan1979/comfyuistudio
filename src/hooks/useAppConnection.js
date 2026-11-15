@@ -3,6 +3,7 @@ import useStore from '../store/useStore'
 import {
   checkConnection,
   getQueueStatus,
+  getSystemStats,
   connectWebSocket,
   disconnectWebSocket,
   resolveApiBase,
@@ -12,6 +13,9 @@ import { syncServerHistory } from './useComfyUI'
 import { setLoadedFamily } from '../lib/modelFamily'
 
 const STORAGE_KEY = 'comfyui-studio-storage'
+
+// Above ComfyUI's ~1.3 GB release baseline; real models are far larger.
+const RESIDENT_VRAM_BYTES = 2 * 1024 ** 3
 
 // App-lifetime services: connection health, the shared WebSocket, the
 // server-history refresh, and the idle model-unload timer.
@@ -103,6 +107,19 @@ export function useAppConnection() {
           // unload them while ComfyUI is still working through the queue.
           useStore.getState().setLastGenAt(Date.now())
           useStore.getState().setModelsUnloaded(false)
+        } else if (!useStore.getState().generating) {
+          // Reconcile the badge with VRAM on every connection tick, even
+          // when auto-unload is off. The API watchdog (or another browser)
+          // can free weights without this tab knowing; without this the
+          // "models loaded" chip lingered until a reload.
+          const stats = await getSystemStats(apiBase)
+          if (stats && stats.vramTotal > 0) {
+            const used = Math.max(0, stats.vramTotal - stats.vramFree)
+            const resident = used > RESIDENT_VRAM_BYTES
+            const st = useStore.getState()
+            st.setModelsUnloaded(!resident)
+            if (resident && !st.lastGenAt) st.setLastGenAt(Date.now())
+          }
         }
         // Shared deletes: pull the hidden-ids list every tick (tiny GET) so
         // history removed on another browser/device disappears here too,
@@ -145,17 +162,40 @@ export function useAppConnection() {
   // VRAM/RAM (the next generation reloads them). Activity includes local
   // renders, jobs from the API/another browser, and websocket execution
   // traffic tracked above.
+  //
+  // The stored flag can go stale: another browser or the REST API may load
+  // models after this tab unloaded, or unload them while this tab still
+  // thinks it owns the weights. VRAM is the source of truth, so reconcile
+  // the flag before deciding — a stale `modelsUnloaded` used to make this
+  // timer skip forever (and hide the manual unload button).
   useEffect(() => {
     const IDLE_MS = 5 * 60 * 1000
     const interval = setInterval(async () => {
       const s = useStore.getState()
-      if (!s.autoUnload || !s.connected || s.generating) return
-      if (s.queueRemaining > 0) {
-        s.setLastGenAt(Date.now())
-        if (s.modelsUnloaded) s.setModelsUnloaded(false)
+      if (!s.autoUnload || !s.connected) return
+      const base = resolveApiBase(s.serverUrl, s.useProxy)
+      const stats = await getSystemStats(base)
+      if (!stats || !stats.vramTotal) return
+      const vramUsed = Math.max(0, stats.vramTotal - stats.vramFree)
+      const resident = vramUsed > RESIDENT_VRAM_BYTES
+
+      if (!resident) {
+        // Models are already gone (server-side unloader, ComfyUI restart,
+        // or a failed run) — trust VRAM over the in-memory flag.
+        if (!s.modelsUnloaded) s.setModelsUnloaded(true)
         return
       }
-      if (s.modelsUnloaded) return
+      if (s.modelsUnloaded) {
+        // Flag says unloaded but weights are resident: re-arm the countdown
+        // instead of skipping unloading forever.
+        s.setModelsUnloaded(false)
+        s.setLastGenAt(Date.now())
+        return
+      }
+      if (s.generating || s.queueRemaining > 0) {
+        s.setLastGenAt(Date.now())
+        return
+      }
       // First connection with pre-loaded models: start the countdown now
       // rather than never unloading (lastGenAt is 0 on a fresh page).
       if (!s.lastGenAt) {
@@ -164,7 +204,6 @@ export function useAppConnection() {
       }
       if (Date.now() - s.lastGenAt < IDLE_MS) return
       try {
-        const base = resolveApiBase(s.serverUrl, s.useProxy)
         const res = await fetch(`${base}/free`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },

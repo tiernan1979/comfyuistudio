@@ -4,8 +4,8 @@ FROM node:20-alpine
 
 WORKDIR /app
 
-COPY api/package.json ./api/package.json
-RUN cd api && npm install --omit=dev --no-audit --no-fund
+COPY api/package.json api/package-lock.json ./api/
+RUN cd api && npm ci --omit=dev --no-audit --no-fund
 
 COPY src/lib/workflows ./src/lib/workflows
 COPY src/lib/comfyui ./src/lib/comfyui

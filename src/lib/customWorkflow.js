@@ -127,21 +127,26 @@ export function applyCustomWorkflow(graph, mapping, { prompt, negative, seed } =
   const promptKey = mapping.promptKey || 'text'
   out[mapping.promptNode].inputs[promptKey] = String(prompt || '')
 
-  if (negative && mapping.negativeNode && out[mapping.negativeNode]) {
+  if (negative !== undefined && mapping.negativeNode && out[mapping.negativeNode]) {
     const key = mapping.negativeKey || 'text'
     if (typeof out[mapping.negativeNode].inputs?.[key] === 'string') {
       out[mapping.negativeNode].inputs[key] = String(negative)
     }
   }
 
-  if (mapping.seedNode && out[mapping.seedNode]) {
+  if (mapping.seedNode) {
     const key = mapping.seedKey || 'seed'
-    if (typeof out[mapping.seedNode].inputs?.[key] === 'number') {
-      out[mapping.seedNode].inputs[key] =
-        seed === -1 || seed === undefined || seed === null
-          ? Math.floor(Math.random() * 2 ** 48)
-          : seed
+    const node = out[mapping.seedNode]
+    if (!node || typeof node.inputs?.[key] !== 'number') {
+      throw new Error(
+        `The mapped seed input (${mapping.seedNode}.${key}) is not a number input — ` +
+          'remap it in Settings → Workflows or use a fixed seed in the graph.',
+      )
     }
+    node.inputs[key] =
+      seed === -1 || seed === undefined || seed === null
+        ? Math.floor(Math.random() * 2 ** 48)
+        : seed
   }
   return out
 }

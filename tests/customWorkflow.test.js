@@ -85,6 +85,21 @@ test('applyCustomWorkflow randomises a -1 seed and rejects bad mappings', () => 
   )
 })
 
+test('applyCustomWorkflow clears a mapped negative prompt', () => {
+  const mapping = defaultMapping(graph)
+  const out = applyCustomWorkflow(graph, mapping, { prompt: 'a dog', negative: '' })
+  assert.equal(out['3'].inputs.text, '')
+})
+
+test('applyCustomWorkflow rejects a seed mapping that is not a number input', () => {
+  const linked = JSON.parse(JSON.stringify(graph))
+  linked['5'].inputs.seed = 'not-a-number'
+  assert.throws(
+    () => applyCustomWorkflow(linked, defaultMapping(graph), { prompt: 'x', seed: 123 }),
+    /not a number input/
+  )
+})
+
 test('serializeWorkflow round-trips through parseWorkflowJson', () => {
   const record = { name: 'Round trip', graph, mapping: defaultMapping(graph) }
   const parsed = parseWorkflowJson(serializeWorkflow(record))

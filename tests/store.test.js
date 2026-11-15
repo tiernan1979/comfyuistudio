@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 
 import { migrate, partialize, STORAGE_VERSION } from '../src/store/persist.js'
+import { resolvePresetModels } from '../src/store/helpers.js'
 import { DEFAULT_MODELS, DEFAULT_PRESETS, DEFAULT_ACTIVE } from '../src/store/defaults.js'
 import { AUTOSPLIT_LABEL_PRESETS } from '../src/lib/workflows.js'
 
@@ -39,6 +40,38 @@ test('migrate clamps an out-of-range active preset index', () => {
   const s = migrate({ active: { ...DEFAULT_ACTIVE, music: 99 } })
   const list = DEFAULT_PRESETS.music
   assert.equal(s.active.music, list.length > 0 ? 0 : null)
+})
+
+test('preflight resolves the active video preset over the flat group', () => {
+  const state = {
+    models: { video: { unet: 'wan2.1_t2v_1.3B_bf16.safetensors' } },
+    presets: {
+      video: [
+        {
+          name: 'MiniMax H3',
+          unet: 'minimax_h3_fl2va_pruned_int8_convrot.safetensors',
+          clip: 'qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors',
+          vae: 'minimax_h3_video_vae_fp16.safetensors',
+        },
+      ],
+    },
+    active: { video: 0 },
+  }
+  const resolved = resolvePresetModels(state)
+  assert.equal(resolved.video.unet, 'minimax_h3_fl2va_pruned_int8_convrot.safetensors')
+  assert.equal(resolved.video.clip, 'qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors')
+  // Flat fields absent from the preset still fall through.
+  assert.equal(resolved.video.lora, undefined)
+})
+
+test('preflight falls back to the flat group with no active preset', () => {
+  const flat = 'wan2.1_t2v_1.3B_bf16.safetensors'
+  const resolved = resolvePresetModels({
+    models: { video: { unet: flat } },
+    presets: { video: [] },
+    active: { video: null },
+  })
+  assert.equal(resolved.video.unet, flat)
 })
 
 test('partialize keeps settings and drops transient run state', () => {

@@ -43,6 +43,8 @@ export default function useThreeDRun({
   const mvRef = useRef(null)
   const [preview, setPreview] = useState(null) // { url, name }
   const createdUrlRef = useRef(null)
+  // Object URL owned by the picked source image (see the cleanup effects).
+  const imageUrlRef = useRef('')
 
   const srcLabel = sourceImage?.name ? ` from ${sourceImage.name}` : ''
 
@@ -168,17 +170,29 @@ export default function useThreeDRun({
     }
   }, [run.mesh, run.results, importedMesh, idle.idleMesh, base])
 
-  // Drop the temporary preview URL when the panel unmounts.
+  // The picked image's preview is an object URL created here: revoke the
+  // previous one when the image is replaced or cleared. Comparing against the
+  // live value means a URL still on screen is never revoked.
+  useEffect(() => {
+    const preview = image?.preview || ''
+    if (imageUrlRef.current && imageUrlRef.current !== preview) {
+      URL.revokeObjectURL(imageUrlRef.current)
+    }
+    imageUrlRef.current = preview
+  }, [image])
+
+  // Drop the temporary preview URLs when the panel unmounts.
   useEffect(
     () => () => {
       if (createdUrlRef.current) URL.revokeObjectURL(createdUrlRef.current)
+      if (imageUrlRef.current) URL.revokeObjectURL(imageUrlRef.current)
+      imageUrlRef.current = ''
     },
     [],
   )
 
   const pick = (f) => {
     if (!f || !String(f.type || '').startsWith('image/')) return
-    if (image?.preview) URL.revokeObjectURL(image.preview)
     setImage({ file: f, preview: URL.createObjectURL(f), name: f.name })
   }
 
@@ -216,7 +230,6 @@ export default function useThreeDRun({
   }
 
   const clearImage = () => {
-    if (image?.preview) URL.revokeObjectURL(image.preview)
     setImage(null)
     if (fileRef.current) fileRef.current.value = ''
   }

@@ -9,15 +9,18 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 CONTAINER=imagegen-comfyui-studio-1
-CFG=/tmp/comfyui-studio-config.bak.json
+CFG=""
+trap 'rm -f "$CFG"' EXIT
 
 if docker ps --format '{{.Names}}' | grep -qx "$CONTAINER"; then
   # New layout first (/configdir, volume-backed), old layout as fallback
   # (config baked under the html root, pre-volume images).
+  CFG=$(mktemp /tmp/comfyui-studio-config.XXXXXX.json)
   if docker exec "$CONTAINER" sh -c 'cat /configdir/config.json 2>/dev/null || cat /usr/share/nginx/html/config.json 2>/dev/null' > "$CFG" && [ -s "$CFG" ]; then
     echo "backed up live config -> $CFG"
   else
     echo "no live config to back up"
+    rm -f "$CFG"
     CFG=""
   fi
 else

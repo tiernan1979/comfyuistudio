@@ -137,6 +137,15 @@ test('H3 window maths clamp to the segment budget', () => {
   assert.equal(h3ChainedSeconds(9999, 33, 16), h3ChainedSeconds(H3_MAX_SEGMENTS, 33, 16))
 })
 
+test('H3 crossfade shortens the chained timeline and clamps the fade', () => {
+  const hard = h3ChainedSeconds(3, 33, 16)
+  const soft = h3ChainedSeconds(3, 33, 16, 0, 0.5)
+  assert.ok(soft < hard, 'a crossfade loses frames at each join')
+  const length = h3LengthFrames(33, 16)
+  const maxLoss = Math.max(1, Math.floor(length / 4))
+  assert.equal(h3ChainedSeconds(3, 33, 16, 0, 5), (length + 2 * (length - maxLoss)) / 24)
+})
+
 test('H3 windows stay inside the trained frame range', () => {
   // The old 56-frame windows were outside the model's 124–362 training range
   // and drifted within seconds. Every path must clamp up to 124.

@@ -1,8 +1,9 @@
-import { useState, useRef } from 'react'
+import { useEffect, useState, useRef } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Download, Maximize2, X, Play, Pause } from 'lucide-react'
 import useStore from '../store/useStore'
-import { looksLikeVideoModel } from '../lib/comfyui'
+import { looksLikeVideoModel, downloadFileAs } from '../lib/comfyui'
+import { useFocusTrap } from '../hooks/useFocusTrap'
 
 export default function VideoPlayer() {
   const outputVideo = useStore((s) => s.outputVideo)
@@ -13,24 +14,29 @@ export default function VideoPlayer() {
   const [playing, setPlaying] = useState(true)
   const [fullscreen, setFullscreen] = useState(false)
   const videoRef = useRef(null)
+  const fullscreenRef = useRef(null)
 
   // mp4/webm need <video>; animated webp only renders in <img>.
   const mediaIsMp4 = /\.(mp4|webm|mov)\b/i.test(outputVideo || '')
 
+  useFocusTrap(fullscreenRef, !!(fullscreen && outputVideo))
+
+  useEffect(() => {
+    if (!fullscreen) return
+    const onKey = (e) => {
+      if (e.key === 'Escape') setFullscreen(false)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [fullscreen])
+
   const handleDownload = async () => {
     if (!outputVideo) return
-    const res = await fetch(outputVideo)
-    const blob = await res.blob()
-    const url = URL.createObjectURL(blob)
     const m = /[?&]filename=([^&]+)/.exec(outputVideo)
     const name = m ? decodeURIComponent(m[1]) : ''
     const ext = (name.match(/\.\w+$/) || ['.mp4'])[0]
     const safe = title ? title.replace(/[^\w\s-]/g, '').trim().replace(/\s+/g, '_').slice(0, 60) : ''
-    const a = document.createElement('a')
-    a.href = url
-    a.download = safe ? `${safe}${ext}` : `comfyui-video-${Date.now()}${ext}`
-    a.click()
-    URL.revokeObjectURL(url)
+    await downloadFileAs(outputVideo, safe ? `${safe}${ext}` : `comfyui-video-${Date.now()}${ext}`)
   }
 
   const togglePlay = () => {
@@ -109,18 +115,22 @@ export default function VideoPlayer() {
               {/* Download button */}
               <div className="absolute bottom-3 right-3 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
                 <motion.button
+                  type="button"
                   whileHover={{ scale: 1.1 }}
                   whileTap={{ scale: 0.9 }}
                   onClick={handleDownload}
+                  aria-label="Download video"
                   className="p-2 rounded-lg glass hover:bg-white/10 transition-colors"
                   title="Download video"
                 >
                   <Download size={16} />
                 </motion.button>
                 <motion.button
+                  type="button"
                   whileHover={{ scale: 1.1 }}
                   whileTap={{ scale: 0.9 }}
                   onClick={() => setFullscreen(true)}
+                  aria-label="View fullscreen"
                   className="p-2 rounded-lg glass hover:bg-white/10 transition-colors"
                   title="Fullscreen"
                 >
@@ -157,6 +167,10 @@ export default function VideoPlayer() {
       <AnimatePresence>
         {fullscreen && outputVideo && (
           <motion.div
+            ref={fullscreenRef}
+            role="dialog"
+            aria-modal="true"
+            aria-label="Generated video fullscreen"
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
@@ -164,6 +178,9 @@ export default function VideoPlayer() {
             onClick={() => setFullscreen(false)}
           >
             <motion.button
+              type="button"
+              onClick={() => setFullscreen(false)}
+              aria-label="Close fullscreen"
               className="absolute top-4 right-4 p-2 rounded-full glass hover:bg-white/10"
               whileHover={{ scale: 1.1 }}
             >

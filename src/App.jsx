@@ -18,7 +18,23 @@ const SettingsModal = lazy(() => import('./components/SettingsModal'))
 // open so the trap activates and Escape can close it.
 function MobileDrawer() {
   const ref = useRef(null)
+  const setSidebarOpen = useStore((s) => s.setSidebarOpen)
   useFocusTrap(ref, true)
+
+  // Escape closes the drawer like every other modal, and the page behind it
+  // must not scroll while the drawer is open.
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key === 'Escape') setSidebarOpen(false)
+    }
+    const previousOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    window.addEventListener('keydown', onKey)
+    return () => {
+      window.removeEventListener('keydown', onKey)
+      document.body.style.overflow = previousOverflow
+    }
+  }, [setSidebarOpen])
 
   return (
     <motion.aside

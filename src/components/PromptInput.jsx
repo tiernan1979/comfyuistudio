@@ -64,6 +64,11 @@ export default function PromptInput() {
 
   const applyStyle = (styleKey) => {
     setStyle(styleKey)
+    // Apply the positive tags immediately: selecting a style used to leave the
+    // prompt untouched until Enhance was clicked, so a ground prompt like
+    // "soil" still rendered as a centred pile. enhancePrompt() also strips the
+    // previous style first, so switching styles never stacks tags.
+    if (prompt.trim()) setPrompt(enhancePrompt(prompt, styleKey))
     // Fill the negative prompt from the style, but never overwrite user text.
     // SFX/sprites have their own negative fields with no style defaults.
     if (mode !== 'sfx' && mode !== 'sprite' && !negativePrompt.trim() && STYLES[styleKey]?.negative) {

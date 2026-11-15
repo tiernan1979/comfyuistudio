@@ -225,7 +225,7 @@ export async function runPaintSkin(
     }
   }
 
-  const buildWf = (fix) =>
+  const buildWf = (fix, upscale) =>
     buildPaintWorkflow({
       meshPath: `3d/${stored}`,
       imageName: up.name,
@@ -236,7 +236,7 @@ export async function runPaintSkin(
       textureSize: cfg.hunyuanTextureSize ?? 4096,
       outputName,
       faceFix: fix,
-      viewUpscale: up,
+      viewUpscale: upscale,
     })
 
   const runOnce = async (fix, up) => {

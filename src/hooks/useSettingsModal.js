@@ -356,10 +356,14 @@ export default function useSettingsModal() {
     }
     setServerUrl(localUrl)
     setModels('image', localModels.image)
-    setModels('video', localModels.video)
+    // Video/music/SFX fields edit their own drafts (not localModels), so
+    // merge the drafts into the flat group too. Without this a model picked
+    // with no active preset was discarded on Save and generation fell back
+    // to the old default.
+    setModels('video', { ...(localModels.video || {}), ...videoDraft })
     if (localModels.edit) setModels('edit', localModels.edit)
-    if (localModels.music) setModels('music', localModels.music)
-    if (localModels.sfx) setModels('sfx', localModels.sfx)
+    if (localModels.music) setModels('music', { ...(localModels.music || {}), ...editDraft })
+    if (localModels.sfx) setModels('sfx', { ...(localModels.sfx || {}), ...sfxDraft })
     if (localModels.character) setModels('character', localModels.character)
     // Write the edited model files back into the selected preset so the picker
     // and generation both see the change.

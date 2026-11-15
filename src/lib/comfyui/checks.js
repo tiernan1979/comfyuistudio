@@ -1,9 +1,9 @@
 import { isAceStepModel, isStableAudioModel } from '../workflows.js'
 import {
   getModelLists,
+  isSupportedMusicModel,
+  isSupportedVideoModel,
   listModels,
-  looksLikeMusicModel,
-  looksLikeVideoModel,
   resolveAceStepModels,
   resolveStableAudioModels,
 } from './models.js'
@@ -145,13 +145,12 @@ export async function assertModelsAvailable(base, mode, models) {
           `have: ${lists.vae.join(', ') || 'none'}.`
       )
     }
-    if (unet && (sameAsImage || !looksLikeVideoModel(unet))) {
+    if (unet && (sameAsImage || !isSupportedVideoModel(unet))) {
       missing.push(
-        `"${unet}" is an image model — video needs a VIDEO diffusion model ` +
-          `(Wan 2.1/2.2 t2v, Hunyuan-Video, CogVideoX, LTX-Video, …). ` +
-          (lists.unet.some(looksLikeVideoModel)
-            ? `Your server has: ${lists.unet.filter(looksLikeVideoModel).join(', ')} — pick it in Settings → Video Models.`
-            : `Your ComfyUI has no video model installed — drop one into ComfyUI/models/unet/ and set it in Settings → Video Models.`)
+        `"${unet}" is not a supported video model — this build renders Wan 2.1/2.2 or MiniMax H3. ` +
+          (lists.unet.some(isSupportedVideoModel)
+            ? `Your server has: ${lists.unet.filter(isSupportedVideoModel).join(', ')} — pick it in Settings → Video Models.`
+            : `Your ComfyUI has no supported video model installed — drop a Wan or MiniMax H3 model into ComfyUI/models/unet/ and set it in Settings → Video Models.`)
       )
     }
   }
@@ -174,13 +173,12 @@ export async function assertModelsAvailable(base, mode, models) {
       } catch (err) {
         missing.push(err.message)
       }
-    } else if (!looksLikeMusicModel(unet)) {
+    } else if (!isSupportedMusicModel(unet)) {
       missing.push(
-        `"${unet}" is not a music model — music needs a MUSIC diffusion model ` +
-          `(MiniMax Music 3, YuE, ACE-Step, Stable Audio, …). ` +
-          (lists.unet.some(looksLikeMusicModel)
-            ? `Your server has: ${lists.unet.filter(looksLikeMusicModel).join(', ')} — pick it in Settings → Music Models.`
-            : `Your ComfyUI has no music model installed — drop one into ComfyUI/models/unet/ and set it in Settings → Music Models.`)
+        `"${unet}" is not a supported music model — this build renders MiniMax Music 3, ACE-Step or Stable Audio. ` +
+          (lists.unet.some(isSupportedMusicModel)
+            ? `Your server has: ${lists.unet.filter(isSupportedMusicModel).join(', ')} — pick it in Settings → Music Models.`
+            : `Your ComfyUI has no supported music model installed — add MiniMax Music 3, ACE-Step or Stable Audio and set it in Settings → Music Models.`)
       )
     }
   }
@@ -210,17 +208,17 @@ export async function assertModelsAvailable(base, mode, models) {
                 : 'Image generation'
     const fileIssues = missing.some((m) => m.includes('is not on the server'))
     let tail = fileIssues ? ' Fix them in Settings → Models.' : ''
-    if (mode === 'video' && fileIssues && !missing.some((m) => m.includes('is an image model'))) {
-      const vids = lists.unet.filter(looksLikeVideoModel)
+    if (mode === 'video' && fileIssues && !missing.some((m) => m.includes('is not a supported video model'))) {
+      const vids = lists.unet.filter(isSupportedVideoModel)
       tail += vids.length
         ? ` ComfyUI supports video natively — install one of these video models or select an existing one in Settings → Models: ${vids.join(', ')}.`
-        : ' ComfyUI supports video natively (Wan, Hunyuan-Video, CogVideoX, LTX-Video, …) — this server just has no video model installed yet; drop one into ComfyUI/models/unet/ and select it in Settings → Video Models.'
+        : ' This build supports Wan 2.1/2.2 and MiniMax H3 video models — this server has none installed yet; add one to ComfyUI/models/unet/ and select it in Settings → Video Models.'
     }
-    if (mode === 'music' && fileIssues && !missing.some((m) => m.includes('is not a music model'))) {
-      const music = lists.unet.filter(looksLikeMusicModel)
+    if (mode === 'music' && fileIssues && !missing.some((m) => m.includes('is not a supported music model'))) {
+      const music = lists.unet.filter(isSupportedMusicModel)
       tail += music.length
         ? ` Your server has: ${music.join(', ')} — select it in Settings → Music Models.`
-        : ' No music model found in ComfyUI/models/unet/ — install MiniMax Music 3 (dit + text encoder + dav VAE) or another music model, then set it in Settings → Music Models.'
+        : ' No supported music model found in ComfyUI/models/unet/ — install MiniMax Music 3, ACE-Step or Stable Audio, then set it in Settings → Music Models.'
     }
     throw new Error(`${what} can't run — ${missing.join(' ')}${tail}`)
   }

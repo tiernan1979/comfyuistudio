@@ -8,11 +8,25 @@ services:
       - "5555:80"
     environment:
       - NODE_ENV=production
+      # Optional hardening. Basic auth protects the whole Studio UI; the
+      # API key is injected into /api/ by nginx so the UI keeps working
+      # while direct API clients must send it. Both are off when empty.
+      - STUDIO_AUTH_USER=${STUDIO_AUTH_USER:-}
+      - STUDIO_AUTH_PASSWORD=${STUDIO_AUTH_PASSWORD:-}
+      - STUDIO_API_KEY=${STUDIO_API_KEY:-}
+      # Set to 1 only for internal HTTPS services with self-signed certs.
+      - STUDIO_PROXY_INSECURE=${STUDIO_PROXY_INSECURE:-}
     extra_hosts:
       # Lets the container reach services on the Docker host by name,
       # e.g. LM Studio at http://host.docker.internal:1234
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     volumes:
       # Settings (config.json) — written by Settings → Save (WebDAV PUT),
       # read by every browser. Named volume keeps them across rebuilds and
@@ -28,13 +42,15 @@ services:
       context: .
       dockerfile: api/Dockerfile
     ports:
-      # Publishing this port exposes generation + history to the network.
-      # Set API_KEY below if the host is reachable from untrusted devices.
-      - "5557:5557"
+      # Loopback-only by default: nginx reaches studio-api over the Docker
+      # network, and local MCP/API clients still work on 127.0.0.1:5557.
+      # Set STUDIO_API_BIND=0.0.0.0 only when a remote client needs direct
+      # access — and set STUDIO_API_KEY when you do.
+      - "${STUDIO_API_BIND:-127.0.0.1}:5557:5557"
     environment:
       - COMFYUI_URL=http://10.1.1.102:8188
-      # Set to require Authorization: Bearer <key> on every /api route
-      - API_KEY=
+      # Set STUDIO_API_KEY in .env to require the key on every /api route.
+      - API_KEY=${STUDIO_API_KEY:-}
       # The container must listen on all interfaces so nginx can proxy /api/.
       # Direct `node api/src/server.js` runs bind to 127.0.0.1 unless HOST is set.
       - HOST=0.0.0.0
@@ -42,6 +58,14 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
+    healthcheck:
+      # restart: unless-stopped only reacts to process exit; this catches a
+      # wedged event loop that still holds the port.
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:5557/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     volumes:
       - studio-api-data:/app/data
       # Shared config.json (the browser's Settings → Save) — read-only, so

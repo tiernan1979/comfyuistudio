@@ -238,8 +238,13 @@ function QueueRow({ job, running = false, position, busy, onStop, onRemove }) {
         {running ? <Loader2 size={11} className="animate-spin" /> : position}
       </span>
       <div className="min-w-0 flex-1">
-        <p className="truncate text-[11px] font-medium text-text-primary">
-          {job.prompt || 'Untitled job'}
+        <p className="flex items-center gap-1.5 text-[11px] font-medium text-text-primary">
+          <span className="shrink-0 rounded bg-bg-hover px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-text-secondary">
+            {job.label || 'Job'}
+          </span>
+          <span className="min-w-0 truncate" title={job.text || job.snippet || ''}>
+            {job.snippet || 'No prompt'}
+          </span>
         </p>
         <p className="truncate font-mono text-[9px] text-text-muted">{job.promptId}</p>
       </div>

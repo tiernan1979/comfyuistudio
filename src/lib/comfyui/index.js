@@ -1,6 +1,7 @@
 // ComfyUI client, split by concern:
 // state/ws · connection · history · files · models · preflight checks · polling.
 export { friendlyNodeLabel, getClientId } from './state.js'
+export { describeQueuePrompt } from './queueLabel.js'
 export {
   resolveApiBase,
   setProgressCallback,
@@ -39,6 +40,8 @@ export {
   getModelLists,
   looksLikeVideoModel,
   looksLikeMusicModel,
+  isSupportedVideoModel,
+  isSupportedMusicModel,
   resolveAceStepModels,
   resolveStableAudioModels,
   resolveH3VideoModels,

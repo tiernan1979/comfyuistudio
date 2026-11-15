@@ -1,11 +1,22 @@
 import { isAceStepModel, isStableAudioModel } from '../workflows.js'
 
-let modelListCache = { at: 0, data: null }
+const modelListCache = new Map()
 const MODEL_LIST_TTL_MS = 5 * 60 * 1000
 
+function cachedModelLists(base) {
+  const hit = modelListCache.get(base)
+  if (!hit) return null
+  if (Date.now() - hit.at >= MODEL_LIST_TTL_MS) {
+    modelListCache.delete(base)
+    return null
+  }
+  return hit.data
+}
+
 export async function getModelLists(base, { force = false } = {}) {
-  if (!force && modelListCache.data && Date.now() - modelListCache.at < MODEL_LIST_TTL_MS) {
-    return modelListCache.data
+  if (!force) {
+    const cached = cachedModelLists(base)
+    if (cached) return cached
   }
   const targets = {
     unet: ['UNETLoader', 'unet_name'],
@@ -39,7 +50,14 @@ export async function getModelLists(base, { force = false } = {}) {
     })
   )
   const data = Object.fromEntries(entries)
-  modelListCache = { at: Date.now(), data }
+  // Don't cache an all-empty result: that usually means ComfyUI was still
+  // starting or the request failed, and a 5-minute empty cache silently
+  // disables every preflight check.
+  if (Object.values(data).some((list) => list.length > 0)) {
+    modelListCache.set(base, { at: Date.now(), data })
+  } else {
+    modelListCache.delete(base)
+  }
   return data
 }
 
@@ -67,6 +85,18 @@ export function looksLikeMusicModel(name) {
   return /(^|[^a-z])(minimax[-_ ]?music|music3|music[-_ ]?dit|yue[-_ ]?2?|ace[-_ ]?step|stable[-_ ]?audio|diff[-_ ]?rhythm|musicgen|stemma|inspire[-_ ]?music|music)([^a-z]|$)/i.test(
     String(name || '')
   )
+}
+
+// Families the workflow builders actually implement. `looksLike*` stays
+// broad for UI detection; preflight uses these so a CogVideoX/LTX file is
+// not green-lit into a hard-coded Wan graph.
+export function isSupportedVideoModel(name) {
+  return /(^|[^a-z])(wan|minimax[-_ ]?h\d|hailuo)([^a-z]|$)/i.test(String(name || ''))
+}
+
+export function isSupportedMusicModel(name) {
+  const n = String(name || '')
+  return isAceStepModel(n) || isStableAudioModel(n) || /(^|[^a-z])minimax[-_ ]?music/i.test(n)
 }
 
 // Resolve the ACE-Step 1.5 assets for the selected music unet against the
@@ -140,18 +170,42 @@ export function resolveStableAudioModels(lists, selected = {}) {
 // Resolve the MiniMax H3 video assets for the selected video unet against the
 // server's file lists. The H3 graph is picky: the DiT expects the H3 text
 // encoder (Qwen3-VL-32B, hidden 5120) in the clip slot and decodes an AV
-// latent with BOTH an H3 video VAE and an H3 audio VAE. Presets that only
-// carry the DiT — or that were saved with the music encoder / audio VAE
-// sitting in the clip/vae slots (the classic "mat1 and mat2 shapes cannot be
-// multiplied (… 32768 and 5120 …)" crash in the sampler's preprocess_text_embeds)
-// — are corrected here rather than trusted. Mirrors resolveAceStepModels:
-// throws with concrete install guidance when a file is genuinely absent.
+// latent with BOTH an H3 video VAE and an H3 audio VAE. A configured asset is
+// honoured when it belongs to that family and exists on the server, so
+// Settings/config.json really drive the graph; a stale preset (classic: the
+// Wan umt5 encoder, or the music encoder / audio VAE sitting in the clip/vae
+// slots — "mat1 and mat2 shapes cannot be multiplied (… 32768 and 5120 …)")
+// falls back to the server's match. Mirrors resolveAceStepModels: throws with
+// concrete install guidance when a file is genuinely absent.
+const H3_CLIP_RE = /(qwen|vl).*h\d|h\d.*(qwen|vl)/i
+const H3_VIDEO_VAE_RE = /video[-_ ]?vae|h\d.*vae/i
+const H3_AUDIO_VAE_RE = /audio[-_ ]?vae/i
+
+// The generic H3 regex also matches `minimax_h3_audio_vae_*`; a video VAE is
+// everything H3-shaped EXCEPT the audio decoder. Without this the audio VAE
+// could fill both slots (it often sorts first), and H3 then decodes video
+// through an audio-only VAE.
+function isH3VideoVae(name) {
+  return H3_VIDEO_VAE_RE.test(name) && !H3_AUDIO_VAE_RE.test(name)
+}
+
+function configuredAsset(list, name, matches) {
+  const test = typeof matches === 'function' ? matches : (m) => matches.test(m)
+  return name && list.includes(name) && test(name) ? name : ''
+}
+
 export function resolveH3VideoModels(lists, selected = {}) {
   const clips = Array.isArray(lists?.clip) ? lists.clip : []
   const vaes = Array.isArray(lists?.vae) ? lists.vae : []
-  const clip = clips.find((m) => /(qwen|vl).*h\d|h\d.*(qwen|vl)/i.test(m))
-  const vae = vaes.find((m) => /video[-_ ]?vae/i.test(m))
-  const vaeAudio = vaes.find((m) => /audio[-_ ]?vae/i.test(m))
+  const clip =
+    configuredAsset(clips, selected.clip, H3_CLIP_RE) ||
+    clips.find((m) => H3_CLIP_RE.test(m))
+  const vae =
+    configuredAsset(vaes, selected.vae, isH3VideoVae) ||
+    vaes.find(isH3VideoVae)
+  const vaeAudio =
+    configuredAsset(vaes, selected.vaeAudio, H3_AUDIO_VAE_RE) ||
+    vaes.find((m) => H3_AUDIO_VAE_RE.test(m))
   const missing = []
   if (!clip) missing.push('H3 text encoder (qwen3vl_32b_minimax_h3_*.safetensors)')
   if (!vae) missing.push('H3 video VAE (minimax_h3_video_vae_*.safetensors)')

@@ -6,11 +6,23 @@
 // updated audioRef plus the next free id.
 //
 // Shared by the MiniMax (numeric ids) and ACE-Step ('a70' style ids) graphs.
+// ACE passes a string id, so increment the numeric suffix instead of doing
+// `id++` (which produces the node key "NaN" and breaks the audio chain).
+function splitNodeId(startId) {
+  if (typeof startId === 'number') return { prefix: '', n: startId }
+  const match = String(startId).match(/^(.*?)(\d+)$/)
+  if (!match) return { prefix: String(startId), n: 0 }
+  return { prefix: match[1], n: Number(match[2]) }
+}
+
 export function applyLoudness(wf, startId, audioRef, models) {
-  let id = startId
+  const { prefix, n } = splitNodeId(startId)
+  let next = n
+  const nodeId = () => `${prefix}${next}`
   let ref = audioRef
   if (models.loudEq) {
-    wf[String(id)] = {
+    const id = nodeId()
+    wf[id] = {
       class_type: 'AudioEqualizer3Band',
       inputs: {
         audio: ref,
@@ -23,16 +35,17 @@ export function applyLoudness(wf, startId, audioRef, models) {
         high_freq: 5000,
       },
     }
-    ref = [String(id), 0]
-    id++
+    ref = [id, 0]
+    next++
   }
   if (models.loudVolume) {
-    wf[String(id)] = {
+    const id = nodeId()
+    wf[id] = {
       class_type: 'AudioAdjustVolume',
       inputs: { audio: ref, volume: 2 },
     }
-    ref = [String(id), 0]
-    id++
+    ref = [id, 0]
+    next++
   }
-  return { audioRef: ref, nextId: id }
+  return { audioRef: ref, nextId: prefix ? `${prefix}${next}` : next }
 }

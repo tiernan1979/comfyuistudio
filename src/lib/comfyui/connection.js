@@ -1,5 +1,6 @@
 import { getClientId, state } from './state.js'
 import { setLoadedFamily } from '../modelFamily.js'
+import { describeQueuePrompt } from './queueLabel.js'
 
 // Resolve the effective API base. When useProxy is on, traffic goes through
 // this app's own origin via the nginx dynamic proxy, with the ComfyUI
@@ -67,13 +68,10 @@ export async function getQueue(serverUrl) {
     (Array.isArray(rows) ? rows : [])
       .map((row) => {
         if (!Array.isArray(row)) return null
-        const [number, promptId, prompt] = row
+        const [number, promptId, graph] = row
         if (!promptId) return null
-        return {
-          number,
-          promptId,
-          prompt: String(prompt?.prompt ?? prompt ?? '').slice(0, 120),
-        }
+        const { label, snippet, text } = describeQueuePrompt(graph)
+        return { number, promptId, label, snippet, text }
       })
       .filter(Boolean)
   const running = map(data.queue_running)
@@ -158,32 +156,48 @@ export async function queuePrompt(serverUrl, workflow) {
   return data.prompt_id
 }
 
-// Stop the running job; if our prompt is still waiting in the queue it can
-// never be interrupted (nothing is running for it), so clear the pending
-// queue too — this UI only ever has one job of its own in flight.
+// Stop our job only. ComfyUI's /interrupt kills whatever is executing, so
+// check the queue first: a pending prompt is removed by id (never with
+// {clear:true}, which would wipe jobs queued by the API or another browser),
+// and /interrupt is only sent when OUR prompt is the running one.
 export async function stopGeneration(serverUrl, promptId = null) {
+  if (!promptId) {
+    try {
+      const r = await fetch(`${serverUrl}/interrupt`, { method: 'POST' })
+      return r.ok
+    } catch {
+      return false
+    }
+  }
+  let queue
   try {
-    const r = await fetch(`${serverUrl}/interrupt`, { method: 'POST' })
-    if (!r.ok) return false
+    const res = await fetch(`${serverUrl}/queue`, { signal: AbortSignal.timeout(5000) })
+    if (!res.ok) return false
+    queue = await res.json()
   } catch {
     return false
   }
-  if (promptId) {
+  const running = (queue.queue_running || []).some((row) => row?.[1] === promptId)
+  const pending = (queue.queue_pending || []).some((row) => row?.[1] === promptId)
+  if (pending) {
     try {
-      const q = await (await fetch(`${serverUrl}/queue`)).json()
-      const pending = (q.queue_pending || []).some((r) => r[1] === promptId)
-      if (pending) {
-        await fetch(`${serverUrl}/queue`, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ clear: true }),
-        })
-      }
+      const r = await fetch(`${serverUrl}/queue`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ delete: [promptId] }),
+      })
+      return r.ok
     } catch {
-      // queue state unavailable — interrupt alone is the best we can do
+      return false
     }
   }
-  return true
+  if (!running) return false
+  try {
+    const r = await fetch(`${serverUrl}/interrupt`, { method: 'POST' })
+    return r.ok
+  } catch {
+    return false
+  }
 }
 
 // Drop every model ComfyUI holds on the GPU (weights → CPU, cache evicted).

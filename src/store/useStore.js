@@ -20,7 +20,12 @@ import { createEpisodeActions } from './episodeActions.js'
 
 // Backwards-compatible named exports — several components import these
 // straight from the store module.
-export { presetLabel, resolveActiveModels, pushHistoryEntries } from './helpers.js'
+export {
+  presetLabel,
+  resolveActiveModels,
+  resolvePresetModels,
+  pushHistoryEntries,
+} from './helpers.js'
 
 const clamp = (v, min, max) => Math.max(min, Math.min(max, Math.round(v)))
 

@@ -1,8 +1,10 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Download, Maximize2, X, Copy, Check, ImagePlus, Clapperboard } from 'lucide-react'
+import { Download, Maximize2, X, Copy, Check, ImagePlus, Clapperboard, Grid3X3 } from 'lucide-react'
 import useStore from '../store/useStore'
+import { useFocusTrap } from '../hooks/useFocusTrap'
 import { fileFromDrop } from '../lib/dropImage'
+import { downloadFileAs } from '../lib/comfyui'
 
 // ClipboardItem only reliably accepts image/png — ComfyUI outputs webp —
 // and canvas re-encode gives us a guaranteed PNG either way.
@@ -20,6 +22,52 @@ function toPng(blob) {
         (b) => (b ? resolve(b) : reject(new Error('PNG conversion failed'))),
         'image/png'
       )
+    }
+    img.onerror = () => {
+      URL.revokeObjectURL(url)
+      reject(new Error('could not read the image'))
+    }
+    img.src = url
+  })
+}
+
+// Ground tiles: a plain full-frame downscale keeps the generated image's
+// outer border, which turns into a faint grid when repeated. Crop the middle
+// 80% first (that border is where vignettes/edge artifacts live), downscale
+// through an intermediate canvas, then snap to a 32×32 PNG.
+function toGroundTile(blob, size = 32) {
+  return new Promise((resolve, reject) => {
+    const img = new Image()
+    const url = URL.createObjectURL(blob)
+    img.onload = () => {
+      try {
+        const side = Math.min(img.naturalWidth, img.naturalHeight)
+        const crop = Math.max(1, Math.round(side * 0.8))
+        const sx = Math.round((img.naturalWidth - crop) / 2)
+        const sy = Math.round((img.naturalHeight - crop) / 2)
+
+        const mid = document.createElement('canvas')
+        mid.width = 256
+        mid.height = 256
+        const mctx = mid.getContext('2d')
+        mctx.imageSmoothingEnabled = true
+        mctx.imageSmoothingQuality = 'high'
+        mctx.drawImage(img, sx, sy, crop, crop, 0, 0, 256, 256)
+
+        const canvas = document.createElement('canvas')
+        canvas.width = size
+        canvas.height = size
+        const ctx = canvas.getContext('2d')
+        ctx.imageSmoothingEnabled = true
+        ctx.imageSmoothingQuality = 'high'
+        ctx.drawImage(mid, 0, 0, 256, 256, 0, 0, size, size)
+
+        URL.revokeObjectURL(url)
+        resolve(canvas.toDataURL('image/png'))
+      } catch (err) {
+        URL.revokeObjectURL(url)
+        reject(err)
+      }
     }
     img.onerror = () => {
       URL.revokeObjectURL(url)
@@ -75,9 +123,34 @@ export default function ImageViewer() {
   const videoTitle = useStore((s) => s.titles?.video)
   const [fullscreen, setFullscreen] = useState(false)
   const [copied, setCopied] = useState(false)
+  // 32×32 ground tile preview/download (see toGroundTile above).
+  const [tileOpen, setTileOpen] = useState(false)
+  const [tileUrl, setTileUrl] = useState('')
   // Edit mode: the whole canvas doubles as a drop target for the source image.
   const [dragOver, setDragOver] = useState(false)
   const dragDepth = useRef(0)
+  const fullscreenRef = useRef(null)
+  const tileRef = useRef(null)
+  useFocusTrap(fullscreenRef, !!(fullscreen && outputImage))
+  useFocusTrap(tileRef, tileOpen)
+
+  useEffect(() => {
+    if (!fullscreen) return
+    const onKey = (e) => {
+      if (e.key === 'Escape') setFullscreen(false)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [fullscreen])
+
+  useEffect(() => {
+    if (!tileOpen) return
+    const onKey = (e) => {
+      if (e.key === 'Escape') setTileOpen(false)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [tileOpen])
 
   const onDropImage = async (e) => {
     if (mode !== 'edit') return
@@ -98,14 +171,21 @@ export default function ImageViewer() {
 
   const handleDownload = async () => {
     if (!outputImage) return
-    const res = await fetch(outputImage)
-    const blob = await res.blob()
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `comfyui-${Date.now()}.webp`
-    a.click()
-    URL.revokeObjectURL(url)
+    await downloadFileAs(outputImage, `comfyui-${Date.now()}.webp`)
+  }
+
+  const handleGroundTile = async () => {
+    if (!outputImage) return
+    setTileOpen(true)
+    setTileUrl('')
+    try {
+      const res = await fetch(outputImage)
+      if (!res.ok) throw new Error(`could not fetch the image (HTTP ${res.status})`)
+      setTileUrl(await toGroundTile(await res.blob()))
+    } catch (err) {
+      setTileOpen(false)
+      setError(`Could not build the 32×32 tile: ${err.message}`)
+    }
   }
 
   const handleCopy = async () => {
@@ -259,6 +339,16 @@ export default function ImageViewer() {
                   <motion.button
                     whileHover={{ scale: 1.1 }}
                     whileTap={{ scale: 0.9 }}
+                    onClick={handleGroundTile}
+                    className="p-2 rounded-lg glass hover:bg-white/10 transition-colors"
+                    title="Make a 32×32 tiling ground texture"
+                    aria-label="Make a 32×32 tiling ground texture"
+                  >
+                    <Grid3X3 size={16} />
+                  </motion.button>
+                  <motion.button
+                    whileHover={{ scale: 1.1 }}
+                    whileTap={{ scale: 0.9 }}
                     onClick={handleDownload}
                     className="p-2 rounded-lg glass hover:bg-white/10 transition-colors"
                     title="Download"
@@ -303,6 +393,10 @@ export default function ImageViewer() {
       <AnimatePresence>
         {fullscreen && outputImage && (
           <motion.div
+            ref={fullscreenRef}
+            role="dialog"
+            aria-modal="true"
+            aria-label="Generated image fullscreen"
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
@@ -310,6 +404,9 @@ export default function ImageViewer() {
             onClick={() => setFullscreen(false)}
           >
             <motion.button
+              type="button"
+              onClick={() => setFullscreen(false)}
+              aria-label="Close fullscreen"
               className="absolute top-4 right-4 p-2 rounded-full glass hover:bg-white/10"
               whileHover={{ scale: 1.1 }}
             >
@@ -327,6 +424,82 @@ export default function ImageViewer() {
               }}
               className="max-w-full max-h-full object-contain rounded-lg cursor-grab active:cursor-grabbing"
             />
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* 32×32 ground tile preview + download */}
+      <AnimatePresence>
+        {tileOpen && (
+          <motion.div
+            ref={tileRef}
+            role="dialog"
+            aria-modal="true"
+            aria-label="32×32 ground tile preview"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[80] flex items-center justify-center bg-black/80 p-6"
+            onClick={() => setTileOpen(false)}
+          >
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="w-full max-w-sm rounded-2xl border border-border bg-bg-card p-5 shadow-xl"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <h3 className="text-sm font-semibold text-text-primary">32×32 ground tile</h3>
+                  <p className="mt-1 text-xs text-text-muted">
+                    Center-cropped 80% and downscaled, so the edges repeat without a grid.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setTileOpen(false)}
+                  className="rounded-lg p-1.5 text-text-muted hover:bg-white/10 hover:text-text-primary"
+                  aria-label="Close ground tile preview"
+                >
+                  <X size={18} />
+                </button>
+              </div>
+              <div
+                className="mx-auto mt-4 h-64 w-64 overflow-hidden rounded-xl border border-border bg-black/20"
+                style={
+                  tileUrl
+                    ? {
+                        backgroundImage: `url(${tileUrl})`,
+                        backgroundSize: '32px 32px',
+                        backgroundRepeat: 'repeat',
+                      }
+                    : undefined
+                }
+              >
+                {!tileUrl && (
+                  <div className="flex h-full items-center justify-center text-xs text-text-muted">
+                    Building tile…
+                  </div>
+                )}
+              </div>
+              <div className="mt-4 flex items-center justify-between gap-3">
+                <span className="text-[11px] text-text-muted">Preview repeated 8×8</span>
+                {tileUrl ? (
+                  <a
+                    href={tileUrl}
+                    download="ground-tile-32.png"
+                    className="rounded-lg bg-accent px-3 py-2 text-xs font-medium text-white hover:bg-accent/90"
+                  >
+                    Download 32×32 PNG
+                  </a>
+                ) : (
+                  <span className="rounded-lg bg-white/5 px-3 py-2 text-xs font-medium text-text-muted">
+                    Download 32×32 PNG
+                  </span>
+                )}
+              </div>
+            </motion.div>
           </motion.div>
         )}
       </AnimatePresence>

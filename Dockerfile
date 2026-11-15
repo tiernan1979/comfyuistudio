@@ -13,6 +13,18 @@ RUN npm run build
 # Stage 2: Serve
 FROM nginx:alpine
 
+# htpasswd powers the optional STUDIO_AUTH_USER / STUDIO_AUTH_PASSWORD
+# basic-auth gate. The include files must exist even when auth is unused.
+RUN apk add --no-cache apache2-utils \
+ && mkdir -p /etc/nginx/studio \
+ && touch /etc/nginx/studio/studio-auth.conf /etc/nginx/studio/studio-api-key.conf \
+ && printf 'proxy_ssl_verify on;\nproxy_ssl_trusted_certificate /etc/ssl/certs/ca-certificates.crt;\nproxy_ssl_verify_depth 3;\n' > /etc/nginx/studio/studio-proxy-tls.conf
+
+# Optional runtime hardening: writes the auth/API-key includes before nginx
+# starts. The nginx image runs every /docker-entrypoint.d/*.sh script.
+COPY docker/studio-auth.sh /docker-entrypoint.d/40-studio-auth.sh
+RUN chmod +x /docker-entrypoint.d/40-studio-auth.sh
+
 # Copy built assets
 COPY --from=build /app/dist /usr/share/nginx/html
 

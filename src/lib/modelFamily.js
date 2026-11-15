@@ -41,7 +41,12 @@ function graphKey(graph) {
 // preset switch inside image mode (e.g. Qwen 2.1 → 2.0) also triggers a
 // reload, but two ordinary image prompts share one family.
 export function familyForRun(state, prep) {
-  if (prep?.chainPlan) return `character:${state.models?.character?.unet || ''}`
+  if (prep?.chainPlan) {
+    // Character animation runs two GGUF experts (high/low noise), not a
+    // single `unet`; key on both so switching either expert reloads.
+    const ch = state.models?.character || {}
+    return `character:${ch.high || ''}|${ch.low || ''}`
+  }
   const mode = state.mode || 'image'
   const group = IMAGE_MODES.has(mode) ? 'image' : mode === '3d' ? 'character' : mode
   const key = graphKey(prep?.workflow)

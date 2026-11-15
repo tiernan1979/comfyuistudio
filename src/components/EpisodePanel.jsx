@@ -17,6 +17,7 @@ import {
   X,
 } from 'lucide-react'
 import useStore from '../store/useStore'
+import { saveBlobAs } from '../lib/comfyui'
 import { useFocusTrap } from '../hooks/useFocusTrap'
 import useEpisodeRunner from '../hooks/useEpisodeRunner'
 
@@ -25,16 +26,6 @@ const STATUS = {
   running: 'bg-accent/20 text-accent',
   done: 'bg-emerald-500/15 text-emerald-300',
   error: 'bg-rose-500/15 text-rose-300',
-}
-
-function download(name, text, type = 'text/plain') {
-  const blob = new Blob([text], { type })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = name
-  a.click()
-  setTimeout(() => URL.revokeObjectURL(url), 1000)
 }
 
 function stillOf(shot) {
@@ -106,7 +97,10 @@ export default function EpisodePanel({ open, onClose, generate }) {
         outputUrl: shot.outputUrl || null,
       })),
     }
-    download('episode-manifest.json', JSON.stringify(payload, null, 2), 'application/json')
+    saveBlobAs(
+      new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' }),
+      'episode-manifest.json',
+    )
   }
 
   const exportStitch = () => {
@@ -134,7 +128,10 @@ export default function EpisodePanel({ open, onClose, generate }) {
       lines.push('ffmpeg -y -f concat -safe 0 -i shots.txt -c copy episode.mp4')
       lines.push('echo "Wrote episode.mp4"')
     }
-    download('episode-stitch.sh', lines.join('\n'), 'text/x-shellscript')
+    saveBlobAs(
+      new Blob([lines.join('\n')], { type: 'text/x-shellscript' }),
+      'episode-stitch.sh',
+    )
   }
 
   return createPortal(

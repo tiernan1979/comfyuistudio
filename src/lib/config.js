@@ -158,6 +158,7 @@ const MODE_SETTING_FIELDS = {
     seed: 'number',
     steps: [1, 100],
     cfg: [0, 30],
+    batchCount: [1, 16],
   },
   videoSettings: {
     resolution: 'string',
@@ -166,6 +167,12 @@ const MODE_SETTING_FIELDS = {
     seed: 'number',
     steps: [1, 100],
     cfg: [0, 30],
+    // MiniMax H3 chaining controls — these are part of the saved settings
+    // too, so a shared config reproduces the same clip length/window size.
+    duration: [1, 600],
+    segments: [1, 12],
+    windowSeconds: [4, 16],
+    crossfadeSeconds: [0, 5],
   },
   editSettings: {
     seed: 'number',
@@ -263,6 +270,7 @@ function sanitize(raw) {
   if (typeof raw.serverUrl === 'string') out.serverUrl = raw.serverUrl
   if (typeof raw.useProxy === 'boolean') out.useProxy = raw.useProxy
   if (typeof raw.autoUnload === 'boolean') out.autoUnload = raw.autoUnload
+  if (typeof raw.vramGuard === 'boolean') out.vramGuard = raw.vramGuard
   if (typeof raw.style === 'string') out.style = raw.style
   if (typeof raw.searchUrl === 'string') out.searchUrl = raw.searchUrl
   // searchEngine/searchCseId are shareable; searchApiKey stays browser-only
@@ -312,7 +320,7 @@ function sanitize(raw) {
         if (!p || typeof p !== 'object') continue
         const e = {}
         if (typeof p.name === 'string') e.name = p.name.slice(0, 80)
-        for (const k of ['unet', 'clip', 'vae', 'lora']) {
+        for (const k of ['unet', 'clip', 'vae', 'vaeAudio', 'lora']) {
           if (typeof p[k] === 'string') e[k] = p[k]
         }
         if (typeof p.engine === 'string') e.engine = p.engine
@@ -366,6 +374,7 @@ export function configFromState(state) {
     serverUrl: state.serverUrl,
     useProxy: state.useProxy,
     autoUnload: state.autoUnload,
+    vramGuard: state.vramGuard,
     style: state.style,
     searchUrl: state.searchUrl,
     searchEngine: state.searchEngine || 'searxng',

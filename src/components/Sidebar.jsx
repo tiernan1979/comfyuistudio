@@ -1,11 +1,13 @@
 import { useMemo, useRef, useState } from 'react'
 import { motion } from 'framer-motion'
-import { Settings, Trash2, BookmarkPlus, Upload, Download, FileText, Search, RefreshCw, X, Sparkles } from 'lucide-react'
+import { Settings, Trash2, BookmarkPlus, Upload, Download, FileText, Search, RefreshCw, X, Sparkles, MonitorDown } from 'lucide-react'
 import useStore from '../store/useStore'
 import clsx from 'clsx'
+import { saveBlobAs } from '../lib/comfyui'
 import Dropdown from './Dropdown'
 import ConfirmDialog from './ui/ConfirmDialog'
 import { syncServerHistory } from '../hooks/useComfyUI'
+import usePwaInstall from '../hooks/usePwaInstall'
 import ConnectionBadge from './ConnectionBadge'
 import HistoryGrid from './HistoryGrid'
 
@@ -38,6 +40,7 @@ export default function Sidebar({ drawer = false }) {
   const [syncNote, setSyncNote] = useState(null)
   const [notice, setNotice] = useState(null)
   const [editingId, setEditingId] = useState(null)
+  const { installed, install } = usePwaInstall()
   const [editDraft, setEditDraft] = useState('')
   const [confirmClear, setConfirmClear] = useState(false)
   const cancelRenameRef = useRef(false)
@@ -59,6 +62,17 @@ export default function Sidebar({ drawer = false }) {
   const flash = (msg) => {
     setNotice(msg)
     setTimeout(() => setNotice((n) => (n === msg ? null : n)), 3500)
+  }
+
+  const handleInstall = async () => {
+    const result = await install()
+    if (result.outcome === 'unavailable') {
+      flash(
+        'Use your browser menu → “Install app” or “Add to Home Screen”. Install needs HTTPS or localhost.',
+      )
+    } else if (result.outcome === 'dismissed') {
+      flash('Install cancelled — you can try again from the browser menu.')
+    }
   }
 
   const saveCurrent = () => {
@@ -101,14 +115,7 @@ export default function Sidebar({ drawer = false }) {
   const exportPrompts = () => {
     try {
       const blob = new Blob([JSON.stringify(savedPrompts, null, 2)], { type: 'application/json' })
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = `comfyui-studio-prompts-${new Date().toISOString().slice(0, 10)}.json`
-      document.body.appendChild(a)
-      a.click()
-      a.remove()
-      setTimeout(() => URL.revokeObjectURL(url), 30000)
+      saveBlobAs(blob, `comfyui-studio-prompts-${new Date().toISOString().slice(0, 10)}.json`)
     } catch (err) {
       flash(`Export failed: ${err.message}`)
     }
@@ -161,6 +168,18 @@ export default function Sidebar({ drawer = false }) {
                 title="Close"
               >
                 <X size={16} />
+              </motion.button>
+            )}
+            {!installed && (
+              <motion.button
+                type="button"
+                whileTap={{ scale: 0.94 }}
+                onClick={handleInstall}
+                className="rounded-lg p-1.5 text-text-muted transition-colors hover:bg-bg-hover hover:text-accent"
+                aria-label="Install ComfyUI Studio as an app"
+                title="Install ComfyUI Studio as an app"
+              >
+                <MonitorDown size={16} />
               </motion.button>
             )}
             <motion.button

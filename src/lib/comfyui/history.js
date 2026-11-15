@@ -1,5 +1,6 @@
 export async function getHistory(serverUrl, promptId) {
   const res = await fetch(`${serverUrl}/history/${promptId}`)
+  if (!res.ok) throw new Error(`ComfyUI /history returned HTTP ${res.status}`)
   return await res.json()
 }
 

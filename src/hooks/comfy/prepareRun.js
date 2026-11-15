@@ -39,8 +39,9 @@ import {
   layoutRows,
   VIDEO_SHEET_MAX_CELLS,
 } from '../../lib/character'
-import { resolveActiveModels } from '../../store/useStore'
+import useStore, { resolveActiveModels, resolvePresetModels } from '../../store/useStore'
 import { applyCustomWorkflow } from '../../lib/customWorkflow'
+import { DEFAULT_STYLE, enhancePrompt, STYLES } from '../../lib/enhance'
 
 // Edit mode: the configured unet may predate this server (e.g. the old
 // qwen_image_edit_fp8 default) — resolve against what's actually installed
@@ -89,6 +90,15 @@ function dataUrlToFile(dataUrl, name) {
 
 export async function prepareRun(base, state) {
   let models = state.models
+  // The Style dropdown is a generation setting. Non-default styles are also
+  // applied at queue time so picking one before typing still takes effect.
+  // The default photoreal style stays opt-in via Enhance — it is the default
+  // and would otherwise silently rewrite every prompt.
+  const useStyle = !!state.style && state.style !== DEFAULT_STYLE
+  const styledPrompt = useStyle ? enhancePrompt(state.prompt, state.style) : state.prompt
+  const styledNegative = useStyle
+    ? state.negativePrompt?.trim() || STYLES[state.style]?.negative || ''
+    : state.negativePrompt
   if (state.mode === 'edit') models = await resolveEditModels(base, state)
 
   // Imported workflows are opaque graphs: ComfyUI validates them when the
@@ -100,14 +110,18 @@ export async function prepareRun(base, state) {
     if (!wf) throw new Error('Import a workflow in Settings → Workflows first.')
     return {
       workflow: applyCustomWorkflow(wf.graph, wf.mapping, {
-        prompt: state.prompt,
-        negative: state.negativePrompt,
+        prompt: styledPrompt,
+        negative: styledNegative,
         seed: state.customSettings?.seed ?? -1,
       }),
     }
   }
 
-  await assertModelsAvailable(base, state.mode, models)
+  // Check the files generation will actually use: model presets (video,
+  // music, SFX) override the flat group, but the flat group can still hold a
+  // stale default (e.g. the old Wan 2.1 file). Preflighting it alone rejected
+  // runs whose selected preset was installed — "keeps looking for wan2.1…".
+  await assertModelsAvailable(base, state.mode, resolvePresetModels({ ...state, models }))
 
   if (state.mode === 'edit') {
     if (!state.sourceImage?.file) throw new Error('Upload a source image first.')
@@ -144,8 +158,8 @@ export async function prepareRun(base, state) {
     const imgCustom = state.imageSettings.sizeMode === 'custom'
     return {
       workflow: buildImageWorkflow({
-        prompt: state.prompt,
-        negativePrompt: state.negativePrompt,
+        prompt: styledPrompt,
+        negativePrompt: styledNegative,
         aspectRatio: state.imageSettings.aspectRatio,
         width: imgCustom ? state.imageSettings.width : undefined,
         height: imgCustom ? state.imageSettings.height : undefined,
@@ -238,6 +252,10 @@ export async function prepareRun(base, state) {
     // image/video/music models first so the audio decode stays clean.
     const sfxModels = { ...resolveActiveModels(state, 'sfx') }
     sfxModels.stable = resolveStableAudioModels(await getModelLists(base), sfxModels)
+    // SFX is always the Stable Audio graph. Without this an ACE/MiniMax
+    // unet in the SFX preset would fall through to the music builder and
+    // silently render a song instead of a sound effect.
+    sfxModels.engine = 'stable_audio'
     await freeLoadedModels(base)
     return {
       workflow: buildMusicWorkflow({
@@ -366,14 +384,31 @@ export async function prepareRun(base, state) {
   // Video (default fallthrough)
   let videoModels = resolveActiveModels(state, 'video')
   // MiniMax H3 is a three-headed beast: the DiT needs its own Qwen3-VL
-  // text encoder (not the music one) and decodes an AV latent with both
-  // an H3 video VAE and an H3 audio VAE. None of that is a setting —
-  // resolve whatever the server has and overwrite the preset's clip/vae
-  // (which may be stale, e.g. a music encoder in the clip slot).
+  // text encoder (not the music/Wan one) and decodes an AV latent with both
+  // an H3 video VAE and an H3 audio VAE. The resolver honours the configured
+  // clip/vae/vaeAudio when they are valid H3 assets, otherwise it uses the
+  // server's match (a preset saved with the old Wan umt5 encoder would
+  // otherwise crash the sampler).
   let crossfade = 0
   let firstFrameName = ''
   if (isMiniMaxH3(videoModels?.unet)) {
-    videoModels = resolveH3VideoModels(await getModelLists(base), videoModels)
+    const resolved = resolveH3VideoModels(await getModelLists(base), videoModels)
+    // Write a correction back to the flat group and the active preset so
+    // Settings/config.json show the files the graph actually used instead of
+    // drifting from it (the previous resolver overwrote both silently).
+    const changed = ['clip', 'vae', 'vaeAudio'].filter(
+      (key) => resolved[key] && resolved[key] !== videoModels[key]
+    )
+    videoModels = resolved
+    if (changed.length) {
+      const store = useStore.getState()
+      const patch = { clip: resolved.clip, vae: resolved.vae, vaeAudio: resolved.vaeAudio }
+      store.setModels('video', patch)
+      const index = store.active?.video
+      if (index != null && store.presets?.video?.[index]) {
+        store.updatePreset('video', index, patch)
+      }
+    }
     // Image-to-video: upload the still selected in Settings (a File from the
     // picker, or a ComfyUI view URL handed over from the image viewer) and
     // feed it to window 0 as H3's first_frame.
@@ -403,8 +438,8 @@ export async function prepareRun(base, state) {
   }
   return {
     workflow: buildVideoWorkflow({
-      prompt: state.prompt,
-      negativePrompt: state.negativePrompt,
+      prompt: styledPrompt,
+      negativePrompt: styledNegative,
       resolution: state.videoSettings.resolution,
       frames: state.videoSettings.frames,
       fps: state.videoSettings.fps,

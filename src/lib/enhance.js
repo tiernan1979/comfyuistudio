@@ -8,6 +8,20 @@ export const STYLES = {
     suffix: '',
     negative: '',
   },
+  // Ground textures fail in a very specific way: a prompt like "soil" reads
+  // as an object, so the model draws a centred pile (or a dark vignette)
+  // instead of a flat surface. Keep the prompt as a plain close-up photo and
+  // put "covering the entire frame" up front — long keyword chains such as
+  // "seamless tileable texture of …" made Qwen frame the material like a
+  // product shot. The negative is deliberately short; a long list of "no …"
+  // tags produced a dark border instead of removing one.
+  ground: {
+    label: 'Seamless Ground',
+    prefix: 'a photograph of',
+    suffix:
+      ', covering the entire frame, taken from directly above, even daylight, sharp focus, high detail',
+    negative: 'blurry, low quality, text, watermark, logo',
+  },
   photoreal: {
     label: 'Photoreal',
     suffix:
@@ -54,13 +68,48 @@ export const STYLES = {
 
 export const DEFAULT_STYLE = 'photoreal'
 
-// Expand plain user words with the style's quality tags.
-// Idempotent: clicking Enhance twice won't double-append.
+const collapse = (text) => (text || '').trim().replace(/\s+/g, ' ')
+
+function styleTags(style) {
+  return {
+    prefix: (style?.prefix || '').trim(),
+    suffix: (style?.suffix || '').trim(),
+  }
+}
+
+// Remove every known style's prefix/suffix. Switching styles (or picking
+// "None") must not stack quality tags; old prompts can also contain more
+// than one style's suffix, so repeat until stable.
+export function stripStyleTags(text) {
+  let clean = collapse(text)
+  let changed = true
+  let guard = 0
+  while (changed && guard < 8) {
+    changed = false
+    guard += 1
+    for (const style of Object.values(STYLES)) {
+      const { prefix, suffix } = styleTags(style)
+      if (prefix && clean.toLowerCase().startsWith(prefix.toLowerCase())) {
+        clean = clean.slice(prefix.length).trim()
+        changed = true
+      }
+      if (suffix && clean.toLowerCase().endsWith(suffix.toLowerCase())) {
+        clean = clean.slice(0, clean.length - suffix.length).trim()
+        changed = true
+      }
+    }
+  }
+  return clean
+}
+
+// Expand plain user words with the style's prefix/suffix quality tags.
+// Idempotent: applying the same style twice won't duplicate anything.
 export function enhancePrompt(text, styleKey) {
-  const clean = (text || '').trim().replace(/\s+/g, ' ')
+  const clean = stripStyleTags(text)
   if (!clean) return ''
-  const suffix = (STYLES[styleKey]?.suffix || '').trim()
-  if (!suffix) return clean
-  if (clean.toLowerCase().endsWith(suffix.toLowerCase())) return clean
-  return clean + suffix
+  const { prefix, suffix } = styleTags(STYLES[styleKey])
+  let out = clean
+  if (prefix && !out.toLowerCase().startsWith(prefix.toLowerCase())) out = `${prefix} ${out}`
+  if (suffix && !out.toLowerCase().endsWith(suffix.toLowerCase())) out = out + suffix
+  return out
 }

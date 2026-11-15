@@ -1,4 +1,4 @@
-import { useRef } from 'react'
+import { useEffect, useRef } from 'react'
 
 // Vertical drag handle between two panels. `direction` controls how the
 // measured delta maps onto the value: 1 = panel is to the LEFT of the
@@ -16,6 +16,16 @@ export default function DragDivider({
 }) {
   const dragRef = useRef(null)
 
+  const endDrag = () => {
+    if (!dragRef.current) return
+    dragRef.current = null
+    document.body.style.userSelect = ''
+  }
+
+  // A tab switch can unmount the divider mid-drag; without this the global
+  // user-select:none would stick for the rest of the session.
+  useEffect(() => endDrag, [])
+
   const onPointerDown = (e) => {
     if (e.button !== 0) return
     dragRef.current = { x: e.clientX, v: value }
@@ -26,13 +36,9 @@ export default function DragDivider({
     const d = dragRef.current
     if (!d) return
     const next = d.v + (e.clientX - d.x) * direction
-    if (next >= min && next <= max) onChange(next)
+    onChange(Math.min(max, Math.max(min, next)))
   }
-  const onPointerUp = () => {
-    if (!dragRef.current) return
-    dragRef.current = null
-    document.body.style.userSelect = ''
-  }
+  const onPointerUp = endDrag
 
   // Keyboard resize: arrows nudge, Home/End jump to the bounds.
   const onKeyDown = (e) => {

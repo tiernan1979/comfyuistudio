@@ -96,10 +96,17 @@ async function generate(mode, args, timeoutMs) {
   if (Object.keys(settings).length) body.settings = settings
   // Optional H3 turbo LoRA → model override (file must be in models/loras).
   if (video_lora) body.models = { video: { lora: video_lora } }
+  // Respect the caller's timeoutSec (the API caps it at one hour) instead of
+  // always aborting local MCP calls at the 16-minute default.
+  const requestedSec = Number(args.timeoutSec)
+  const waitTimeoutMs =
+    requestedSec > 0
+      ? Math.min(requestedSec * 1000 + 30_000, 60 * 60 * 1000)
+      : GENERATE_TIMEOUT_MS
   const out = await api('/api/generate', {
     method: 'POST',
     body,
-    timeoutMs: timeoutMs || (args.wait === false ? SHORT_TIMEOUT_MS : GENERATE_TIMEOUT_MS),
+    timeoutMs: timeoutMs || (args.wait === false ? SHORT_TIMEOUT_MS : waitTimeoutMs),
   })
   if (args.wait === false) return out
   const files = (out.outputs || []).map((o) => ({

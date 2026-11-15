@@ -23,20 +23,29 @@ export function h3LengthFrames(frames = 33, fps = 16) {
 export function h3WindowSeconds(frames = 33, fps = 16, windowSeconds = 0) {
   return (windowSeconds ? h3LengthFromSeconds(windowSeconds) : h3LengthFrames(frames, fps)) / 24
 }
-// Chained windows drop one duplicate boundary frame per join, so the total is
-// length + (n-1)(length-1). This is the honest achieved duration.
-export function h3ChainedSeconds(segments, frames = 33, fps = 16, windowSeconds = 0) {
+// Chained windows drop one duplicate boundary frame per join, or `fadeFrames`
+// frames per join when the crossfade nodes are used. This is the honest
+// achieved duration; the audio crossfade shortens by the same amount.
+export function h3ChainedSeconds(segments, frames = 33, fps = 16, windowSeconds = 0, crossfade = 0) {
   const length = windowSeconds ? h3LengthFromSeconds(windowSeconds) : h3LengthFrames(frames, fps)
   const n = Math.max(1, Math.min(H3_MAX_SEGMENTS, Math.round(segments || 1)))
-  return (length + (n - 1) * (length - 1)) / 24
+  return (length + (n - 1) * (length - h3JoinLoss(length, crossfade))) / 24
+}
+// Frames lost at each join: one duplicate frame for a hard cut, the crossfade
+// overlap when fading. Clamp to a quarter of the window so a long fade cannot
+// consume the whole clip.
+function h3JoinLoss(length, crossfade = 0) {
+  if (!(Number(crossfade) > 0)) return 1
+  return Math.max(1, Math.min(Math.floor(length / 4), Math.round(Number(crossfade) * 24)))
 }
 // Fewest windows whose chained length reaches `duration` seconds (clamped to
 // [1, H3_MAX_SEGMENTS]). Drives the duration slider → segment count.
-export function h3SegmentsForDuration(duration, frames = 33, fps = 16, windowSeconds = 0) {
+export function h3SegmentsForDuration(duration, frames = 33, fps = 16, windowSeconds = 0, crossfade = 0) {
   const length = windowSeconds ? h3LengthFromSeconds(windowSeconds) : h3LengthFrames(frames, fps)
   const d24 = Math.max(1, Math.floor((duration || 0) * 24))
   if (d24 <= length) return 1
-  const n = 1 + Math.ceil((d24 - length) / Math.max(1, length - 1))
+  const joinLoss = h3JoinLoss(length, crossfade)
+  const n = 1 + Math.ceil((d24 - length) / Math.max(1, length - joinLoss))
   return Math.max(1, Math.min(H3_MAX_SEGMENTS, n))
 }
 export function isMiniMaxH3(name) {
@@ -225,7 +234,7 @@ function buildH3VideoWorkflow({
   // `segments` is used when no duration is given.
   const segCount =
     duration > 0
-      ? h3SegmentsForDuration(duration, frames, fps, windowSeconds)
+      ? h3SegmentsForDuration(duration, frames, fps, windowSeconds, crossfade)
       : Math.max(1, Math.min(H3_MAX_SEGMENTS, Math.round(segments || 1)))
 
   const wf = {
@@ -290,7 +299,7 @@ function buildH3VideoWorkflow({
   //    frame — the audio crossfade shortens its timeline by the same amount.
   //  - hard cut (nodes absent): window i repeats window i-1's last frame as its
   //    first; drop that one duplicate so nothing freezes at the join.
-  const fadeFrames = crossfade > 0 ? Math.max(1, Math.round(crossfade * 24)) : 0
+  const fadeFrames = crossfade > 0 ? h3JoinLoss(length, crossfade) : 0
   let curFrames
   if (fadeFrames > 0) {
     curFrames = rawFrames[0]

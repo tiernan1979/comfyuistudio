@@ -58,6 +58,7 @@ import {
   hasAudioTailTrim,
 } from '../../src/lib/comfyui.js'
 import { runGenerateMesh, runPaintSkin, runMeshUpscale } from '../../src/lib/threed.js'
+import { startIdleUnload } from './idleUnload.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -85,27 +86,87 @@ export function createApp(opts = {}) {
   const hiddenFile = path.join(cfg.dataDir, 'hidden-ids.json')
   const historyFile = path.join(cfg.dataDir, 'history.json')
   const HISTORY_CAP = 200
+  // Request-body settings are clamped to the same ranges the app writes to
+  // config.json. Without this an authenticated caller can queue a 99999px
+  // image and OOM the ComfyUI host.
+  const SETTING_BOUNDS = {
+    width: [64, 4096],
+    height: [64, 4096],
+    steps: [1, 100],
+    cfg: [0, 30],
+    frames: [1, 300],
+    fps: [1, 60],
+    batchCount: [1, 16],
+    duration: [1, 600],
+    segments: [1, 12],
+    windowSeconds: [4, 16],
+    crossfadeSeconds: [0, 5],
+  }
 
   // In-memory map of prompts this service queued (promptId also works for
   // jobs from other clients via /history/:promptId after a restart).
   const jobs = new Map()
 
+  // Keep the map bounded when long-lived clients use wait=false.
+  function pruneJobs(now = Date.now()) {
+    for (const [id, job] of jobs) {
+      if (now - (job.finishedAt || job.startedAt || 0) > 2 * 60 * 60 * 1000) jobs.delete(id)
+    }
+  }
+
+  // outputDirectory/runId are forwarded into ComfyUI's save paths — reject
+  // traversal and separators instead of trusting the request body.
+  function sanitizeGenerationSettings(raw) {
+    const out = { ...(raw || {}) }
+    for (const [key, [min, max]] of Object.entries(SETTING_BOUNDS)) {
+      if (out[key] === undefined) continue
+      const n = Number(out[key])
+      if (!Number.isFinite(n)) throw new HttpError(400, `${key} must be a number`)
+      out[key] = Math.min(max, Math.max(min, n))
+    }
+    for (const key of ['outputDirectory', 'runId']) {
+      if (out[key] === undefined) continue
+      const value = String(out[key])
+      if (value === '.' || value === '..' || !/^[A-Za-z0-9._-]{1,64}$/.test(value)) {
+        throw new HttpError(400, `${key} may contain only letters, numbers, dot, dash and underscore`)
+      }
+      out[key] = value
+    }
+    return out
+  }
+
   const app = express()
-  app.use(express.json({ limit: '64mb' }))
+  // CORS is intentionally opt-in: the Studio UI is same-origin through
+  // nginx, and a blanket `*` lets any website a LAN user visits read the
+  // shared history or queue generations. Set STUDIO_CORS_ORIGINS to a
+  // comma-separated allowlist when a separate origin must call the API.
+  const corsOrigins = (process.env.STUDIO_CORS_ORIGINS || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean)
   app.use((req, res, next) => {
-    res.set('Access-Control-Allow-Origin', '*')
+    const origin = req.get('origin')
+    if (origin && (corsOrigins.includes('*') || corsOrigins.includes(origin))) {
+      res.set('Access-Control-Allow-Origin', origin)
+      res.set('Vary', 'Origin')
+    }
     res.set('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Api-Key')
     res.set('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS')
     if (req.method === 'OPTIONS') return res.sendStatus(204)
     next()
   })
+  // Authenticate before parsing a body: an unauthenticated caller should
+  // not be able to make the process buffer 64 MB before receiving a 401.
   app.use('/api', (req, res, next) => {
     if (!cfg.apiKey) return next()
-    const got =
-      (req.get('authorization') || '').replace(/^Bearer\s+/i, '') || req.get('x-api-key') || ''
-    if (got !== cfg.apiKey) return res.status(401).json({ error: 'invalid or missing API key' })
+    const bearer = (req.get('authorization') || '').replace(/^Bearer\s+/i, '')
+    const key = req.get('x-api-key') || ''
+    if (bearer !== cfg.apiKey && key !== cfg.apiKey) {
+      return res.status(401).json({ error: 'invalid or missing API key' })
+    }
     next()
   })
+  app.use(express.json({ limit: '64mb' }))
 
   function readHidden() {
     try {
@@ -116,9 +177,19 @@ export function createApp(opts = {}) {
     }
   }
 
-  function writeHidden(ids) {
+  // Write JSON via a temp file + rename so a crash mid-write can't leave a
+  // truncated file (readHidden/readHist would silently fall back to []).
+  function writeJsonAtomic(file, value) {
     fs.mkdirSync(cfg.dataDir, { recursive: true })
-    fs.writeFileSync(hiddenFile, JSON.stringify({ ids }, null, 2))
+    const tmp = `${file}.${process.pid}.${Date.now()}.tmp`
+    fs.writeFileSync(tmp, JSON.stringify(value, null, 2))
+    fs.renameSync(tmp, file)
+  }
+
+  function writeHidden(ids) {
+    // Hidden ids are a suppression list, not content — cap it so a client
+    // can't grow the file without bound.
+    writeJsonAtomic(hiddenFile, { ids: [...new Set(ids.map(String))].slice(0, 500) })
   }
 
   // Durable shared history. ComfyUI's own /history is in-memory (restarts
@@ -138,8 +209,7 @@ export function createApp(opts = {}) {
   }
 
   function writeHist(entries) {
-    fs.mkdirSync(cfg.dataDir, { recursive: true })
-    fs.writeFileSync(historyFile, JSON.stringify({ entries: entries.slice(0, HISTORY_CAP) }, null, 2))
+    writeJsonAtomic(historyFile, { entries: entries.slice(0, HISTORY_CAP) })
   }
 
   const HISTORY_FIELDS = ['type', 'prompt', 'lyrics', 'title', 'data', 'thumbnail', 'timestamp', 'settings', 'view', 'fromServer']
@@ -151,7 +221,9 @@ export function createApp(opts = {}) {
     for (const k of HISTORY_FIELDS) {
       if (e[k] !== undefined && e[k] !== null) out[k] = e[k]
     }
-    if (typeof out.data !== 'string') delete out.data
+    // Base64 payloads (images/video/audio) are large; 8 MB keeps the
+    // history file bounded while still fitting normal PNG/webp previews.
+    if (typeof out.data !== 'string' || out.data.length > 8 * 1024 * 1024) delete out.data
     // AI-generated song/video title — short plain string.
     if (typeof out.title === 'string') out.title = out.title.trim().slice(0, 120)
     else delete out.title
@@ -315,7 +387,9 @@ export function createApp(opts = {}) {
     }
     const negativePrompt = typeof body.negativePrompt === 'string' ? body.negativePrompt : ''
     const lyrics = typeof body.lyrics === 'string' ? body.lyrics : ''
-    const settings = body.settings && typeof body.settings === 'object' ? body.settings : {}
+    const settings = sanitizeGenerationSettings(
+      body.settings && typeof body.settings === 'object' ? body.settings : {},
+    )
     const wait = body.wait !== false
     const timeoutMs = Math.min(
       Number(body.timeoutSec) > 0 ? Number(body.timeoutSec) * 1000 : cfg.timeoutMs,
@@ -327,7 +401,7 @@ export function createApp(opts = {}) {
     // still win over the config.
     const runtimeConfig = await loadRuntimeConfig(cfg.configPath)
     const cfgModels = configModelOverrides(runtimeConfig, mode)
-    const modelOverrides = { ...pickModelOverrides(mode, body.models), ...cfgModels }
+    const modelOverrides = { ...cfgModels, ...pickModelOverrides(mode, body.models) }
     const cfgSettings = runtimeConfig.settings?.[mode] || {}
     const effSettings = { ...DEFAULT_SETTINGS[mode], ...cfgSettings, ...settings }
 
@@ -387,6 +461,7 @@ export function createApp(opts = {}) {
     } catch (err) {
       throw new HttpError(502, err.message)
     }
+    pruneJobs()
     jobs.set(promptId, { mode, prompt, startedAt: Date.now() })
 
     if (!wait) return { ok: true, promptId, mode, status: 'queued' }
@@ -607,6 +682,16 @@ export function createApp(opts = {}) {
 
   app.post('/api/cancel', async (req, res, next) => {
     try {
+      const promptId = typeof req.body?.promptId === 'string' ? req.body.promptId : ''
+      if (promptId) {
+        // /interrupt stops whatever is running, not a specific prompt. Only
+        // interrupt when the caller's prompt is the one actually running;
+        // otherwise leave another client's job alone.
+        const q = await fetch(`${cfg.comfyuiUrl}/queue`, { signal: AbortSignal.timeout(5000) })
+        const data = await q.json()
+        const running = (data.queue_running || []).some((row) => row?.[1] === promptId)
+        if (!running) return res.json({ ok: false, ignored: true })
+      }
       const r = await fetch(`${cfg.comfyuiUrl}/interrupt`, { method: 'POST' })
       res.json({ ok: r.ok })
     } catch (err) {
@@ -630,7 +715,8 @@ export function createApp(opts = {}) {
       if (!item) {
         let inQueue = false
         try {
-          const r = await fetch(`${cfg.comfyuiUrl}/prompt`, { signal: AbortSignal.timeout(5000) })
+          // /queue (not /prompt) is what exposes queue_running/queue_pending.
+          const r = await fetch(`${cfg.comfyuiUrl}/queue`, { signal: AbortSignal.timeout(5000) })
           const q = await r.json()
           inQueue = [...(q.queue_running || []), ...(q.queue_pending || [])].some(
             (p) => p?.[0] === promptId,
@@ -698,7 +784,7 @@ export function createApp(opts = {}) {
     try {
       const incoming = req.body?.ids
       if (!Array.isArray(incoming)) throw new HttpError(400, 'ids must be an array')
-      const merged = [...new Set([...readHidden(), ...incoming.map(String)])]
+      const merged = [...new Set([...readHidden(), ...incoming.map(String)])].slice(0, 500)
       writeHidden(merged)
       res.json({ ids: merged })
     } catch (err) {
@@ -731,6 +817,13 @@ if (isMain) {
   const app = createApp()
   app.listen(port, host, () => {
     console.log(`Studio API listening on ${host}:${port} → ComfyUI ${(process.env.COMFYUI_URL || 'http://10.1.1.102:8188')}`)
+    // Idle unloading must keep working when no Studio tab is open. The
+    // browser timer handles the same policy when it is awake; this one is
+    // the backstop for a closed/backgrounded tab or a machine that slept.
+    startIdleUnload({
+      comfyuiUrl: process.env.COMFYUI_URL || 'http://10.1.1.102:8188',
+      configPath: process.env.CONFIG_PATH || '/configdir/config.json',
+    })
     if (!process.env.API_KEY) {
       console.warn(
         `[api] API_KEY is not set — every /api route is unauthenticated. ` +

@@ -128,6 +128,21 @@ export function useComfyUI() {
     })
   }, [chain, freeModelsAfterRun, handleCompletion])
 
+  // Layout unmounts GenerateButton when switching to the 3D/Split tabs. The
+  // completion/error paths clear the timer for normal runs, but an unmount
+  // mid-render used to leave a 1 s interval rewriting persisted state forever.
+  // The callbacks are module-global, so release them only when this instance
+  // still owns them (another instance may have replaced them already).
+  useEffect(() => {
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current)
+      timerRef.current = null
+      setProgressCallback(null)
+      setPhaseCallback(null)
+      setCompletionCallback(null)
+    }
+  }, [])
+
   const generate = useCallback(async () => {
     const state = useStore.getState()
     if (!state.prompt.trim() || state.generating) return
@@ -175,10 +190,18 @@ export function useComfyUI() {
       const family = familyForRun(state, prep)
       const previous = getLoadedFamily()
       const stats = await getSystemStats(base).catch(() => null)
+      const vramUsed = stats ? Math.max(0, stats.vramTotal - stats.vramFree) : 0
       const lowVram = !!stats && stats.vramFree > 0 && stats.vramFree < 1.5 * 1024 ** 3
+      // `loadedFamily` is module-local and resets on reload; API/other-browser
+      // jobs never set it. If weights are resident but we don't know whose,
+      // unload rather than stacking a second pipeline into the same card.
+      const unknownResident = !!stats && vramUsed > 2 * 1024 ** 3
       if (state.autoUnload) {
         if (previous && previous !== family) {
           state.setProgressLabel(`Unloading models for ${familyLabel(family)}…`)
+          if (await freeLoadedModels(base)) state.setModelsUnloaded(true)
+        } else if (!previous && unknownResident) {
+          state.setProgressLabel('Clearing previously loaded models…')
           if (await freeLoadedModels(base)) state.setModelsUnloaded(true)
         } else if (lowVram) {
           state.setProgressLabel(

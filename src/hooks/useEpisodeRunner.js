@@ -42,6 +42,18 @@ export default function useEpisodeRunner(generate) {
     stopRef.current = false
     setRunning(true)
 
+    // Each shot borrows the live video fields (mode, prompt, duration, first
+    // frame) because PromptInput and the settings panel read the store
+    // directly. Snapshot the user's own values so the panel is back to normal
+    // once the loop stops.
+    const snapshot = useStore.getState()
+    const restore = {
+      mode: snapshot.mode,
+      prompt: snapshot.prompt,
+      duration: snapshot.videoSettings?.duration,
+      videoSourceImage: snapshot.videoSourceImage,
+    }
+
     try {
       for (const shot of pending) {
         if (stopRef.current || !aliveRef.current) break
@@ -143,6 +155,15 @@ export default function useEpisodeRunner(generate) {
         }
       }
     } finally {
+      // Restore the pre-run fields. Only call setMode when the mode really
+      // changed: it clears the output previews, and the last rendered shot
+      // should stay on screen. It also swaps the prompt to that mode's saved
+      // one, so set the prompt afterwards.
+      const state = useStore.getState()
+      if (state.mode !== restore.mode) state.setMode(restore.mode)
+      state.setPrompt(restore.prompt)
+      if (restore.duration !== undefined) state.setVideoSettings({ duration: restore.duration })
+      state.setVideoSourceImage(restore.videoSourceImage)
       runningRef.current = false
       if (aliveRef.current) {
         setRunning(false)

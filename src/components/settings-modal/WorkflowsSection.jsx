@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Download, FileJson2, Plus, Trash2, Upload } from 'lucide-react'
 import useStore from '../../store/useStore'
+import { saveBlobAs } from '../../lib/comfyui'
 import {
   defaultMapping,
   inspectWorkflow,
@@ -132,12 +133,7 @@ export default function WorkflowsSection() {
   const download = () => {
     if (!active) return
     const blob = new Blob([serializeWorkflow(active)], { type: 'application/json' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `${slug(active.name)}.json`
-    a.click()
-    URL.revokeObjectURL(url)
+    saveBlobAs(blob, `${slug(active.name)}.json`)
   }
 
   const info = active ? active.info || inspectWorkflow(active.graph) : null
