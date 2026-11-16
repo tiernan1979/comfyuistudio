@@ -1,6 +1,6 @@
 # ComfyUI Studio — REST API service (port 5557).
 # Reuses the app's workflow builders + ComfyUI client from src/lib/.
-FROM node:20-alpine
+FROM node:26-alpine
 
 WORKDIR /app
 
