@@ -97,7 +97,13 @@ export default function GenerateButton() {
                     ? 'Generate Sprites'
                     : mode === 'pixel'
                       ? 'Generate Pixel Art'
-                      : 'Generate'}
+                      : mode === 'texture'
+                        ? 'Generate Texture'
+                        : mode === 'flipbook'
+                          ? 'Generate Flipbook'
+                          : mode === 'material'
+                            ? 'Generate PBR Pack'
+                            : 'Generate'}
             </>
           )}
         </span>

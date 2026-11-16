@@ -31,7 +31,7 @@ function normalizeRows(rows, fallbackFrames) {
 // { blob, width, height, columns, rows }.
 export async function packSpriteSheet(frameUrls, { columns = 4, cellSize = 256, rows = null, background = 'transparent' } = {}) {
   if (!frameUrls?.length) throw new Error('no frames to pack')
-  const cols = Math.max(1, Math.min(32, Math.round(columns)))
+  const cols = Math.max(1, Math.min(64, Math.round(columns)))
   const cell = Math.max(1, Math.round(cellSize))
   const layout = normalizeRows(rows, cols)
   const canvas = document.createElement('canvas')

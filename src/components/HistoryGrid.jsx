@@ -1,5 +1,5 @@
 import { motion } from 'framer-motion'
-import { Image, Film, Music, Box, Trash2, AudioWaveform, LayoutGrid } from 'lucide-react'
+import { Image, Film, Music, Box, Trash2, AudioWaveform, LayoutGrid, Clapperboard, Layers, Palette } from 'lucide-react'
 import useStore from '../store/useStore'
 import clsx from 'clsx'
 
@@ -134,6 +134,12 @@ export default function HistoryGrid() {
               <AudioWaveform size={10} className="text-white/70" />
             ) : entry.type === 'sprite' ? (
               <LayoutGrid size={10} className="text-white/70" />
+            ) : entry.type === 'flipbook' ? (
+              <Clapperboard size={10} className="text-white/70" />
+            ) : entry.type === 'texture' ? (
+              <Layers size={10} className="text-white/70" />
+            ) : entry.type === 'material' ? (
+              <Palette size={10} className="text-white/70" />
             ) : entry.type === '3d' ? (
               <Box size={10} className="text-white/70" />
             ) : (

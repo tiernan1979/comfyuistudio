@@ -11,6 +11,9 @@ import VideoPlayer from './VideoPlayer'
 import MusicPlayer from './MusicPlayer'
 import SfxPlayer from './SfxPlayer'
 import SpritePlayer from './SpritePlayer'
+import TextureViewer from './TextureViewer'
+import FlipbookPlayer from './FlipbookPlayer'
+import MaterialViewer from './MaterialViewer'
 import ImageUpload from './ImageUpload'
 import ErrorBanner from './ErrorBanner'
 import WebSearchPanel from './WebSearchPanel'
@@ -130,6 +133,12 @@ export default function Layout() {
                 <SfxPlayer />
               ) : effectiveMode === 'sprite' ? (
                 <SpritePlayer />
+              ) : effectiveMode === 'texture' ? (
+                <TextureViewer />
+              ) : effectiveMode === 'flipbook' ? (
+                <FlipbookPlayer />
+              ) : effectiveMode === 'material' ? (
+                <MaterialViewer />
               ) : (
                 <ImageViewer />
               )}

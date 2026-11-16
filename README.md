@@ -7,7 +7,11 @@ Static frontend (React + Vite) served by nginx; every external request (ComfyUI,
 ## Features
 
 - **Image generation** — Qwen-Image (or the lighter Qwen-Image-2.1) workflows with aspect ratio, steps, CFG, turbo mode, seed control
-- **Pixel Art mode** — a separate **Pixel Art** entry in the mode menu for 2D game terrain and sprites. Uses an SDXL checkpoint + **Pixel Art XL** LoRA (not the Qwen image stack), renders square 512–1280² batches, and feeds the viewer's grid button for a 32×32 seamless-ish ground tile. The mode menu groups the other tabs into Create / Animate / Audio / Tools so the top bar stays compact
+- **Pixel Art mode** — a separate **Pixel Art** entry in the mode menu for 2D game terrain and sprites. Uses an SDXL checkpoint + **Pixel Art XL** LoRA (not the Qwen image stack), renders square 512–1280² batches, and feeds the viewer's grid button for a 32×32 seamless-ish ground tile. The mode menu groups tabs into Image / Video / Music / Game Assets so the top bar stays compact
+- **Game asset generators** — under **Game Assets**:
+  - **Tiles & Textures** — seamless materials, 2×2–4×4 tileset sheets, transparent **icon / UI packs** (BiRefNet background cut) and **terrain auto-tile** transition sheets, with repeat preview, grid overlay and one-click cell cropping
+  - **VFX Flipbook** — a looping WAN effect rendered as transparent frames, packed into a horizontal sheet with a JSON atlas and a Godot `SpriteFrames` `.tres`
+  - **PBR Material** — a fully local base colour + normal + roughness + metalness + height pack for Blender / Unity / Unreal, using the image model and ComfyUI's depth/normal preprocessors
 - **Music generation** — MiniMax Music 3 or ACE-Step 1.5 XL (turbo) with prompt, lyrics (with structure tags), output quality (`wav` / `320k` / `V0` / `128k`); MiniMax exposes steps + guidance. Lossless renders download as real `.wav` files
 - **SFX generation** — its own **SFX** tab: Stable Audio 3 (small_sfx default, medium selectable) via a Stable Audio checkpoint + T5Gemma text encoder, tuned for short high-quality sound effects (≤ 47 s, native `ConditioningStableAudio` nodes); falls back to ACE-Step 1.5 when Stable Audio isn't installed. The AI prompt writer fills in the sound-only caption, a **sized clip length (1–47 s)**, the negative prompt and the filename title — and when the box is empty it invents effects plus clickable alternatives. Downloads are real `.wav` (ComfyUI stores FLAC; the browser converts), with the untouched `.flac` one click away. Models: [SFX generation — Stable Audio 3](#sfx-generation--stable-audio-3)
 - **Sprite sheets (game-ready)** — a **Sprites** tab with two engines:
@@ -251,6 +255,9 @@ All other settings (ComfyUI URL, models, providers, SearXNG URL) can also be cha
 | Music generation | ComfyUI + MiniMax Music 3 or ACE-Step 1.5 models |
 | SFX generation | ComfyUI + Stable Audio 3 (`stable_audio_3_*.safetensors` checkpoint + `t5gemma_b_b_ul2.safetensors` encoder); falls back to ACE-Step 1.5 |
 | Sprite sheets (pose edits) | ComfyUI + an image model (Qwen-Image) + **BiRefNet** (`birefnet.safetensors` → `models/background_removal/`, for the built-in `LoadBackgroundRemovalModel`/`RemoveBackground` nodes); the graph emits one transparent PNG per frame and the sheet/atlas/`.tres` are packed **client-side** (so alpha survives — KJNodes `ImageGrid` would flatten it) |
+| Tiles & textures | ComfyUI + an image model (Qwen-Image); icon packs optionally use **BiRefNet** for transparent cells; no extra nodes for textures, tilesets or terrain |
+| VFX flipbook | ComfyUI + a WAN 2.x video model + **BiRefNet** for transparent frames (disable Transparency to skip it) |
+| PBR material packs | ComfyUI + the image model + the built-in depth/normal preprocessors (`DSINE-NormalMapPreprocessor`, `MiDaS-DepthMapPreprocessor`); fully local, no cloud account or credits |
 | Sprite sheets (**Video / WAN 2.2**) | ComfyUI + **city96/ComfyUI-GGUF** + `WAN2.2-I2V-A14B` lightx2v 4-step GGUF (high + low noise) in `models/unet/`, `umt5_xxl_fp8_e4m3fn_scaled.safetensors` + `Wan2.1_VAE.safetensors`, and the image model above for the keyframe |
 | Music editor — timeline, DSP stems, mixdown | nothing extra (client-side only) |
 | Music editor — **AI stems** | ComfyUI + the **AudioSeparation** node pack (see [Stem splitting](#music-editor--stem-splitting)) |

@@ -20,14 +20,18 @@ import {
 } from '../../lib/comfyui'
 import {
   buildEditWorkflow,
+  buildFlipbookWorkflow,
   buildImageWorkflow,
+  buildMaterialWorkflow,
   buildMusicWorkflow,
   buildPixelArtWorkflow,
   buildSpriteWorkflow,
+  buildTextureWorkflow,
   buildVideoWorkflow,
   isAceStepModel,
   isMiniMaxH3,
   isStableAudioModel,
+  MATERIAL_NODES,
 } from '../../lib/workflows'
 import {
   buildCharacterStage1Workflow,
@@ -122,7 +126,38 @@ export async function prepareRun(base, state) {
   // music, SFX) override the flat group, but the flat group can still hold a
   // stale default (e.g. the old Wan 2.1 file). Preflighting it alone rejected
   // runs whose selected preset was installed — "keeps looking for wan2.1…".
-  await assertModelsAvailable(base, state.mode, resolvePresetModels({ ...state, models }))
+  if (state.mode === 'material') {
+    // Local PBR: the base colour uses the image stack; normal/height come
+    // from local preprocessors and roughness/metalness are derived in-graph.
+    const { missing, unreachable } = await checkNodes(base, MATERIAL_NODES)
+    if (unreachable) {
+      throw new Error('Could not reach ComfyUI to verify the local PBR nodes — check the server URL.')
+    }
+    if (missing.length) {
+      throw new Error(
+        `Local PBR needs these ComfyUI nodes: ${missing.join(', ')}. ` +
+          'Update ComfyUI / install its controlnet preprocessors, then try again.'
+      )
+    }
+    await assertModelsAvailable(base, 'image', resolvePresetModels({ ...state, models }))
+    const material = state.materialSettings || {}
+    const { workflow } = buildMaterialWorkflow({
+      prompt: styledPrompt,
+      size: material.size,
+      maps: material.maps,
+      tiling: material.tiling,
+      steps: material.steps,
+      cfg: material.cfg,
+      seed: material.seed,
+      metallic: material.metallic,
+      roughness: material.roughness,
+      models: state.models.image,
+    })
+    return { workflow }
+  }
+
+  const preflightMode = state.mode === 'flipbook' ? 'video' : state.mode
+  await assertModelsAvailable(base, preflightMode, resolvePresetModels({ ...state, models }))
 
   if (state.mode === 'edit') {
     if (!state.sourceImage?.file) throw new Error('Upload a source image first.')
@@ -170,6 +205,84 @@ export async function prepareRun(base, state) {
         batchSize: ps.batchCount || 1,
         loraStrength: ps.loraStrength,
         models: state.models.pixel,
+      }),
+    }
+  }
+
+  if (state.mode === 'texture') {
+    const ts = state.textureSettings || {}
+    // Icon packs can keep their alpha by cutting the flat sheet background
+    // with the same BiRefNet stack the sprite/flipbook modes use.
+    if (ts.kind === 'icon' && ts.transparent !== false) {
+      const { missing, unreachable } = await checkNodes(base, [
+        'LoadBackgroundRemovalModel',
+        'RemoveBackground',
+        'JoinImageWithAlpha',
+      ])
+      if (unreachable) {
+        throw new Error('Could not reach ComfyUI to verify the background removal nodes.')
+      }
+      if (missing.length) {
+        throw new Error(
+          `Transparent icon packs need these ComfyUI nodes: ${missing.join(', ')}. ` +
+            'Update ComfyUI, or turn off “Transparent background” in the texture settings.'
+        )
+      }
+    }
+    return {
+      workflow: buildTextureWorkflow({
+        prompt: styledPrompt,
+        negativePrompt: styledNegative,
+        kind: ts.kind,
+        seamless: ts.seamless !== false,
+        grid: ts.grid,
+        size: ts.size,
+        seed: ts.seed,
+        steps: ts.steps,
+        cfg: ts.cfg,
+        batchSize: ts.batchCount || 1,
+        transparent: ts.transparent !== false,
+        models: state.models.image,
+      }),
+    }
+  }
+
+  if (state.mode === 'flipbook') {
+    const fb = state.flipbookSettings || {}
+    const videoModels = resolveActiveModels(state, 'video')
+    if (isMiniMaxH3(videoModels?.unet)) {
+      throw new Error(
+        'VFX Flipbook renders frame PNGs, which MiniMax H3 does not expose — select a Wan 2.x model in Settings → Video Models for this mode.'
+      )
+    }
+    if (fb.transparent !== false) {
+      const { missing, unreachable } = await checkNodes(base, [
+        'LoadBackgroundRemovalModel',
+        'RemoveBackground',
+        'InvertMask',
+        'JoinImageWithAlpha',
+      ])
+      if (unreachable) {
+        throw new Error('Could not reach ComfyUI to verify the flipbook background remover.')
+      }
+      if (missing.length) {
+        throw new Error(
+          'Transparent flipbooks need the BiRefNet nodes (LoadBackgroundRemovalModel / RemoveBackground). ' +
+            'Install the background-removal node pack, or turn Transparency off in Flipbook settings.'
+        )
+      }
+    }
+    return {
+      workflow: buildFlipbookWorkflow({
+        prompt: styledPrompt,
+        negativePrompt: styledNegative,
+        frames: fb.frames,
+        resolution: fb.resolution,
+        seed: fb.seed,
+        steps: fb.steps,
+        cfg: fb.cfg,
+        transparent: fb.transparent !== false,
+        models: videoModels,
       }),
     }
   }

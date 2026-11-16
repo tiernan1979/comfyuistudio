@@ -8,6 +8,9 @@ import {
   DEFAULT_SPRITE_SETTINGS,
   DEFAULT_IMAGE_SETTINGS,
   DEFAULT_PIXEL_SETTINGS,
+  DEFAULT_TEXTURE_SETTINGS,
+  DEFAULT_FLIPBOOK_SETTINGS,
+  DEFAULT_MATERIAL_SETTINGS,
   DEFAULT_SPLIT_SETTINGS,
   DEFAULT_PARTS_SETTINGS,
   DEFAULT_ACTIVE,
@@ -15,7 +18,7 @@ import {
 import { AUTOSPLIT_LABEL_PRESETS } from '../lib/workflows.js'
 
 export const STORAGE_KEY = 'comfyui-studio-storage'
-export const STORAGE_VERSION = 13
+export const STORAGE_VERSION = 15
 
 // v0/v1 stored a flat llmUrl/llmModel (Ollama era: port 11434 + "name:tag"
 // ids). Fold them into the v2 per-provider config.
@@ -38,6 +41,10 @@ export const STORAGE_VERSION = 13
 // v12 merges the Character Parts view direction (front/side/threeQuarter/
 // back) via the partsSettings defaults merge below.
 // v13 adds the Pixel Art settings/model group (SDXL + Pixel Art XL).
+// v14 adds the Game Assets groups (texture/flipbook/material) — merged against
+// their defaults because the shallow persist merge would drop nested map flags.
+// v15 replaces the Patina-material fields with local PBR fields (cfg, metallic,
+// roughness) and drops the old cloud-only upscale/promptExpansion keys.
 export function migrate(persisted) {
   const s = { ...persisted }
 
@@ -108,6 +115,16 @@ export function migrate(persisted) {
   // replaced wholesale by the shallow persist merge).
   s.imageSettings = { ...(DEFAULT_IMAGE_SETTINGS || {}), ...(s.imageSettings || {}) }
   s.pixelSettings = { ...DEFAULT_PIXEL_SETTINGS, ...(s.pixelSettings || {}) }
+  s.textureSettings = { ...DEFAULT_TEXTURE_SETTINGS, ...(s.textureSettings || {}) }
+  s.flipbookSettings = { ...DEFAULT_FLIPBOOK_SETTINGS, ...(s.flipbookSettings || {}) }
+  s.materialSettings = {
+    ...DEFAULT_MATERIAL_SETTINGS,
+    ...(s.materialSettings || {}),
+    maps: { ...DEFAULT_MATERIAL_SETTINGS.maps, ...(s.materialSettings?.maps || {}) },
+  }
+  // Patina-era fields no longer exist; do not persist stale cloud settings.
+  delete s.materialSettings.upscale
+  delete s.materialSettings.promptExpansion
   s.editSettings = {
     seed: -1,
     steps: 20,
@@ -160,6 +177,9 @@ export function partialize(state) {
     musicSettings: state.musicSettings,
     sfxSettings: state.sfxSettings,
     spriteSettings: state.spriteSettings,
+    textureSettings: state.textureSettings,
+    flipbookSettings: state.flipbookSettings,
+    materialSettings: state.materialSettings,
     splitSettings: state.splitSettings,
     partsSettings: state.partsSettings,
     history: state.history,

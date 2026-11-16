@@ -7,7 +7,7 @@ import { rewritePrompt, resolveLlmConfig, PROVIDERS, pickDefaultModel, padInstru
 import { STABLE_AUDIO_MAX_SECONDS } from '../lib/workflows'
 import { searchText } from '../lib/search'
 import Dropdown from './Dropdown'
-import { EXAMPLES, SFX_EXAMPLES, PLACEHOLDERS, buildSelectionContext } from './prompt/context'
+import { EXAMPLES, SFX_EXAMPLES, TEXTURE_EXAMPLES, FLIPBOOK_EXAMPLES, MATERIAL_EXAMPLES, PLACEHOLDERS, buildSelectionContext } from './prompt/context'
 
 export default function PromptInput() {
   const prompt = useStore((s) => s.prompt)
@@ -48,7 +48,16 @@ export default function PromptInput() {
   const styleOptions = Object.entries(STYLES).map(([key, s]) => ({ value: key, label: s.label }))
 
   const insertExample = () => {
-    const bank = mode === 'sfx' ? SFX_EXAMPLES : EXAMPLES
+    const bank =
+      mode === 'sfx'
+        ? SFX_EXAMPLES
+        : mode === 'texture'
+          ? TEXTURE_EXAMPLES
+          : mode === 'flipbook'
+            ? FLIPBOOK_EXAMPLES
+            : mode === 'material'
+              ? MATERIAL_EXAMPLES
+              : EXAMPLES
     const ex = bank[Math.floor(Math.random() * bank.length)]
     setPrompt(ex)
     if (mode === 'sfx') setSuggestions([])
@@ -254,7 +263,7 @@ export default function PromptInput() {
   return (
     <div className="space-y-2">
       <div className="flex items-center gap-2 flex-wrap">
-        {mode !== 'edit' && mode !== 'music' && mode !== 'sfx' && mode !== 'sprite' && mode !== 'pixel' && (
+        {mode !== 'edit' && mode !== 'music' && mode !== 'sfx' && mode !== 'sprite' && mode !== 'pixel' && mode !== 'material' && (
           <>
             <span className="text-xs text-text-muted shrink-0">Style</span>
             <div className="flex-1 min-w-36">
@@ -273,7 +282,7 @@ export default function PromptInput() {
               {/* Enhance appends image-style quality tags — meaningless for
                   music and sound-effect captions, so the offline button stays
                   hidden there (the AI button below writes proper prompts). */}
-              {mode !== 'music' && mode !== 'sfx' && mode !== 'sprite' && mode !== 'pixel' && (
+              {mode !== 'music' && mode !== 'sfx' && mode !== 'sprite' && mode !== 'pixel' && mode !== 'material' && (
                 <motion.button
                   whileHover={{ scale: 1.05 }}
                   whileTap={{ scale: 0.95 }}
@@ -398,7 +407,7 @@ export default function PromptInput() {
       {/* Music hides the negative-prompt field entirely (the model has no
           negative conditioning). SFX keeps it OPEN by default — the AI fills
           it in and Stable Audio actually conditions on it. */}
-      {mode !== 'music' && (
+      {mode !== 'music' && mode !== 'material' && (
         <motion.button
           onClick={() => setShowNegative(!showNegative)}
           className="flex items-center gap-1 text-xs text-text-muted hover:text-text-secondary transition-colors"
@@ -408,7 +417,7 @@ export default function PromptInput() {
         </motion.button>
       )}
 
-      {showNegative && mode !== 'music' && (
+      {showNegative && mode !== 'music' && mode !== 'material' && (
         <motion.textarea
           initial={{ opacity: 0, height: 0 }}
           animate={{ opacity: 1, height: 'auto' }}

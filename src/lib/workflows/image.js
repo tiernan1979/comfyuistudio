@@ -12,6 +12,7 @@ export function buildImageWorkflow({
   turboMode = false,
   batchSize = 1,
   models,
+  filenamePrefix = 'ComfyUI',
   upscaleModel = '', // models/upscale_models/*.pth — 4x detail upscale after decode
 }) {
   // Custom W×H (e.g. 100x100 for sprites) overrides the aspect-ratio preset.
@@ -92,7 +93,7 @@ export function buildImageWorkflow({
       class_type: 'SaveImage',
       inputs: {
         images: ['8', 0],
-        filename_prefix: 'ComfyUI',
+        filename_prefix: filenamePrefix,
       },
     },
   }

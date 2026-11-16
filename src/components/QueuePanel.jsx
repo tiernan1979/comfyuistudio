@@ -52,7 +52,12 @@ export default function QueuePanel() {
   // Poll only while the popover is open; 2s matches the generation progress
   // cadence without hammering the server.
   useEffect(() => {
-    if (!open) return
+    if (!open) {
+      // Drop the last snapshot so a finished job can't keep the badge count
+      // alive until the next connection poll.
+      setQueue({ running: [], pending: [], total: 0 })
+      return
+    }
     refresh()
     const id = setInterval(refresh, 2000)
     return () => clearInterval(id)

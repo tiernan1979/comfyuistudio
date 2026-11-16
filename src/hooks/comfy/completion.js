@@ -2,8 +2,10 @@
 
 import { extractHistoryError, getHistory, getViewUrl, resolveApiBase } from '../../lib/comfyui'
 import { layoutRows } from '../../lib/character'
+import { MATERIAL_MAP_KEYS } from '../../lib/workflows'
 import useStore from '../../store/useStore'
 import { publishSpriteSheet } from './publishSprite.js'
+import { publishFlipbook } from './publishFlipbook.js'
 
 export function createCompletionHandler({ timerRef }) {
   return async (promptId) => {
@@ -75,6 +77,85 @@ export function createCompletionHandler({ timerRef }) {
         // Sprite mode owns its output: never fall through to the generic
         // single-image branch below, which would show one raw frame as if it
         // were the packed sheet (and mislabel it as an image).
+        found = true
+      }
+
+      // Flipbook mode: SaveImage emits one transparent PNG per WAN frame.
+      // Pack them into a horizontal sheet so the player can animate/export it.
+      if (state.mode === 'flipbook') {
+        try {
+          const frames = []
+          for (const nodeId of Object.keys(entry.outputs)) {
+            const out = entry.outputs[nodeId]
+            for (const img of out.images || []) {
+              frames.push(await getViewUrl(base, img.filename, img.subfolder, img.type))
+            }
+          }
+          if (frames.length) {
+            const fb = state.flipbookSettings || {}
+            await publishFlipbook(base, promptId, frames, fb, state.prompt)
+          } else {
+            state.setError('The flipbook graph finished without producing any frames.')
+          }
+        } catch (err) {
+          console.error('flipbook packing failed', err)
+          state.setError(`Flipbook packing failed: ${err.message}`)
+        }
+        found = true
+      }
+
+      // Texture / tileset mode: one SaveImage can return a batch of variants.
+      if (state.mode === 'texture') {
+        const urls = []
+        for (const nodeId of Object.keys(entry.outputs)) {
+          const out = entry.outputs[nodeId]
+          for (const img of out.images || []) {
+            urls.push(await getViewUrl(base, img.filename, img.subfolder, img.type))
+          }
+        }
+        if (urls.length) {
+          const ts = state.textureSettings || {}
+          state.setOutputImage(urls[0])
+          state.setBatchImages(urls)
+          for (let i = 0; i < urls.length; i += 1) {
+            state.addToHistory({
+              id: i === 0 ? promptId : `${promptId}-${i + 1}`,
+              type: 'texture',
+              prompt: state.prompt,
+              data: urls[i],
+              timestamp: Date.now(),
+              settings: { ...ts },
+            })
+          }
+        } else {
+          state.setError('The texture graph finished without producing an image.')
+        }
+        found = true
+      }
+
+      // PBR material pack: each enabled map has its own SaveImage node.
+      if (state.mode === 'material') {
+        const ms = state.materialSettings || {}
+        const maps = {}
+        for (const key of MATERIAL_MAP_KEYS) {
+          const img = entry.outputs?.[`save_${key}`]?.images?.[0]
+          if (img) maps[key] = await getViewUrl(base, img.filename, img.subfolder, img.type)
+        }
+        const primary = maps.basecolor || Object.values(maps)[0]
+        if (primary) {
+          state.setOutputImage(primary)
+          state.setBatchImages([])
+          state.addToHistory({
+            id: promptId,
+            type: 'material',
+            prompt: state.prompt,
+            data: primary,
+            timestamp: Date.now(),
+            settings: { ...ms, maps },
+          })
+        } else {
+          state.setError('The local PBR graph finished without returning any maps.')
+        }
         found = true
       }
 

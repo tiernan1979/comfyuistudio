@@ -116,6 +116,8 @@ export function createHistoryActions(set, get) {
       const isMusic = entry.type === 'music'
       const isSfx = entry.type === 'sfx'
       const isSprite = entry.type === 'sprite'
+      const isAsset =
+        entry.type === 'texture' || entry.type === 'flipbook' || entry.type === 'material'
       const isAudio = isMusic || isSfx
       const mode = isVideo
         ? 'video'
@@ -125,9 +127,11 @@ export function createHistoryActions(set, get) {
             ? 'sfx'
             : isSprite
               ? 'sprite'
-              : entry.type === 'edit'
-                ? 'edit'
-                : 'image'
+              : isAsset
+                ? entry.type
+                : entry.type === 'edit'
+                  ? 'edit'
+                  : 'image'
       const text = entry.prompt ?? ''
       set((st) => ({
         selectedHistoryId: id,

@@ -183,6 +183,48 @@ export function buildRewriteSystem(styleLabel, mode) {
       '{"prompt": "<the edit instruction>", "negative": "<avoid>", "search_query": "<3-8 keywords>"}'
     )
   }
+  if (mode === 'texture') {
+    return (
+      'You are an expert prompt writer for AI game TEXTURE and UI ART generation (ComfyUI, Qwen-Image).\n' +
+      "Rewrite the user's idea into ONE concise description (12 to 35 words) of a flat material, " +
+      'a set of matching icons, or a terrain tile: material type, colour, wear, grain and detail.\n' +
+      'Rules:\n' +
+      '- Describe ONLY the surface, icons or tiles. NO scene, horizon, perspective, lighting direction or camera words.\n' +
+      '- No text, labels, borders or frames.\n' +
+      '- Keep style, scale and lighting consistent across the whole sheet so tiles match and icons read as one set.\n' +
+      '- Also give a short NEGATIVE phrase of what would ruin the asset (max 12 words).\n' +
+      'Reply with ONLY a JSON object, no markdown, no explanations:\n' +
+      '{"prompt": "<description>", "negative": "<avoid>"}'
+    )
+  }
+  if (mode === 'flipbook') {
+    return (
+      'You are an expert prompt writer for AI game VFX FLIPBOOK generation (ComfyUI, Wan).\n' +
+      "Rewrite the user's idea into ONE concise description (12 to 35 words) of a single looping visual " +
+      'effect: what it is, its colour, shape, energy and how it evolves over the loop.\n' +
+      'Rules:\n' +
+      '- ONE effect only, centered, isolated. NO scene, environment, characters or camera movement.\n' +
+      '- Describe motion that loops cleanly (build → peak → fade back to the first frame).\n' +
+      '- No text, watermark, UI or frame border.\n' +
+      '- Also give a short NEGATIVE phrase of what would ruin the effect (max 12 words).\n' +
+      'Reply with ONLY a JSON object, no markdown, no explanations:\n' +
+      '{"prompt": "<effect description>", "negative": "<avoid>"}'
+    )
+  }
+  if (mode === 'material') {
+    return (
+      'You are an expert prompt writer for AI PBR MATERIAL generation (local PBR in ComfyUI).\n' +
+      "Rewrite the user's idea into ONE concise description (12 to 35 words) of a physical material " +
+      'for a seamlessly tiling game texture: material, colour, surface finish (rough/glossy/metal), ' +
+      'wear, grain, cracks or pattern.\n' +
+      'Rules:\n' +
+      '- Describe the material ONLY. NO scene, object, lighting, shadow, camera or composition words.\n' +
+      '- Do not mention maps, normal maps, PBR or rendering — just the physical surface.\n' +
+      '- Keep it uniform enough to tile in both directions.\n' +
+      'Reply with ONLY a JSON object, no markdown, no explanations:\n' +
+      '{"prompt": "<material description>", "negative": ""}'
+    )
+  }
   const video = mode === 'video'
   return (
     (video

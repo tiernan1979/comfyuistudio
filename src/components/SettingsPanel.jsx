@@ -6,6 +6,9 @@ import PixelSettings from './settings/PixelSettings'
 import MusicSettings from './settings/MusicSettings'
 import SfxSettings from './settings/SfxSettings'
 import SpriteSettings from './settings/SpriteSettings'
+import TextureSettings from './settings/TextureSettings'
+import FlipbookSettings from './settings/FlipbookSettings'
+import MaterialSettings from './settings/MaterialSettings'
 import VideoSettings from './settings/VideoSettings'
 
 // The controls column is mode-driven: each mode owns a small panel that
@@ -19,6 +22,9 @@ const PANELS = {
   music: MusicSettings,
   sfx: SfxSettings,
   sprite: SpriteSettings,
+  texture: TextureSettings,
+  flipbook: FlipbookSettings,
+  material: MaterialSettings,
   video: VideoSettings,
 }
 

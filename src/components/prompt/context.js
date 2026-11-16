@@ -20,6 +20,33 @@ export const SFX_EXAMPLES = [
   'crowd cheering swelling then fading, stadium reverb',
 ]
 
+export const TEXTURE_EXAMPLES = [
+  'mossy stone castle wall, weathered blocks, green moss in the cracks',
+  'warm oak planks, visible grain, hand-cut boards',
+  'wet volcanic rock, dark basalt, fine cracks and ash',
+  'sci-fi hull plating, brushed metal, panel seams and rivets',
+  'sandy beach ground, scattered pebbles and shells',
+  'toxic swamp water, oily rainbow sheen, bubbles and algae',
+]
+
+export const FLIPBOOK_EXAMPLES = [
+  'a looping orange explosion with smoke and sparks',
+  'blue magic portal opening and pulsing with runes',
+  'a small campfire flame flickering in the wind',
+  'electric lightning arc crackling between two points',
+  'green poison cloud bubbling and spreading',
+  'a golden level-up burst with rising sparkles',
+]
+
+export const MATERIAL_EXAMPLES = [
+  'weathered red brick, rough mortar, chipped edges',
+  'polished dark marble with thin gold veins',
+  'rusted industrial steel, flaking paint and scratches',
+  'hand-cut oak planks with visible grain and knots',
+  'rough grey concrete with hairline cracks',
+  'blue dragon scales, glossy with a hard edge',
+]
+
 export const PLACEHOLDERS = {
   image: 'Describe what you want to create...',
   edit: "Describe the change... e.g. 'change the background to a beach at sunset, keep the person the same'",
@@ -39,6 +66,21 @@ export const PLACEHOLDERS = {
     'For example: a knight in blue plate armour with a red plume and a round shield\n' +
     'a small green slime creature with big eyes\n' +
     'a sci-fi soldier in white armour holding a rifle',
+  texture:
+    'Describe a surface, icon set or terrain tile — no scene.\n' +
+    'For example: mossy stone castle wall, weathered blocks, green moss in the cracks\n' +
+    'a set of fantasy RPG inventory icons: potion, sword, shield, coin, key, gem\n' +
+    'grass-to-dirt terrain transitions with ragged edges and scattered pebbles',
+  flipbook:
+    'Describe one visual effect that loops — no scene or camera.\n' +
+    'For example: a looping orange explosion with smoke and sparks\n' +
+    'blue magic portal opening and pulsing with runes\n' +
+    'a small campfire flame flickering in the wind',
+  material:
+    'Describe a physical material for a PBR texture — no lighting or scene.\n' +
+    'For example: weathered red brick, rough mortar, chipped edges\n' +
+    'polished dark marble with thin gold veins\n' +
+    'rusted industrial steel, flaking paint and scratches',
 }
 
 // Describe the user's current UI selections so the AI prompt writer can
@@ -58,6 +100,9 @@ export function buildSelectionContext(s) {
     s.mode === 'image' ||
     s.mode === 'video' ||
     s.mode === 'edit' ||
+    s.mode === 'texture' ||
+    s.mode === 'flipbook' ||
+    s.mode === 'material' ||
     (s.mode === 'custom' && customType !== 'audio')
   if (styleLabel && visualMode) {
     lines.push(`Style preset: ${styleLabel}`)
@@ -98,6 +143,33 @@ export function buildSelectionContext(s) {
         ? `Editing the uploaded image "${s.sourceImage.name}" — describe only the change`
         : 'No source image uploaded yet',
     )
+  } else if (s.mode === 'texture') {
+    const t = s.textureSettings || {}
+    if (t.kind === 'icon') {
+      lines.push(`Icon / UI pack: ${t.grid}×${t.grid} icons on a flat background`)
+      lines.push(`Background: ${t.transparent !== false ? 'cut to transparency (BiRefNet)' : 'left flat'}`)
+    } else if (t.kind === 'terrain') {
+      lines.push(`Terrain auto-tile sheet: ${t.grid}×${t.grid} edge/corner transition tiles`)
+    } else if (t.kind === 'tileset') {
+      lines.push(`Tileset sheet: ${t.grid}×${t.grid} equal cells`)
+    } else {
+      lines.push(
+        `Seamless texture: ${t.seamless !== false ? 'tileable edges' : 'one-off surface'}`,
+      )
+    }
+    lines.push(`Render size: ${t.size}px square`)
+  } else if (s.mode === 'flipbook') {
+    const f = s.flipbookSettings || {}
+    lines.push(`Flipbook: ${f.frames} frames at ${f.fps} fps, ${f.resolution}px square`)
+    lines.push(`Background: ${f.transparent !== false ? 'transparent (BiRefNet)' : 'full frame'}`)
+  } else if (s.mode === 'material') {
+    const m = s.materialSettings || {}
+    const maps = Object.entries(m.maps || {})
+      .filter(([, on]) => on !== false)
+      .map(([k]) => k)
+      .join(', ')
+    lines.push(`PBR maps: ${maps || 'none selected'}`)
+    lines.push(`Texture size: ${m.size}, tiling: ${m.tiling}`)
   }
   return lines.join('\n')
 }

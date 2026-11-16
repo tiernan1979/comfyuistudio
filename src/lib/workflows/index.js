@@ -2,6 +2,16 @@
 // this file; workflows.js re-exports them so existing imports keep working.
 export { snap8, ASPECT_RATIOS, VIDEO_RESOLUTIONS } from './common.js'
 export { buildImageWorkflow, buildEditWorkflow } from './image.js'
+export { TEXTURE_NEGATIVE, textureAssetPrompt, buildTextureWorkflow } from './texture.js'
+export { FLIPBOOK_FRAMES, FLIPBOOK_NEGATIVE, flipbookPrompt, buildFlipbookWorkflow } from './flipbook.js'
+export {
+  MATERIAL_MAP_KEYS,
+  MATERIAL_SIZE_OPTIONS,
+  MATERIAL_NODES,
+  MATERIAL_NEGATIVE,
+  materialPrompt,
+  buildMaterialWorkflow,
+} from './material.js'
 export { PIXEL_NEGATIVE, pixelAssetPrompt, buildPixelArtWorkflow } from './pixel.js'
 export {
   SPRITE_ANIMATIONS,

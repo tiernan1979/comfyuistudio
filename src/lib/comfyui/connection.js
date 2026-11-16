@@ -43,7 +43,7 @@ export async function checkConnection(serverUrl) {
 
 export async function getQueueStatus(serverUrl) {
   try {
-    const res = await fetch(`${serverUrl}/queue`)
+    const res = await fetch(`${serverUrl}/queue`, { cache: 'no-store' })
     const data = await res.json()
     return data.queue_remaining || 0
   } catch {
@@ -58,7 +58,7 @@ export async function getQueueStatus(serverUrl) {
 export async function getQueue(serverUrl) {
   let res
   try {
-    res = await fetch(`${serverUrl}/queue`)
+    res = await fetch(`${serverUrl}/queue`, { cache: 'no-store' })
   } catch (err) {
     throw new Error(`Could not reach ComfyUI (${err.message})`)
   }

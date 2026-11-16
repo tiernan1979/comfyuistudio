@@ -4,7 +4,8 @@
 // This is intentionally module-local: it is runtime state, not a persisted
 // user setting.
 
-const IMAGE_MODES = new Set(['image', 'edit', 'parts', 'sprite'])
+const IMAGE_MODES = new Set(['image', 'edit', 'parts', 'sprite', 'texture', 'material'])
+const VIDEO_MODES = new Set(['video', 'flipbook'])
 
 const LABELS = {
   image: 'image models',
@@ -13,6 +14,7 @@ const LABELS = {
   sfx: 'SFX models',
   character: 'character animation models',
   custom: 'custom workflow models',
+  material: 'PBR material models',
 }
 
 let loadedFamily = ''
@@ -48,7 +50,13 @@ export function familyForRun(state, prep) {
     return `character:${ch.high || ''}|${ch.low || ''}`
   }
   const mode = state.mode || 'image'
-  const group = IMAGE_MODES.has(mode) ? 'image' : mode === '3d' ? 'character' : mode
+  const group = IMAGE_MODES.has(mode)
+    ? 'image'
+    : VIDEO_MODES.has(mode)
+      ? 'video'
+      : mode === '3d'
+        ? 'character'
+        : mode
   const key = graphKey(prep?.workflow)
   return `${group}:${key || 'default'}`
 }

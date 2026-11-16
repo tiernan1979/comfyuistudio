@@ -225,6 +225,36 @@ const MODE_SETTING_FIELDS = {
     steps: [1, 100],
     cfg: [0, 30],
   },
+  // Game Assets — 2D texture/tileset/icon/terrain, VFX flipbook, PBR material.
+  textureSettings: {
+    kind: new Set(['texture', 'tileset', 'icon', 'terrain']),
+    seamless: 'boolean',
+    grid: [2, 4],
+    size: [512, 1024],
+    seed: 'number',
+    steps: [1, 100],
+    cfg: [0, 30],
+    batchCount: [1, 16],
+    transparent: 'boolean',
+  },
+  flipbookSettings: {
+    frames: [5, 49],
+    fps: [1, 60],
+    resolution: [256, 768],
+    transparent: 'boolean',
+    seed: 'number',
+    steps: [1, 60],
+    cfg: [0, 20],
+  },
+  materialSettings: {
+    size: new Set(['1:1 (512x512)', '1:1 (1024x1024)']),
+    tiling: new Set(['both', 'horizontal', 'vertical']),
+    steps: [1, 40],
+    cfg: [0, 20],
+    seed: 'number',
+    metallic: [0, 100],
+    roughness: [0, 100],
+  },
 }
 
 function sanitizeModeSettings(raw, out) {
@@ -405,6 +435,11 @@ export function configFromState(state) {
     musicSettings: { ...(state.musicSettings || {}) },
     sfxSettings: { ...(state.sfxSettings || {}) },
     spriteSettings: { ...(state.spriteSettings || {}) },
+    textureSettings: { ...(state.textureSettings || {}) },
+    flipbookSettings: { ...(state.flipbookSettings || {}) },
+    materialSettings: Object.fromEntries(
+      Object.entries(state.materialSettings || {}).filter(([, v]) => typeof v !== 'object'),
+    ),
   }
 }
 

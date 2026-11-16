@@ -116,6 +116,51 @@ export const DEFAULT_PIXEL_SETTINGS = {
   loraStrength: 1,
 }
 
+// 2D game textures: one seamless material or a multi-cell sheet (tileset,
+// icon/UI pack, terrain auto-tiles). The viewer slices sheets into equal cells.
+export const DEFAULT_TEXTURE_SETTINGS = {
+  kind: 'texture', // 'texture' | 'tileset' | 'icon' | 'terrain'
+  seamless: true,
+  grid: 2, // sheet cells per side (2–4)
+  size: 1024,
+  seed: -1,
+  steps: 20,
+  cfg: 4,
+  batchCount: 1,
+  transparent: true, // icon sheets: cut the background with BiRefNet
+}
+
+// VFX flipbooks: WAN renders a short effect loop; the server saves transparent
+// frame PNGs and the browser packs them into one horizontal sheet.
+export const DEFAULT_FLIPBOOK_SETTINGS = {
+  frames: 17,
+  fps: 12,
+  resolution: 512,
+  transparent: true,
+  seed: -1,
+  steps: 20,
+  cfg: 6,
+}
+
+// PBR material packs: a local base-color render plus derived normal, height,
+// roughness and metalness maps. No cloud node and no extra model files.
+export const DEFAULT_MATERIAL_SETTINGS = {
+  size: '1:1 (1024x1024)',
+  maps: {
+    basecolor: true,
+    normal: true,
+    roughness: true,
+    metalness: true,
+    height: true,
+  },
+  tiling: 'both', // 'both' | 'horizontal' | 'vertical'
+  steps: 20,
+  cfg: 4,
+  seed: 42,
+  metallic: 0, // 0–100 uniform metalness
+  roughness: 50, // 0–100 roughness bias
+}
+
 // 2D part splitting (ComfyUI-AutoSplit-Orchestrator + SAM 3): turn one flat
 // character image into named, z-ordered part PNGs.
 export const DEFAULT_SPLIT_SETTINGS = {
@@ -190,6 +235,25 @@ export const DEFAULT_PRESETS = {
 
 export const DEFAULT_ACTIVE = { video: 0, music: 0, sfx: 0 }
 
+// Per-tab prompt memory. Every mode shares the same key set so switching
+// tabs never loses text; new game-asset modes start empty.
+const PROMPT_MODES = [
+  'image',
+  'pixel',
+  'video',
+  'edit',
+  'music',
+  'sfx',
+  'sprite',
+  'texture',
+  'flipbook',
+  'material',
+  'custom',
+  '3d',
+]
+export const DEFAULT_PROMPTS_BY_MODE = Object.fromEntries(PROMPT_MODES.map((m) => [m, '']))
+export const DEFAULT_NEGATIVES_BY_MODE = Object.fromEntries(PROMPT_MODES.map((m) => [m, '']))
+
 // Sung lyrics for music mode. Default = the section-tag map (also the
 // visible example in the box); tag-only = instrumental at generate time.
 // Not persisted across reloads, so the default always resurfaces.
@@ -204,6 +268,9 @@ export const SETTING_GROUPS = [
   'musicSettings',
   'sfxSettings',
   'spriteSettings',
+  'textureSettings',
+  'flipbookSettings',
+  'materialSettings',
 ]
 
 // Fields applyServerConfig() accepts from a sanitized config.json.

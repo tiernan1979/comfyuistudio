@@ -11,11 +11,13 @@ const TEXT_NODES = new Set([
   'TextEncodeQwenImageEdit',
   'TextEncodeAceStepAudio1.5',
   'MiniMaxMusic3TextEncode',
+  'PatinaMaterialNode',
 ])
 
 // First matching rule wins, so the most distinctive classes come first.
 const MODE_RULES = [
   ['3D', ['MeshToolsLoad', 'SaveGLB', 'Preview3D', 'Get3DComponents', 'TripoImageToModelNode', 'UniRigApplyAnimation', 'UltraShapeLoadModel', 'MIALoadModel', 'Load3DAdvanced']],
+  ['Material', ['PatinaMaterialNode', 'PatinaMaterialExtractNode', 'PatinaPBRMapsNode']],
   ['Sprite', ['MediaPipeFaceLandmarker', 'LoadMediaPipeFaceLandmarker']],
   ['Split', ['AutoSplitOrchestratorSAM3']],
   ['Video', ['SaveVideo', 'MiniMaxH3ImageToVideo', 'EmptyHunyuanLatentVideo', 'CreateVideo', 'SamplerCustomAdvanced']],
@@ -32,7 +34,18 @@ function classTypes(graph) {
   return set
 }
 
+function hasSavePrefix(graph, prefix) {
+  return Object.values(graph || {}).some(
+    (node) =>
+      node?.class_type === 'SaveImage' &&
+      String(node?.inputs?.filename_prefix || '').startsWith(prefix),
+  )
+}
+
 function pipelineLabel(graph) {
+  if (hasSavePrefix(graph, 'flipbook/')) return 'Flipbook'
+  if (hasSavePrefix(graph, 'texture/')) return 'Texture'
+  if (hasSavePrefix(graph, 'material/')) return 'Material'
   const classes = classTypes(graph)
   for (const [label, markers] of MODE_RULES) {
     if (markers.some((c) => classes.has(c))) return label
@@ -51,10 +64,14 @@ function positiveText(graph) {
     const link = node?.inputs?.positive || node?.inputs?.conditioning
     if (!Array.isArray(link)) continue
     const src = nodes[link[0]]
-    if (src && TEXT_NODES.has(src.class_type) && src.inputs?.text) return String(src.inputs.text)
+    if (src && TEXT_NODES.has(src.class_type) && (src.inputs?.text || src.inputs?.prompt)) {
+      return String(src.inputs.text || src.inputs.prompt)
+    }
   }
   for (const node of Object.values(nodes)) {
-    if (TEXT_NODES.has(node?.class_type) && node?.inputs?.text) return String(node.inputs.text)
+    if (TEXT_NODES.has(node?.class_type) && (node?.inputs?.text || node?.inputs?.prompt)) {
+      return String(node.inputs.text || node.inputs.prompt)
+    }
   }
   return ''
 }

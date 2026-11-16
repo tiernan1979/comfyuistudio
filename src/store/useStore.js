@@ -7,17 +7,24 @@ import {
   DEFAULT_SPRITE_SETTINGS,
   DEFAULT_IMAGE_SETTINGS,
   DEFAULT_PIXEL_SETTINGS,
+  DEFAULT_TEXTURE_SETTINGS,
+  DEFAULT_FLIPBOOK_SETTINGS,
+  DEFAULT_MATERIAL_SETTINGS,
   DEFAULT_SPLIT_SETTINGS,
   DEFAULT_PARTS_SETTINGS,
   DEFAULT_PRESETS,
   DEFAULT_ACTIVE,
   DEFAULT_LYRICS,
+  DEFAULT_PROMPTS_BY_MODE,
+  DEFAULT_NEGATIVES_BY_MODE,
 } from './defaults.js'
 import { STORAGE_KEY, STORAGE_VERSION, migrate, partialize, safeStorage } from './persist.js'
 import { applyServerConfig } from './configSync.js'
 import { createHistoryActions } from './historyActions.js'
 import { createPromptActions } from './promptActions.js'
 import { createEpisodeActions } from './episodeActions.js'
+import { createAssetActions } from './assetActions.js'
+import { createSettingsActions } from './settingsActions.js'
 
 // Backwards-compatible named exports — several components import these
 // straight from the store module.
@@ -42,7 +49,7 @@ const useStore = create(
       queueRemaining: 0,
 
       // Mode
-      mode: 'image', // 'image' | 'video' | 'edit' | 'music' | 'sfx' | 'sprite' | '3d'
+      mode: 'image', // 'image' | 'video' | 'edit' | 'music' | 'sfx' | 'sprite' | 'texture' | 'flipbook' | 'material' | '3d'
 
       // Generation state
       generating: false,
@@ -72,28 +79,8 @@ const useStore = create(
       // (like `prompt`, not persisted).
       prompt: '',
       negativePrompt: '',
-      promptByMode: {
-        image: '',
-        pixel: '',
-        video: '',
-        edit: '',
-        music: '',
-        sfx: '',
-        sprite: '',
-        custom: '',
-        '3d': '',
-      },
-      negativeByMode: {
-        image: '',
-        pixel: '',
-        video: '',
-        edit: '',
-        music: '',
-        sfx: '',
-        sprite: '',
-        custom: '',
-        '3d': '',
-      },
+      promptByMode: { ...DEFAULT_PROMPTS_BY_MODE },
+      negativeByMode: { ...DEFAULT_NEGATIVES_BY_MODE },
       style: 'photoreal',
       // Web search query picked by the AI rewrite (transient)
       searchQuery: '',
@@ -120,6 +107,10 @@ const useStore = create(
       imageSettings: { ...DEFAULT_IMAGE_SETTINGS },
       // Pixel-art settings (SDXL + Pixel Art XL; see DEFAULT_PIXEL_SETTINGS).
       pixelSettings: { ...DEFAULT_PIXEL_SETTINGS },
+      // Game-asset modes (see defaults.js for each group's fields).
+      textureSettings: { ...DEFAULT_TEXTURE_SETTINGS },
+      flipbookSettings: { ...DEFAULT_FLIPBOOK_SETTINGS },
+      materialSettings: { ...DEFAULT_MATERIAL_SETTINGS },
 
       // 2D sprite splitting + character-parts library
       splitSettings: { ...DEFAULT_SPLIT_SETTINGS },
@@ -380,27 +371,6 @@ const useStore = create(
       setSearchCseId: (searchCseId) => set({ searchCseId }),
       setShowWebSearch: (showWebSearch) => set({ showWebSearch }),
 
-      setImageSettings: (settings) =>
-        set((s) => ({ imageSettings: { ...s.imageSettings, ...settings } })),
-      setPixelSettings: (settings) =>
-        set((s) => ({ pixelSettings: { ...s.pixelSettings, ...settings } })),
-      setVideoSettings: (settings) =>
-        set((s) => ({ videoSettings: { ...s.videoSettings, ...settings } })),
-      setEditSettings: (settings) =>
-        set((s) => ({ editSettings: { ...s.editSettings, ...settings } })),
-      setMusicSettings: (settings) =>
-        set((s) => ({ musicSettings: { ...s.musicSettings, ...settings } })),
-      setSfxSettings: (settings) =>
-        set((s) => ({ sfxSettings: { ...s.sfxSettings, ...settings } })),
-      setSpriteSettings: (settings) =>
-        set((s) => ({ spriteSettings: { ...s.spriteSettings, ...settings } })),
-      setCustomSettings: (settings) =>
-        set((s) => ({ customSettings: { ...s.customSettings, ...settings } })),
-      setSplitSettings: (settings) =>
-        set((s) => ({ splitSettings: { ...s.splitSettings, ...settings } })),
-      setPartsSettings: (settings) =>
-        set((s) => ({ partsSettings: { ...s.partsSettings, ...settings } })),
-
       addPartsGallery: (items) =>
         set((s) => ({ partsGallery: [...items, ...s.partsGallery].slice(0, 120) })),
       removePartsGallery: (id) =>
@@ -495,6 +465,8 @@ const useStore = create(
       ...createEpisodeActions(set),
       ...createHistoryActions(set, get),
       ...createPromptActions(set, get),
+      ...createAssetActions(set),
+      ...createSettingsActions(set),
     }),
     {
       name: STORAGE_KEY,
