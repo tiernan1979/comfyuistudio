@@ -1,6 +1,8 @@
 import { useState } from 'react'
-import { Download, Grid2x2, Layers, Loader2 } from 'lucide-react'
+import { Download, Grid2x2, Layers, Loader2, Wand2 } from 'lucide-react'
 import useStore from '../store/useStore'
+import { resolveApiBase } from '../lib/comfyui'
+import { makeSeamlessTexture } from '../lib/seamless'
 import { downloadBlob } from '../lib/sprite'
 
 const cell = 'max-h-[62vh] max-w-full'
@@ -66,6 +68,10 @@ export default function TextureViewer() {
   const outputImage = useStore((s) => s.outputImage)
   const batchImages = useStore((s) => s.batchImages)
   const setOutputImage = useStore((s) => s.setOutputImage)
+  const setBatchImages = useStore((s) => s.setBatchImages)
+  const updateHistoryEntry = useStore((s) => s.updateHistoryEntry)
+  const serverUrl = useStore((s) => s.serverUrl)
+  const useProxy = useStore((s) => s.useProxy)
   const history = useStore((s) => s.history)
   const generating = useStore((s) => s.generating)
   const progress = useStore((s) => s.progress)
@@ -74,6 +80,7 @@ export default function TextureViewer() {
   const [repeat, setRepeat] = useState(2)
   const [showGrid, setShowGrid] = useState(true)
   const [busy, setBusy] = useState(false)
+  const [fixing, setFixing] = useState(false)
 
   const entry = outputImage
     ? history.find((h) => h.type === 'texture' && h.data === outputImage)
@@ -91,6 +98,30 @@ export default function TextureViewer() {
     if (!outputImage) return
     const res = await fetch(outputImage)
     downloadBlob(await res.blob(), `${kind}-${Date.now()}.png`)
+  }
+
+  // Re-run the seamless pass on an existing texture. This is the escape hatch
+  // for history entries generated before auto-fix existed, and for tiles whose
+  // border is still too strong.
+  const fixSeams = async () => {
+    if (!outputImage || fixing) return
+    setFixing(true)
+    try {
+      const base = resolveApiBase(serverUrl, useProxy)
+      const fixed = await makeSeamlessTexture(base, outputImage)
+      if (entry) {
+        updateHistoryEntry(entry.id, {
+          data: fixed,
+          settings: { ...entry.settings, seamlessFixed: true },
+        })
+      }
+      setOutputImage(fixed)
+      setBatchImages((batchImages || []).map((url) => (url === outputImage ? fixed : url)))
+    } catch (err) {
+      console.error('seamless fix failed', err)
+    } finally {
+      setFixing(false)
+    }
   }
 
   const downloadTiles = async () => {
@@ -173,6 +204,22 @@ export default function TextureViewer() {
             >
               <Grid2x2 size={12} className="mr-1 inline" />
               {repeat > 1 ? `Repeat ${repeat}×${repeat}` : 'Single'}
+            </button>
+          )}
+          {canRepeat && (
+            <button
+              type="button"
+              onClick={fixSeams}
+              disabled={fixing}
+              title="Crop the border, offset the image and clone clean strips over the centre seams so the tile repeats cleanly"
+              className="rounded-lg border border-border bg-bg-hover px-2.5 py-1.5 text-[11px] text-text-secondary hover:text-text-primary disabled:opacity-50"
+            >
+              {fixing ? (
+                <Loader2 size={12} className="mr-1 inline animate-spin" />
+              ) : (
+                <Wand2 size={12} className="mr-1 inline" />
+              )}
+              Fix seams
             </button>
           )}
           {isSheet && (

@@ -18,7 +18,7 @@ import {
 import { AUTOSPLIT_LABEL_PRESETS } from '../lib/workflows.js'
 
 export const STORAGE_KEY = 'comfyui-studio-storage'
-export const STORAGE_VERSION = 15
+export const STORAGE_VERSION = 16
 
 // v0/v1 stored a flat llmUrl/llmModel (Ollama era: port 11434 + "name:tag"
 // ids). Fold them into the v2 per-provider config.
@@ -45,6 +45,9 @@ export const STORAGE_VERSION = 15
 // their defaults because the shallow persist merge would drop nested map flags.
 // v15 replaces the Patina-material fields with local PBR fields (cfg, metallic,
 // roughness) and drops the old cloud-only upscale/promptExpansion keys.
+// v16 adds image-model presets. Older saves get their current flat image stack
+// copied into a "current" preset so upgrading does not change which files the
+// image/texture/material modes load.
 export function migrate(persisted) {
   const s = { ...persisted }
 
@@ -78,11 +81,26 @@ export function migrate(persisted) {
   }
   s.models = modelGroups
 
+  // Image presets arrived after the flat image group. Treat the files already
+  // in use as the first preset so an upgrade keeps the same working stack.
+  const hadImagePresets =
+    Array.isArray(persisted?.presets?.image) && persisted.presets.image.length > 0
+
   // Named model presets (multi-model picker). Older saves won't have
   // them — seed from defaults and merge any existing entries.
   const presetGroups = {}
   for (const k of new Set([...Object.keys(DEFAULT_PRESETS), ...Object.keys(s.presets || {})])) {
     presetGroups[k] = s.presets?.[k]?.length ? s.presets[k] : DEFAULT_PRESETS[k]
+  }
+  if (!hadImagePresets) {
+    const current = s.models.image || {}
+    presetGroups.image = [
+      {
+        ...current,
+        name: /2\.1/i.test(current.unet || '') ? 'Qwen-Image 2.1' : 'Qwen-Image',
+      },
+      ...(DEFAULT_PRESETS.image || []).filter((p) => p.unet !== current.unet),
+    ]
   }
   // v5: Stable Audio 3 moved out of the Music engine list into its own
   // SFX mode. Drop any stable_audio engine preset an earlier build
@@ -107,6 +125,8 @@ export function migrate(persisted) {
       }
     }
   }
+
+  if (!hadImagePresets) s.active.image = 0
 
   // Sprite settings saved before the video engine existed (v6): layer
   // the new fields (engine/videoFrames/videoRes) under the old values.

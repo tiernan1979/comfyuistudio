@@ -1,5 +1,7 @@
 import useStore from '../../store/useStore'
+import { Image as ImageIcon } from 'lucide-react'
 import { MATERIAL_MAP_KEYS, MATERIAL_SIZE_OPTIONS } from '../../lib/workflows'
+import PresetPicker from './PresetPicker'
 import { ChoiceGrid, Field, Hint, Slider } from './controls'
 
 const MAP_LABELS = {
@@ -14,10 +16,23 @@ export default function MaterialSettings() {
   const settings = useStore((s) => s.materialSettings)
   const set = useStore((s) => s.setMaterialSettings)
   const generating = useStore((s) => s.generating)
+  const presets = useStore((s) => s.presets?.image || [])
+  const active = useStore((s) => s.active?.image)
+  const setActivePreset = useStore((s) => s.setActivePreset)
   const toggleMap = (key) => set({ maps: { ...settings.maps, [key]: !settings.maps[key] } })
 
   return (
     <div className="space-y-4">
+      <PresetPicker
+        label="Image model"
+        presets={presets}
+        active={active}
+        onSelect={(i) => setActivePreset('image', i)}
+        disabled={generating}
+        icon={ImageIcon}
+        hint="The base colour uses the shared image stack; edit presets in Settings → Models."
+      />
+
       <Field label="Texture size">
         <ChoiceGrid
           options={MATERIAL_SIZE_OPTIONS}

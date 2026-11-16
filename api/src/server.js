@@ -8,6 +8,17 @@
 // and resets on restart) plus the hidden-ids deletion list.
 //
 //   GET  /api/health            service + ComfyUI reachability
+//   GET  /api/capabilities      modes, aliases, inputs, defaults (discovery)
+//   GET  /api/workflows         same discovery payload (alias endpoint)
+//   POST /api/generate          run a generation (wait=true default, or wait=false + GET /api/job/:promptId)
+//                               modes: image | edit | video | music | sfx | texture | flipbook | material
+//                               + pbr (alias for material)
+//                               + parts (graphs, wait supported)
+//                               + split  (imageBase64 → part PNGs + metadata; returns `parts`[])
+//                               + 3d | skin | meshupscale (long-lived flows — always block,
+//                                 timeoutSec up to 60min, no promptId/job polling)
+//   GET  /api/texture           texture capability/defaults
+//   POST /api/texture           shorthand for mode=texture
 //   GET  /api/models            model lists + resolved per-mode defaults
 //   GET  /api/history           durable shared history (live ComfyUI merged in, hidden-ids filtered)
 //   POST /api/history           add entries  { entries: [...] } (browsers share their local entries)
@@ -35,6 +46,10 @@ import {
   MODES,
   FLOW_MODES,
   DEFAULT_SETTINGS,
+  MODEL_MODE_ALIASES,
+  MATERIAL_MAP_KEYS,
+  canonicalMode,
+  apiCapabilities,
   resolveModels,
   resolveUpscaleModel,
   workflowFor,
@@ -56,6 +71,7 @@ import {
   freeLoadedModels,
   extractHistoryError,
   hasAudioTailTrim,
+  assertWorkflowNodes,
 } from '../../src/lib/comfyui.js'
 import { runGenerateMesh, runPaintSkin, runMeshUpscale } from '../../src/lib/threed.js'
 import { startIdleUnload } from './idleUnload.mjs'
@@ -68,6 +84,56 @@ class HttpError extends Error {
     this.status = status
     this.details = details
   }
+}
+
+// Response metadata that tells a client how to interpret game-asset outputs.
+function generationDetails(mode, settings) {
+  if (mode === 'texture') {
+    return {
+      texture: {
+        kind: settings.kind || 'texture',
+        grid: settings.grid || 2,
+        size: settings.size || 1024,
+        sheet: (settings.kind || 'texture') !== 'texture',
+        transparent: settings.kind === 'icon' && settings.transparent !== false,
+      },
+    }
+  }
+  if (mode === 'flipbook') {
+    return {
+      flipbook: {
+        frames: settings.frames || 17,
+        fps: settings.fps || 12,
+        resolution: settings.resolution || 512,
+        transparent: settings.transparent !== false,
+      },
+    }
+  }
+  if (mode === 'material') {
+    return {
+      material: {
+        maps: MATERIAL_MAP_KEYS.filter((key) => settings.maps?.[key] !== false),
+        tiling: settings.tiling || 'both',
+        size: settings.size || '1:1 (1024x1024)',
+      },
+    }
+  }
+  return {}
+}
+
+// Add game-asset semantics to each output: which PBR map a file is, the frame
+// index in a flipbook, or the batch variant of a texture sheet.
+function enrichOutputs(mode, outputs) {
+  if (mode === 'material') {
+    return outputs.map((o) => ({ ...o, map: String(o.nodeId || '').replace(/^save_/, '') }))
+  }
+  if (mode === 'flipbook') {
+    return outputs.map((o, frame) => ({ ...o, frame }))
+  }
+  if (mode === 'texture') {
+    return outputs.map((o, variant) => ({ ...o, variant }))
+  }
+  return outputs
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
@@ -97,6 +163,9 @@ export function createApp(opts = {}) {
     frames: [1, 300],
     fps: [1, 60],
     batchCount: [1, 16],
+    grid: [2, 4],
+    metallic: [0, 100],
+    roughness: [0, 100],
     duration: [1, 600],
     segments: [1, 12],
     windowSeconds: [4, 16],
@@ -124,6 +193,26 @@ export function createApp(opts = {}) {
       if (!Number.isFinite(n)) throw new HttpError(400, `${key} must be a number`)
       out[key] = Math.min(max, Math.max(min, n))
     }
+    if (out.maps !== undefined) {
+      if (!out.maps || typeof out.maps !== 'object' || Array.isArray(out.maps)) {
+        throw new HttpError(400, 'maps must be an object of map-name → boolean')
+      }
+      const maps = {}
+      for (const key of MATERIAL_MAP_KEYS) {
+        if (out.maps[key] !== undefined) maps[key] = out.maps[key] !== false
+      }
+      if (!Object.keys(maps).length) {
+        throw new HttpError(400, `maps must include at least one of: ${MATERIAL_MAP_KEYS.join(', ')}`)
+      }
+      out.maps = maps
+    }
+    if (out.kind !== undefined && !['texture', 'tileset', 'icon', 'terrain'].includes(out.kind)) {
+      throw new HttpError(400, 'kind must be one of: texture, tileset, icon, terrain')
+    }
+    if (out.tiling !== undefined && !['both', 'horizontal', 'vertical'].includes(out.tiling)) {
+      throw new HttpError(400, 'tiling must be one of: both, horizontal, vertical')
+    }
+    if (out.transparent !== undefined) out.transparent = out.transparent !== false
     for (const key of ['outputDirectory', 'runId']) {
       if (out[key] === undefined) continue
       const value = String(out[key])
@@ -188,8 +277,12 @@ export function createApp(opts = {}) {
 
   function writeHidden(ids) {
     // Hidden ids are a suppression list, not content — cap it so a client
-    // can't grow the file without bound.
-    writeJsonAtomic(hiddenFile, { ids: [...new Set(ids.map(String))].slice(0, 500) })
+    // can't grow the file without bound. Keep the NEWEST ids: once the list
+    // is full, appending a delete and keeping the head silently dropped every
+    // new deletion, so entries kept reappearing after a sync.
+    const next = [...new Set(ids.map(String))].slice(-500)
+    writeJsonAtomic(hiddenFile, { ids: next })
+    return next
   }
 
   // Durable shared history. ComfyUI's own /history is in-memory (restarts
@@ -375,10 +468,14 @@ export function createApp(opts = {}) {
   }
 
   async function runGeneration(body) {
-    const mode = String(body?.mode || 'image').toLowerCase()
+    const mode = canonicalMode(body?.mode || 'image')
     if (!MODES.includes(mode)) {
-      throw new HttpError(400, `mode must be one of: ${MODES.join(', ')}`)
+      throw new HttpError(
+        400,
+        `mode must be one of: ${MODES.join(', ')} (pbr is accepted as an alias for material)`,
+      )
     }
+    const modelMode = MODEL_MODE_ALIASES[mode] || mode
     const prompt = typeof body.prompt === 'string' ? body.prompt.trim() : ''
     // Flow modes (3d/skin/meshupscale) are picture-driven pipelines — no
     // prompt. Split is image-driven; parts has a slot-based default prompt.
@@ -401,9 +498,20 @@ export function createApp(opts = {}) {
     // still win over the config.
     const runtimeConfig = await loadRuntimeConfig(cfg.configPath)
     const cfgModels = configModelOverrides(runtimeConfig, mode)
-    const modelOverrides = { ...cfgModels, ...pickModelOverrides(mode, body.models) }
+    const baseOverrides = pickModelOverrides(modelMode, body.models)
+    const modeOverrides = modelMode === mode ? {} : pickModelOverrides(mode, body.models)
+    const modelOverrides = { ...cfgModels, ...baseOverrides, ...modeOverrides }
     const cfgSettings = runtimeConfig.settings?.[mode] || {}
     const effSettings = { ...DEFAULT_SETTINGS[mode], ...cfgSettings, ...settings }
+    // material maps are nested — a shallow spread above would replace the whole
+    // object when a caller enables only one map.
+    if (mode === 'material') {
+      effSettings.maps = {
+        ...DEFAULT_SETTINGS.material.maps,
+        ...(cfgSettings.maps || {}),
+        ...(settings.maps || {}),
+      }
+    }
 
     let lists
     try {
@@ -455,6 +563,26 @@ export function createApp(opts = {}) {
     if (mode === 'music' || mode === 'sfx') await freeLoadedModels(cfg.comfyuiUrl)
 
     const workflow = workflowFor(mode, { prompt, negativePrompt, lyrics, settings: effSettings, models, imageName })
+    // Preflight the optional node packs so a missing BiRefNet/controlnet
+    // preprocessor fails with an install hint instead of a dead prompt.
+    if (
+      mode === 'material' ||
+      (mode === 'texture' && effSettings.kind === 'icon' && effSettings.transparent !== false) ||
+      (mode === 'flipbook' && effSettings.transparent !== false)
+    ) {
+      const label =
+        mode === 'material'
+          ? 'Local PBR'
+          : mode === 'texture'
+            ? 'Icon transparency'
+            : 'Flipbook transparency'
+      try {
+        await assertWorkflowNodes(cfg.comfyuiUrl, workflow, { label })
+      } catch (err) {
+        throw new HttpError(502, err.message)
+      }
+    }
+    const details = generationDetails(mode, effSettings)
     let promptId
     try {
       promptId = await queuePrompt(cfg.comfyuiUrl, workflow)
@@ -464,7 +592,7 @@ export function createApp(opts = {}) {
     pruneJobs()
     jobs.set(promptId, { mode, prompt, startedAt: Date.now() })
 
-    if (!wait) return { ok: true, promptId, mode, status: 'queued' }
+    if (!wait) return { ok: true, promptId, mode, status: 'queued', ...details }
 
     const started = Date.now()
     const item = await waitForPrompt(promptId, timeoutMs)
@@ -495,10 +623,11 @@ export function createApp(opts = {}) {
       promptId,
       mode,
       elapsedMs: Date.now() - started,
-      outputs: outputsOf(item, '/api/file', cfg.comfyuiUrl, mode),
+      outputs: enrichOutputs(mode, outputsOf(item, '/api/file', cfg.comfyuiUrl, mode)),
       settings: effSettings,
       models,
       error: err,
+      ...details,
     }
   }
 
@@ -603,6 +732,33 @@ export function createApp(opts = {}) {
       /* unreachable */
     }
     res.json({ ok: true, comfyuiUrl: cfg.comfyuiUrl, comfyui, version })
+  })
+
+  app.get('/api/capabilities', (req, res) => {
+    res.json(apiCapabilities())
+  })
+
+  app.get('/api/workflows', (req, res) => {
+    res.json(apiCapabilities())
+  })
+
+  app.get('/api/texture', (req, res) => {
+    res.json({
+      ok: true,
+      mode: 'texture',
+      kinds: ['texture', 'tileset', 'icon', 'terrain'],
+      grids: [2, 3, 4],
+      sizes: [512, 768, 1024],
+      defaults: DEFAULT_SETTINGS.texture,
+    })
+  })
+
+  app.post('/api/texture', async (req, res, next) => {
+    try {
+      res.json(await runGeneration({ ...(req.body || {}), mode: 'texture' }))
+    } catch (err) {
+      next(err)
+    }
   })
 
   app.get('/api/models', async (req, res, next) => {
@@ -738,7 +894,10 @@ export function createApp(opts = {}) {
         })
       }
       const error = extractHistoryError(item)
-      const outputs = outputsOf(item, '/api/file', cfg.comfyuiUrl, known?.mode || '')
+      const outputs = enrichOutputs(
+        known?.mode || '',
+        outputsOf(item, '/api/file', cfg.comfyuiUrl, known?.mode || ''),
+      )
       const elapsedMs = known ? (known.finishedAt || Date.now()) - known.startedAt : 0
       if (error) {
         return res.json({ promptId, status: 'error', error, outputs, elapsedMs })
@@ -784,8 +943,7 @@ export function createApp(opts = {}) {
     try {
       const incoming = req.body?.ids
       if (!Array.isArray(incoming)) throw new HttpError(400, 'ids must be an array')
-      const merged = [...new Set([...readHidden(), ...incoming.map(String)])].slice(0, 500)
-      writeHidden(merged)
+      const merged = writeHidden([...readHidden(), ...incoming.map(String)])
       res.json({ ids: merged })
     } catch (err) {
       next(err)

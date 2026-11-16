@@ -3,8 +3,9 @@ import clsx from 'clsx'
 import { presetLabel } from '../../store/useStore'
 import { FieldLabel, Hint } from './controls'
 
-// Shared engine/model preset switcher used by the music, SFX and video
-// panels. `renderMeta` decides the sub-label (engine name, unet, …).
+// Shared engine/model preset switcher used by the image, music, SFX, video,
+// texture and material panels. `renderMeta` decides the sub-label (engine
+// name, unet, …).
 export default function PresetPicker({
   label,
   presets,

@@ -29,13 +29,13 @@ export function resolveActiveModels(state, mode) {
   return { ...flat, ...list[idx] }
 }
 
-// Preset-backed groups (video/music/SFX) are resolved before preflight so the
-// files checked are the same ones the workflow builds with. The flat group can
-// still hold an old default — checking it alone rejects a run whose selected
-// preset IS installed ("Video model \"wan2.1…\" is not on the server").
+// Preset-backed groups (image/video/music/SFX) are resolved before preflight so
+// the files checked are the same ones the workflow builds with. The flat group
+// can still hold an old default — checking it alone rejects a run whose
+// selected preset IS installed ("Video model \"wan2.1…\" is not on the server").
 export function resolvePresetModels(state) {
   const out = { ...(state.models || {}) }
-  for (const mode of ['video', 'music', 'sfx']) {
+  for (const mode of ['image', 'video', 'music', 'sfx']) {
     if (out[mode] || state.presets?.[mode]?.length) out[mode] = resolveActiveModels(state, mode)
   }
   return out

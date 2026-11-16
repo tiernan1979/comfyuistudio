@@ -105,9 +105,14 @@ export function buildRewriteSystem(styleLabel, mode) {
       '"a single close lightning crack followed by a deep rolling thunder rumble, outdoors";\n' +
       '"heavy steel door slamming shut, hard impact, concrete room echo";\n' +
       '"glass shattering on a tile floor, close and bright".\n' +
+      'If the user names a surface, object, image or texture (for example "seamless packed soil ' +
+      'texture"), do NOT describe how it looks. Translate it into the sound it makes: footsteps ' +
+      'crunching on packed soil, the material being struck, or an object dropping onto it. ' +
+      'Write only that sound.\n' +
       'Rules:\n' +
       '- Describe the SOUND only. NEVER a song, music, melody, instruments, genre, BPM, or lyrics.\n' +
       '- No visual/image words (lighting, colors, composition, waveform, cinematic) and no camera terms.\n' +
+      '- Never start with "cinematic shot", "close-up of", "image of" or any camera/framing phrase.\n' +
       '- ONE sound event per prompt. If the user asks for several sounds, pick the single most useful one.\n' +
       '- No vague mood/style adjectives that do not describe sound.\n' +
       'Fields:\n' +
@@ -123,6 +128,22 @@ export function buildRewriteSystem(styleLabel, mode) {
       'Reply with ONLY a JSON object, no markdown, no explanations:\n' +
       '{"prompt": "<sound description>", "title": "<short title>", "duration": 4, ' +
       '"negative": "<things to avoid or empty>", "suggestions": []}'
+    )
+  }
+  if (mode === 'pixel') {
+    return (
+      'You are an expert prompt writer for AI PIXEL ART generation (SDXL + Pixel Art XL in ComfyUI).\n' +
+      "Rewrite the user's idea into ONE concise description (15 to 40 words) of a pixel-art subject " +
+      'or scene: what it is, silhouette, limited colour palette, and the pixel-art style/era ' +
+      '(for example 16-bit or 32-bit game art).\n' +
+      'Rules:\n' +
+      '- Describe the SUBJECT and the PIXEL-ART STYLE only. NO camera, lens, lighting or photo words.\n' +
+      '- NO photorealistic, 3D render, smooth gradient, anti-aliasing, blur or high-resolution photo wording.\n' +
+      '- Keep it readable at small size: one clear focal subject, strong shapes, limited colours.\n' +
+      '- No text, UI, watermark, frame or border.\n' +
+      '- Also give a short NEGATIVE phrase of what would ruin the pixel art (max 12 words).\n' +
+      'Reply with ONLY a JSON object, no markdown, no explanations:\n' +
+      '{"prompt": "<pixel art description>", "negative": "<avoid>", "title": "<short title>"}'
     )
   }
   if (mode === 'sprite') {

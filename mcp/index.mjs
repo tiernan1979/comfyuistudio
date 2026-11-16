@@ -114,6 +114,9 @@ async function generate(mode, args, timeoutMs) {
     filename: o.filename,
     url: `${API_URL}${o.url}`,
     comfyuiUrl: o.comfyuiUrl,
+    ...(o.map ? { map: o.map } : {}),
+    ...(o.frame !== undefined ? { frame: o.frame } : {}),
+    ...(o.variant !== undefined ? { variant: o.variant } : {}),
   }))
   return {
     ok: out.ok,
@@ -122,6 +125,9 @@ async function generate(mode, args, timeoutMs) {
     elapsedMs: out.elapsedMs,
     files,
     models: out.models,
+    ...(out.texture ? { texture: out.texture } : {}),
+    ...(out.flipbook ? { flipbook: out.flipbook } : {}),
+    ...(out.material ? { material: out.material } : {}),
     ...(out.error ? { warning: out.error } : {}),
   }
 }
@@ -233,6 +239,78 @@ tool(
   (args) => generate('sfx', args),
 )
 
+tool(
+  'generate_texture',
+  'Generate a local game texture or sheet: a seamless material, a tileset, an icon/UI pack, or a terrain autotile sheet. Uses the Studio image model; no cloud account. Blocks until finished.',
+  {
+    prompt: z.string().describe('Material or asset description, e.g. "mossy stone wall" or "potion icons"'),
+    negativePrompt: z.string().optional().describe('What to avoid'),
+    kind: z
+      .enum(['texture', 'tileset', 'icon', 'terrain'])
+      .optional()
+      .describe('texture = one seamless material; tileset/icon/terrain = N×N sheet (default texture)'),
+    seamless: z.boolean().optional().describe('Ask for tileable edges (plain texture only; default true)'),
+    grid: z.number().int().min(2).max(4).optional().describe('Sheet cells per side for tileset/icon/terrain (default 2)'),
+    size: z.number().int().min(512).max(1024).optional().describe('Square render size in px (default 1024)'),
+    transparent: z.boolean().optional().describe('Icon sheets: cut the flat background with BiRefNet (default true)'),
+    batchCount: z.number().int().min(1).max(16).optional().describe('Variants in one job (default 1)'),
+    steps: z.number().int().min(1).max(60).optional(),
+    cfg: z.number().min(0).max(20).optional(),
+    seed: z.number().int().optional().describe('-1 (default) = random'),
+    wait: waitSchema,
+  },
+  (args) => generate('texture', args),
+)
+
+tool(
+  'generate_flipbook',
+  'Generate a looping VFX flipbook (Wan text-to-video) as individual PNG frames. The local browser viewer packs them into a sheet; the API returns one URL per frame plus fps/frame metadata. Blocks until finished.',
+  {
+    prompt: z.string().describe('Effect description, e.g. "blue magic fire loop"'),
+    negativePrompt: z.string().optional(),
+    frames: z.number().int().min(5).max(49).optional().describe('Frame count, snapped to 4n+1 (default 17)'),
+    fps: z.number().int().min(4).max(30).optional().describe('Playback fps metadata (default 12)'),
+    resolution: z.number().int().min(256).max(768).optional().describe('Square frame size in px (default 512)'),
+    transparent: z.boolean().optional().describe('Cut the background with BiRefNet (default true)'),
+    steps: z.number().int().min(1).max(60).optional(),
+    cfg: z.number().min(0).max(20).optional(),
+    seed: z.number().int().optional().describe('-1 (default) = random'),
+    wait: waitSchema,
+  },
+  (args) => generate('flipbook', args, GENERATE_TIMEOUT_MS),
+)
+
+tool(
+  'generate_material',
+  'Generate a fully local PBR material pack (base colour + normal + roughness + metalness + height). Renders the albedo with the image model, then derives the maps with ComfyUI preprocessors — no cloud node or credits. Blocks until finished.',
+  {
+    prompt: z.string().describe('Physical material description, e.g. "rusted steel plates"'),
+    negativePrompt: z.string().optional(),
+    size: z
+      .enum(['1:1 (512x512)', '1:1 (1024x1024)'])
+      .optional()
+      .describe('Map resolution (default 1024²)'),
+    maps: z
+      .object({
+        basecolor: z.boolean().optional(),
+        normal: z.boolean().optional(),
+        roughness: z.boolean().optional(),
+        metalness: z.boolean().optional(),
+        height: z.boolean().optional(),
+      })
+      .optional()
+      .describe('Which maps to produce; omitted maps stay at their default (all true)'),
+    tiling: z.enum(['both', 'horizontal', 'vertical']).optional().describe('Seamless direction (default both)'),
+    steps: z.number().int().min(1).max(60).optional(),
+    cfg: z.number().min(0).max(20).optional(),
+    seed: z.number().int().optional().describe('-1 (default) = random'),
+    metallic: z.number().min(0).max(100).optional().describe('Uniform metalness mask 0–100 (default 0)'),
+    roughness: z.number().min(0).max(100).optional().describe('Roughness bias 0–100 (default 50)'),
+    wait: waitSchema,
+  },
+  (args) => generate('material', args),
+)
+
 const meshRefSchema = z
   .object({
     filename: z.string().describe('GLB filename, e.g. outputs[0].filename from a prior generate_3d run'),
@@ -307,6 +385,13 @@ tool(
       .describe('detail resolution — 384 ≈ 8GB VRAM, 512 ≈ 16GB (default 384)'),
   },
   (args) => generate('meshupscale', args, FLOW_TIMEOUT_MS),
+)
+
+tool(
+  'get_capabilities',
+  'List every API mode (including game assets: texture, flipbook, material/pbr), its model group, inputs, output kind and default settings.',
+  {},
+  () => api('/api/capabilities'),
 )
 
 tool(

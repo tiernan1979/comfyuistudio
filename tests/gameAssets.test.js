@@ -4,10 +4,12 @@ import assert from 'node:assert/strict'
 import {
   buildTextureWorkflow,
   textureAssetPrompt,
+  textureNegative,
 } from '../src/lib/workflows/texture.js'
 import { buildFlipbookWorkflow, flipbookPrompt } from '../src/lib/workflows/flipbook.js'
 import { buildMaterialWorkflow, MATERIAL_NODES, materialPrompt } from '../src/lib/workflows/material.js'
 import { describeQueuePrompt } from '../src/lib/comfyui/queueLabel.js'
+import { resolveWanVideoModels } from '../src/lib/comfyui/models.js'
 
 const imageModels = {
   unet: 'qwen.safetensors',
@@ -29,6 +31,21 @@ test('texture prompt frames a tileable material', () => {
   assert.match(text, /mossy stone wall/)
   const tiles = textureAssetPrompt('forest floor', { kind: 'tileset', grid: 3 })
   assert.match(tiles, /3x3 equal/i)
+})
+
+test('seamless texture strips sheet/variant wording that causes a framed board', () => {
+  const text = textureAssetPrompt(
+    'seamless tileable game texture of pixel art dirt block tile sheet, 16x16 style, 4 variants, earthy brown, seamless, top-down orthographic, edge-to-edge pattern, no perspective, no border, flat even lighting, high detail, game-ready material',
+    { kind: 'texture' },
+  )
+  assert.match(text, /one continuous material/i)
+  assert.match(text, /pixel art dirt block/i)
+  const subject = text.split(', one continuous material')[0]
+  assert.doesNotMatch(subject, /tile sheet|variants/i)
+  assert.doesNotMatch(text, /4 variants/i)
+  assert.doesNotMatch(text, / ,/)
+  assert.match(textureNegative('texture'), /lighter border/i)
+  assert.match(textureNegative('texture'), /darker center/i)
 })
 
 test('texture workflow uses the image stack, batch and texture prefix', () => {
@@ -197,4 +214,40 @@ test('queue labels identify flipbook, texture and material jobs', () => {
   })
   assert.equal(material.label, 'Material')
   assert.equal(material.snippet, 'rusted steel plates')
+})
+
+test('flipbook model resolution prefers a Wan T2V checkpoint over H3 and GGUF', () => {
+  const lists = {
+    unet: [
+      'minimax_h3_fl2va_pruned_int8_convrot.safetensors',
+      'wan2.2_i2v_A14b_high_noise_lightx2v_4step-Q4_K_M.gguf',
+      'wan2.1_t2v_1.3B_bf16.safetensors',
+    ],
+    clip: ['qwen3vl_8b_w4a8.safetensors', 'umt5_xxl_fp8_e4m3fn_scaled.safetensors'],
+    vae: ['minimax_h3_video_vae_fp16.safetensors', 'Wan2.1_VAE.safetensors'],
+  }
+  const out = resolveWanVideoModels(
+    lists,
+    {
+      unet: 'minimax_h3_fl2va_pruned_int8_convrot.safetensors',
+      clip: 'qwen3vl_8b_w4a8.safetensors',
+      vae: 'minimax_h3_video_vae_fp16.safetensors',
+    },
+    { requireT2V: true },
+  )
+  assert.equal(out.unet, 'wan2.1_t2v_1.3B_bf16.safetensors')
+  assert.equal(out.clip, 'umt5_xxl_fp8_e4m3fn_scaled.safetensors')
+  assert.equal(out.vae, 'Wan2.1_VAE.safetensors')
+})
+
+test('flipbook model resolution names the missing T2V checkpoint', () => {
+  const lists = {
+    unet: ['wan2.2_i2v_A14b_high_noise_lightx2v_4step-Q4_K_M.gguf'],
+    clip: ['umt5_xxl_fp8_e4m3fn_scaled.safetensors'],
+    vae: ['Wan2.1_VAE.safetensors'],
+  }
+  assert.throws(
+    () => resolveWanVideoModels(lists, {}, { requireT2V: true }),
+    /wan2\.1_t2v_1\.3B/i,
+  )
 })

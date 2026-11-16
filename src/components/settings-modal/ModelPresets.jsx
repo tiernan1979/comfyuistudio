@@ -40,7 +40,8 @@ export default function ModelPresets({ mode, editDraft, setEditDraft }) {
 
   const loadPreset = (i, preset) => {
     setActivePreset(mode, i)
-    setEditDraft({ unet: '', clip: '', vae: '', lora: '', ...preset })
+    const { name, ...fields } = preset
+    setEditDraft({ unet: '', clip: '', vae: '', lora: '', ...fields })
   }
 
   const startRename = (i, currentName) => {

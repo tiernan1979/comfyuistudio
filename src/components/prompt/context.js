@@ -1,6 +1,6 @@
 // Prompt-builder copy and the UI-selection context handed to the AI writer.
 // Kept out of PromptInput so the component stays under the repo's 500-line cap.
-import { STYLES } from '../../lib/enhance'
+import { STYLES } from '../../lib/enhance.js'
 
 export const EXAMPLES = [
   'A majestic dragon flying over a medieval castle at sunset, dramatic lighting, highly detailed',
@@ -127,6 +127,11 @@ export function buildSelectionContext(s) {
   } else if (s.mode === 'video') {
     const v = s.videoSettings || {}
     lines.push(`Video: ${v.resolution}, ${v.frames} frames @ ${v.fps} fps, ~${v.duration}s`)
+  } else if (s.mode === 'sfx') {
+    const sfx = s.sfxSettings || {}
+    lines.push('Sound effect: ONE isolated sound event (no music, vocals or visual description)')
+    lines.push(`Clip length: ${sfx.duration || 6}s, ${sfx.quality || 'wav'} output`)
+    lines.push('Describe what is heard: source, material, action, distance and space/reverb')
   } else if (s.mode === 'sprite') {
     const sp = s.spriteSettings || {}
     lines.push(`Sprite cell size: ${sp.cellSize}px`)

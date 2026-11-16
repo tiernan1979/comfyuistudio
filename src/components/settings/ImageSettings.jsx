@@ -1,6 +1,8 @@
 import clsx from 'clsx'
+import { Image as ImageIcon } from 'lucide-react'
 import useStore from '../../store/useStore'
 import { ASPECT_RATIOS } from '../../lib/workflows'
+import PresetPicker from './PresetPicker'
 import { Slider, Toggle, NumberField, Field, ChoiceGrid, Hint, choiceClass } from './controls'
 
 const RATIOS = Object.keys(ASPECT_RATIOS)
@@ -15,12 +17,25 @@ export default function ImageSettings() {
   const settings = useStore((s) => s.imageSettings)
   const set = useStore((s) => s.setImageSettings)
   const generating = useStore((s) => s.generating)
+  const presets = useStore((s) => s.presets?.image || [])
+  const active = useStore((s) => s.active?.image)
+  const setActivePreset = useStore((s) => s.setActivePreset)
 
   const custom = settings.sizeMode === 'custom'
   const seedMax = 2 ** 48
 
   return (
     <div className="space-y-4">
+      <PresetPicker
+        label="Image model"
+        presets={presets}
+        active={active}
+        onSelect={(i) => setActivePreset('image', i)}
+        disabled={generating}
+        icon={ImageIcon}
+        hint="Shared by Image, Textures and PBR. Add or edit presets in Settings → Models."
+      />
+
       <Field label="Size">
         <div className="mb-2 grid grid-cols-2 gap-1.5">
           <button

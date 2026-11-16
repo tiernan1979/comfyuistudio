@@ -15,6 +15,7 @@ import {
   resolveAceStepModels,
   resolveH3VideoModels,
   resolveStableAudioModels,
+  resolveWanVideoModels,
   uploadAudioFile,
   uploadImage,
 } from '../../lib/comfyui'
@@ -95,6 +96,10 @@ function dataUrlToFile(dataUrl, name) {
 
 export async function prepareRun(base, state) {
   let models = state.models
+  // The image stack also feeds Image Edit, Sprites and the local game-asset
+  // modes, so resolve the active image preset once instead of reading the
+  // flat group (which can hold a stale default).
+  const imageModels = resolveActiveModels(state, 'image')
   // The Style dropdown is a generation setting. Non-default styles are also
   // applied at queue time so picking one before typing still takes effect.
   // The default photoreal style stays opt-in via Enhance — it is the default
@@ -151,13 +156,18 @@ export async function prepareRun(base, state) {
       seed: material.seed,
       metallic: material.metallic,
       roughness: material.roughness,
-      models: state.models.image,
+      models: imageModels,
     })
     return { workflow }
   }
 
   const preflightMode = state.mode === 'flipbook' ? 'video' : state.mode
-  await assertModelsAvailable(base, preflightMode, resolvePresetModels({ ...state, models }))
+  // Flipbooks resolve their own Wan T2V stack below: the selected video preset
+  // is often MiniMax H3, and preflighting it alone rejected runs even when the
+  // dedicated Wan T2V checkpoint was installed.
+  if (state.mode !== 'flipbook') {
+    await assertModelsAvailable(base, preflightMode, resolvePresetModels({ ...state, models }))
+  }
 
   if (state.mode === 'edit') {
     if (!state.sourceImage?.file) throw new Error('Upload a source image first.')
@@ -183,8 +193,8 @@ export async function prepareRun(base, state) {
         denoise: state.editSettings.denoise ?? 1,
         models: {
           unet: models.edit?.unet || 'qwen_image_edit_fp8_e4m3fn.safetensors',
-          clip: models.image.clip,
-          vae: models.image.vae,
+          clip: imageModels.clip,
+          vae: imageModels.vae,
         },
       }),
     }
@@ -242,14 +252,27 @@ export async function prepareRun(base, state) {
         cfg: ts.cfg,
         batchSize: ts.batchCount || 1,
         transparent: ts.transparent !== false,
-        models: state.models.image,
+        models: imageModels,
       }),
     }
   }
 
   if (state.mode === 'flipbook') {
     const fb = state.flipbookSettings || {}
-    const videoModels = resolveActiveModels(state, 'video')
+    let videoModels = resolveActiveModels(state, 'video')
+    // Unlike the video mode, a flipbook only works with a real Wan T2V
+    // checkpoint (frame PNG output, no source image). Resolve it from the
+    // server lists so an installed Wan model wins over a selected H3/GGUF
+    // video preset instead of failing the H3 check below.
+    let lists
+    try {
+      lists = await getModelLists(base)
+    } catch {
+      lists = null
+    }
+    if (lists?.unet?.length) {
+      videoModels = resolveWanVideoModels(lists, videoModels, { requireT2V: true })
+    }
     if (isMiniMaxH3(videoModels?.unet)) {
       throw new Error(
         'VFX Flipbook renders frame PNGs, which MiniMax H3 does not expose — select a Wan 2.x model in Settings → Video Models for this mode.'
@@ -301,7 +324,7 @@ export async function prepareRun(base, state) {
         cfg: state.imageSettings.cfg,
         turboMode: state.imageSettings.turboMode,
         batchSize: state.imageSettings.batchCount || 1,
-        models: state.models.image,
+        models: imageModels,
       }),
     }
   }
@@ -461,7 +484,7 @@ export async function prepareRun(base, state) {
           done: 0,
           sp,
           subject: state.prompt,
-          imageModels: models.image,
+          imageModels,
           character,
           seed,
           // A single-animation sheet starts the video from that action's
@@ -509,7 +532,7 @@ export async function prepareRun(base, state) {
         seed: sp.seed,
         steps: sp.steps,
         cfg: sp.cfg,
-        models: models.image,
+        models: imageModels,
       }),
     }
   }

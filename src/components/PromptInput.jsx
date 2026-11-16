@@ -3,7 +3,7 @@ import { motion } from 'framer-motion'
 import { Sparkles, ChevronDown, ChevronUp, Wand2, Bot, Loader2, Globe, BookmarkPlus, BookmarkCheck } from 'lucide-react'
 import useStore from '../store/useStore'
 import { STYLES, enhancePrompt } from '../lib/enhance'
-import { rewritePrompt, resolveLlmConfig, PROVIDERS, pickDefaultModel, padInstrumentalSections, trimVocalSections, trimSectionBudget, parseVocalShare, detectMusicStyle, defaultVocalShare, detectArtistRefs, stripArtistRefs, injectSignatureSounds, suggestDurationFromLyrics, ensureOutroLead, collapseConsecutiveWordless, sectionCeiling } from '../lib/llm'
+import { rewritePrompt, resolveLlmConfig, PROVIDERS, pickDefaultModel, padInstrumentalSections, trimVocalSections, trimSectionBudget, parseVocalShare, detectMusicStyle, defaultVocalShare, detectArtistRefs, stripArtistRefs, injectSignatureSounds, suggestDurationFromLyrics, ensureOutroLead, collapseConsecutiveWordless, sectionCeiling, sanitizeRewrite } from '../lib/llm'
 import { STABLE_AUDIO_MAX_SECONDS } from '../lib/workflows'
 import { searchText } from '../lib/search'
 import Dropdown from './Dropdown'
@@ -160,7 +160,7 @@ export default function PromptInput() {
           }
         }
       }
-      const out = await rewritePrompt(
+      let out = await rewritePrompt(
         cfg,
         {
           // Empty SFX box: tell the model to invent something rather than
@@ -173,6 +173,10 @@ export default function PromptInput() {
         },
         controller.signal
       )
+      // Local models occasionally ignore the per-mode system prompt and
+      // return an image caption for SFX (or a scene for a texture). Repair
+      // the obvious cross-mode language before it reaches the generator.
+      out = sanitizeRewrite(mode, out, prompt.trim())
       // The system prompt forbids naming the artist in the caption/lyrics,
       // but LLMs leak them anyway ("Avicii-style trance"). Strip detected
       // artist refs from the generated text as a hard guarantee.
@@ -244,8 +248,16 @@ export default function PromptInput() {
           else if (STYLES[style]?.negative) setNegativePrompt(STYLES[style].negative)
         }
         setShowNegative(true)
-      } else if (mode !== 'sfx' && mode !== 'sprite' && mode !== 'pixel' && !negativePrompt.trim() && STYLES[style]?.negative) {
-        setNegativePrompt(STYLES[style].negative)
+      } else if (
+        // Game-asset writers return a mode-specific negative (texture edges,
+        // flipbook artefacts, PBR map mistakes, sprite/parts framing). Use it
+        // instead of a style negative, which has nothing to do with these
+        // pipelines and can override the builder's tuned default.
+        (mode === 'texture' || mode === 'flipbook' || mode === 'material' || mode === 'sprite' || mode === 'pixel') &&
+        !negativePrompt.trim() &&
+        out.negative
+      ) {
+        setNegativePrompt(out.negative)
       }
       // End-to-end: in image mode continue straight into the web reference search
       if (mode === 'image' && out.searchQuery) {
@@ -407,7 +419,7 @@ export default function PromptInput() {
       {/* Music hides the negative-prompt field entirely (the model has no
           negative conditioning). SFX keeps it OPEN by default — the AI fills
           it in and Stable Audio actually conditions on it. */}
-      {mode !== 'music' && mode !== 'material' && (
+      {mode !== 'music' && (
         <motion.button
           onClick={() => setShowNegative(!showNegative)}
           className="flex items-center gap-1 text-xs text-text-muted hover:text-text-secondary transition-colors"

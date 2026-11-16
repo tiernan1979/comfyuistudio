@@ -121,6 +121,14 @@ const THREE_D_FIELDS = {
   hunyuanGuidance: [0, 20],
   hunyuanSkinBlend: 'boolean',
   hunyuanViewUpscale: 'boolean',
+  // Game-ready 3D export (MeshTools)
+  gameExportPreset: new Set(['mobile', 'desktop', 'hero']),
+  gameExportLods: [1, 3],
+  gameExportFormat: new Set(['glb', 'obj']),
+  gameExportCollision: 'boolean',
+  gameExportUnwrap: 'boolean',
+  gameExportSmooth: 'boolean',
+  gameExportCleanup: 'boolean',
   // UltraShape 1.0 mesh upscale (local refine)
   ultrashapeCheckpoint: 'string',
   ultrashapeDtype: new Set(['float16', 'bfloat16', 'float32']),
@@ -236,6 +244,7 @@ const MODE_SETTING_FIELDS = {
     cfg: [0, 30],
     batchCount: [1, 16],
     transparent: 'boolean',
+    fixSeams: 'boolean',
   },
   flipbookSettings: {
     frames: [5, 49],

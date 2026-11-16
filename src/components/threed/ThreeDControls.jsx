@@ -8,7 +8,11 @@ import {
   Settings,
   Sparkles,
   Loader2,
+  Download,
+  Package,
 } from 'lucide-react'
+import useStore from '../../store/useStore'
+import { GAME_EXPORT_LODS, GAME_EXPORT_PRESETS } from '../../lib/workflows'
 import Dropdown from '../Dropdown'
 import { BTN_PRIMARY, BTN_GHOST } from './MeshActionRow'
 import MeshActionRow from './MeshActionRow'
@@ -53,6 +57,7 @@ function CardHeader({ step, icon: Icon, title, description, action }) {
 
 export default function ThreeDControls({ t, threeD, run, setShowSettings }) {
   const { busy, image } = t
+  const setThreeD = useStore((s) => s.setThreeD)
   const hasMesh = !!(run.mesh || t.importedMesh || t.idleMesh)
   const canRig = hasMesh || !!t.serverMesh.trim()
 
@@ -190,7 +195,7 @@ export default function ThreeDControls({ t, threeD, run, setShowSettings }) {
                   disabled={!image || busy}
                   className={BTN_PRIMARY}
                 >
-                  {busy && !t.paintBusy && !t.usBusy && !t.idleBusy && run.mesh === null ? (
+                  {busy && !t.paintBusy && !t.usBusy && !t.idleBusy && !t.exportBusy && run.mesh === null ? (
                     <Loader2 size={13} className="animate-spin" />
                   ) : (
                     <Sparkles size={13} />
@@ -256,6 +261,119 @@ export default function ThreeDControls({ t, threeD, run, setShowSettings }) {
             />
           </Card>
 
+          {/* Game-ready export: LODs + collision proxy on MeshTools */}
+          <Card>
+            <CardHeader
+              icon={Package}
+              title="Export for game"
+              description="Clean, decimate and export LODs plus an optional collision proxy — all local MeshTools nodes."
+              action={
+                <button
+                  type="button"
+                  onClick={t.handleGameExport}
+                  disabled={!hasMesh || busy}
+                  className={BTN_PRIMARY}
+                >
+                  {t.exportBusy ? (
+                    <Loader2 size={13} className="animate-spin" />
+                  ) : (
+                    <Package size={13} />
+                  )}
+                  Export
+                </button>
+              }
+            />
+
+            <div className="grid grid-cols-2 gap-2">
+              <div className="space-y-1">
+                <label className="text-[10px] font-medium uppercase tracking-wider text-text-muted">
+                  Budget
+                </label>
+                <Dropdown
+                  value={threeD.gameExportPreset}
+                  onChange={(gameExportPreset) => setThreeD({ gameExportPreset })}
+                  disabled={busy}
+                  options={GAME_EXPORT_PRESETS.map((p) => ({
+                    value: p.value,
+                    label: `${p.label} · ${p.faces.toLocaleString()}`,
+                  }))}
+                  ariaLabel="Game export triangle budget"
+                  className="text-xs"
+                />
+              </div>
+              <div className="space-y-1">
+                <label className="text-[10px] font-medium uppercase tracking-wider text-text-muted">
+                  LODs
+                </label>
+                <Dropdown
+                  value={threeD.gameExportLods}
+                  onChange={(gameExportLods) => setThreeD({ gameExportLods: Number(gameExportLods) })}
+                  disabled={busy}
+                  options={GAME_EXPORT_LODS.map((n) => ({
+                    value: n,
+                    label: `${n} level${n > 1 ? 's' : ''}`,
+                  }))}
+                  ariaLabel="Number of LODs"
+                  className="text-xs"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-1.5">
+              {[
+                ['gameExportCollision', 'Collision proxy'],
+                ['gameExportSmooth', 'Smooth normals'],
+                ['gameExportCleanup', 'Remove floaters'],
+                ['gameExportUnwrap', 'Re-unwrap UVs'],
+              ].map(([key, label]) => (
+                <label
+                  key={key}
+                  className="flex cursor-pointer items-center gap-2 rounded-lg border border-border bg-bg-secondary px-2 py-1.5 text-[11px] text-text-secondary"
+                >
+                  <input
+                    type="checkbox"
+                    checked={threeD[key] !== false}
+                    onChange={(e) => setThreeD({ [key]: e.target.checked })}
+                    disabled={busy}
+                    className="accent-accent"
+                  />
+                  {label}
+                </label>
+              ))}
+            </div>
+
+            <p className="text-[10px] leading-relaxed text-text-muted">
+              Exports GLB{threeD.gameExportUnwrap ? ' with fresh UVs' : ''}; textured models keep
+              their original atlas. Collision is a low-poly proxy — mark it “convex” in your engine.
+            </p>
+
+            {run.exports?.length > 0 && (
+              <div className="space-y-1.5 border-t border-border pt-2">
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-text-muted">
+                  Last export
+                </p>
+                {run.exports.map((r) => (
+                  <div
+                    key={`${r.subfolder}/${r.filename}`}
+                    className="flex items-center justify-between gap-2 rounded-lg border border-border bg-bg-secondary px-2.5 py-1.5"
+                  >
+                    <span className="min-w-0 truncate font-mono text-[11px] text-text-secondary">
+                      {r.label} · {r.filename}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => t.download(r)}
+                      className={clsx(BTN_GHOST, 'shrink-0 px-2 py-1')}
+                    >
+                      <Download size={12} />
+                      Save
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </Card>
+
           {/* Step 2: rig + optional animation */}
           <Card disabled={!canRig}>
             <CardHeader
@@ -285,7 +403,7 @@ export default function ThreeDControls({ t, threeD, run, setShowSettings }) {
                   disabled={!canRig || busy || t.pickLock}
                   className={BTN_PRIMARY}
                 >
-                  {busy && !t.usBusy && run.stage === 'working' && hasMesh ? (
+                  {busy && !t.usBusy && !t.exportBusy && run.stage === 'working' && hasMesh ? (
                     <Loader2 size={13} className="animate-spin" />
                   ) : (
                     <Hammer size={13} />

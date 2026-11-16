@@ -248,6 +248,14 @@ const useStore = create(
         tripoGeometryQuality: 'detailed', // 'standard' | 'detailed' (~2M faces)
         tripoTextureAlignment: 'original_image', // 'original_image' | 'geometry'
         tripoPbr: true, // normal/metallic/roughness maps in the GLB
+        // Game-ready export (MeshTools: clean, LOD decimation, collision proxy)
+        gameExportPreset: 'desktop', // 'mobile' | 'desktop' | 'hero'
+        gameExportLods: 3, // 1 | 2 | 3
+        gameExportFormat: 'glb', // 'glb' | 'obj'
+        gameExportCollision: true,
+        gameExportUnwrap: false, // re-unwrap UVs (textured meshes would lose their atlas)
+        gameExportSmooth: true,
+        gameExportCleanup: true,
       },
 
       // Transient 3D run state (never persisted)
@@ -258,6 +266,7 @@ const useStore = create(
         error: null,
         mesh: null, // generated GLB ref for the local pipeline's rig step
         results: [], // downloadable output files of the last completed step
+        exports: [], // game-ready LOD/collision files from the last export
       },
 
       // Source image for edit mode (File kept in memory only, never persisted)

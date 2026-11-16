@@ -44,6 +44,7 @@ export {
   isSupportedMusicModel,
   resolveAceStepModels,
   resolveStableAudioModels,
+  resolveWanVideoModels,
   resolveH3VideoModels,
   getNodeComboOptions,
 } from './models.js'

@@ -5,26 +5,33 @@ import { pushHiddenIds, pushHistoryEntries } from './helpers.js'
 export function createHistoryActions(set, get) {
   return {
     addToHistory: (entry) => {
+      // A late completion can arrive after the user deleted that job from
+      // history. Do not resurrect it locally or push it back to the shared
+      // store — the hidden list is the source of truth for deletions.
+      const key = String(entry.id)
+      if (get().hiddenHistoryIds.some((id) => String(id) === key)) return
       set((s) => ({
         // Same promptId can arrive twice (local add + server sync) — keep one.
-        history: [entry, ...s.history.filter((h) => h.id !== entry.id)].slice(0, 100),
+        history: [entry, ...s.history.filter((h) => String(h.id) !== key)].slice(0, 100),
       }))
       // Share the new entry with every other browser/origin.
       pushHistoryEntries([entry])
     },
 
     removeFromHistory: (id) => {
+      const key = String(id)
       set((s) => {
-        const entry = s.history.find((h) => h.id === id)
+        const entry = s.history.find((h) => String(h.id) === key)
+        const hidden = s.hiddenHistoryIds.map(String)
         const patch = {
-          history: s.history.filter((h) => h.id !== id),
+          history: s.history.filter((h) => String(h.id) !== key),
           // Remember the deletion so the next server sync doesn't
-          // resurrect it from ComfyUI's /history.
-          hiddenHistoryIds: s.hiddenHistoryIds.includes(id)
-            ? s.hiddenHistoryIds
-            : [...s.hiddenHistoryIds, id].slice(-200),
+          // resurrect it from ComfyUI's /history. Normalise the ids to
+          // strings: server entries and older saved lists can disagree on
+          // type, which made the hidden check miss and the entry return.
+          hiddenHistoryIds: hidden.includes(key) ? hidden : [...hidden, key].slice(-200),
         }
-        if (s.selectedHistoryId === id) patch.selectedHistoryId = null
+        if (String(s.selectedHistoryId) === key) patch.selectedHistoryId = null
         if (entry && entry.data === s.outputImage) patch.outputImage = null
         if (entry && entry.data === s.outputVideo) patch.outputVideo = null
         if (entry && entry.data === s.outputAudio) patch.outputAudio = null
@@ -38,6 +45,37 @@ export function createHistoryActions(set, get) {
       })
       // Share the delete with every other logged-in browser.
       pushHiddenIds([id])
+    },
+
+    // Replace an existing history entry in place. Used when a texture is
+    // post-processed into a seamless tile: the card and any open viewer must
+    // point at the fixed PNG, not the original bordered render.
+    updateHistoryEntry: (id, patchOrUpdater) => {
+      const key = String(id)
+      let updated = null
+      set((s) => {
+        const index = s.history.findIndex((h) => String(h.id) === key)
+        if (index < 0) return {}
+        const current = s.history[index]
+        const patch =
+          typeof patchOrUpdater === 'function' ? patchOrUpdater(current) : patchOrUpdater
+        if (!patch) return {}
+        updated = { ...current, ...patch }
+        const history = [...s.history]
+        history[index] = updated
+        const out = { history }
+        const oldData = current.data
+        const newData = updated.data
+        if (oldData && newData && oldData !== newData) {
+          if (s.outputImage === oldData) out.outputImage = newData
+          if (Array.isArray(s.batchImages) && s.batchImages.includes(oldData)) {
+            out.batchImages = s.batchImages.map((url) => (url === oldData ? newData : url))
+          }
+        }
+        return out
+      })
+      // Keep the durable, cross-browser copy in sync with the new URL.
+      if (updated) pushHistoryEntries([updated])
     },
 
     // Fold ids learned from other browsers/servers into the local hidden
@@ -65,7 +103,7 @@ export function createHistoryActions(set, get) {
       }),
 
     clearHistory: () => {
-      const ids = get().history.map((h) => h.id)
+      const ids = get().history.map((h) => String(h.id))
       set((s) => ({
         history: [],
         selectedHistoryId: null,
@@ -73,7 +111,7 @@ export function createHistoryActions(set, get) {
         outputVideo: null,
         outputAudio: null,
         hiddenHistoryIds: [
-          ...new Set([...s.hiddenHistoryIds, ...s.history.map((h) => h.id)]),
+          ...new Set([...s.hiddenHistoryIds.map(String), ...s.history.map((h) => String(h.id))]),
         ].slice(-200),
         deletedUrls: [
           ...s.history.map((h) => h.data).filter((d) => typeof d === 'string' && d),
@@ -90,9 +128,13 @@ export function createHistoryActions(set, get) {
     mergeServerHistory: (entries) =>
       set((s) => {
         if (!entries?.length) return {}
-        const have = new Set(s.history.map((h) => h.id))
-        const hidden = new Set(s.hiddenHistoryIds)
-        const fresh = entries.filter((e) => e?.id && !have.has(e.id) && !hidden.has(e.id))
+        const have = new Set(s.history.map((h) => String(h.id)))
+        const hidden = new Set(s.hiddenHistoryIds.map(String))
+        const fresh = entries.filter((e) => {
+          if (!e?.id) return false
+          const key = String(e.id)
+          return !have.has(key) && !hidden.has(key)
+        })
         if (fresh.length === 0) return {}
         const merged = [...fresh, ...s.history]
           .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0))

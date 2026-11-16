@@ -3,6 +3,7 @@
 import { extractHistoryError, getHistory, getViewUrl, resolveApiBase } from '../../lib/comfyui'
 import { layoutRows } from '../../lib/character'
 import { MATERIAL_MAP_KEYS } from '../../lib/workflows'
+import { makeSeamlessTexture } from '../../lib/seamless'
 import useStore from '../../store/useStore'
 import { publishSpriteSheet } from './publishSprite.js'
 import { publishFlipbook } from './publishFlipbook.js'
@@ -106,15 +107,33 @@ export function createCompletionHandler({ timerRef }) {
 
       // Texture / tileset mode: one SaveImage can return a batch of variants.
       if (state.mode === 'texture') {
-        const urls = []
+        const rawUrls = []
         for (const nodeId of Object.keys(entry.outputs)) {
           const out = entry.outputs[nodeId]
           for (const img of out.images || []) {
-            urls.push(await getViewUrl(base, img.filename, img.subfolder, img.type))
+            rawUrls.push(await getViewUrl(base, img.filename, img.subfolder, img.type))
+          }
+        }
+        const ts = state.textureSettings || {}
+        // Prompt wording alone cannot guarantee a seamless wrap. For plain
+        // textures, crop the model's border and clone a clean band over the
+        // browser so a 2×2 repeat lines up exactly. Best effort: if the canvas
+        // upload fails, keep the original image rather than failing the run.
+        const shouldFix =
+          ts.kind === 'texture' && ts.seamless !== false && ts.fixSeams !== false
+        let urls = rawUrls
+        if (shouldFix && rawUrls.length) {
+          urls = []
+          for (const url of rawUrls) {
+            try {
+              urls.push(await makeSeamlessTexture(base, url))
+            } catch (err) {
+              console.warn('[texture] seamless fix failed, keeping original:', err?.message || err)
+              urls.push(url)
+            }
           }
         }
         if (urls.length) {
-          const ts = state.textureSettings || {}
           state.setOutputImage(urls[0])
           state.setBatchImages(urls)
           for (let i = 0; i < urls.length; i += 1) {
@@ -124,7 +143,7 @@ export function createCompletionHandler({ timerRef }) {
               prompt: state.prompt,
               data: urls[i],
               timestamp: Date.now(),
-              settings: { ...ts },
+              settings: { ...ts, seamlessFixed: shouldFix },
             })
           }
         } else {

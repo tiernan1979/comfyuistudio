@@ -21,7 +21,7 @@
     "video": {
       "unet": "wan2.1_t2v_1.3B_bf16.safetensors",
       "clip": "umt5_xxl_fp8_e4m3fn_scaled.safetensors",
-      "vae": "wan_2.1_vae.safetensors"
+      "vae": "Wan2.1_VAE.safetensors"
     },
     "edit": {
       "unet": "qwen_image_edit_fp8_e4m3fn.safetensors"

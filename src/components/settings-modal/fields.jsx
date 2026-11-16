@@ -60,9 +60,10 @@ export function TextField({ label, value, onChange, placeholder, type = 'text', 
 }
 
 // Model picker backed by the server's file list — a real dropdown of
-// every file ComfyUI can see. Falls back to free typing when the list
-// isn't loaded (or the field may hold a value the server hasn't indexed).
-export function ModelField({ label, value, onChange, options = [], placeholder }) {
+// every file ComfyUI can see, optionally narrowed to one pipeline. Falls
+// back to free typing when the list isn't loaded (or the field may hold a
+// value the server hasn't indexed).
+export function ModelField({ label, value, onChange, options = [], placeholder, filtered = false }) {
   const inList = !value || options.includes(value)
 
   if (options.length === 0) {
@@ -72,7 +73,11 @@ export function ModelField({ label, value, onChange, options = [], placeholder }
         value={value}
         onChange={onChange}
         placeholder={placeholder}
-        hint="Server list not loaded — type the exact filename"
+        hint={
+          filtered
+            ? 'No compatible files on this server — type the exact filename'
+            : 'Server list not loaded — type the exact filename'
+        }
       />
     )
   }
@@ -99,8 +104,10 @@ export function ModelField({ label, value, onChange, options = [], placeholder }
       />
       <p className={clsx('text-[10px]', inList ? 'text-text-muted/70' : 'text-warning')}>
         {inList
-          ? `${options.length} file(s) available on server`
-          : `Not found on server — pick one of the ${options.length} available file(s) or fix the name`}
+          ? `${options.length} ${filtered ? 'compatible ' : ''}file(s) available on server`
+          : filtered
+            ? `Not compatible with this pipeline — pick one of the ${options.length} compatible file(s) or type another name`
+            : `Not found on server — pick one of the ${options.length} available file(s) or fix the name`}
       </p>
     </div>
   )

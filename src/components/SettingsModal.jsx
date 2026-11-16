@@ -123,6 +123,8 @@ export default function SettingsModal() {
                     modelLists={s.modelLists}
                     localModels={s.localModels}
                     setLocalModels={s.setLocalModels}
+                    imageDraft={s.imageDraft}
+                    setImageDraft={s.setImageDraft}
                     editDraft={s.editDraft}
                     setEditDraft={s.setEditDraft}
                     videoDraft={s.videoDraft}

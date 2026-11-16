@@ -43,7 +43,7 @@ Static frontend (React + Vite) served by nginx; every external request (ComfyUI,
   - any OpenAI-compatible endpoint (OpenRouter, Groq, Ollama, vLLM, …)
   - **Per mode:** image → prompt + search query + title; music → metadata, arrangement, tagged lyrics and a length that moves the duration knob; **SFX → sound-only caption, clip length (1–47 s), negative prompt, filename title, and (on an empty box) invented effects + clickable alternatives**; sprites → subject description. If no model is saved it asks the server which chat models it has, and if the saved endpoint is dead it retries the known local hosts (LM Studio lives on the ComfyUI box)
 - **Web image search → edit** — search [SearXNG](https://github.com/searxng/searxng), Serper, SerpAPI, Brave or Google CSE, click a result, and use it as the edit source
-- **LAN REST API** (optional) — generate image/edit/video/music, read models/history/queue from any device on your LAN ([api/](api/))
+- **LAN REST API** (optional) — generate image/edit/video/music plus local game assets (textures, flipbooks, PBR packs), read models/history/queue from any device on your LAN ([api/](api/))
 - **MCP server** (optional) — drive the Studio REST API from Claude / any MCP client ([mcp/](mcp/))
 - **Idle model unloading** — the API watchdog (and the browser, while open) tells ComfyUI to free VRAM after 5 minutes of no queue/history activity; checks actual VRAM before deciding (configurable)
 - **On-disk deployment config** — instance settings live in a `config.json` file, not in the code; Settings → Save writes it back so every browser shares it
@@ -256,7 +256,7 @@ All other settings (ComfyUI URL, models, providers, SearXNG URL) can also be cha
 | SFX generation | ComfyUI + Stable Audio 3 (`stable_audio_3_*.safetensors` checkpoint + `t5gemma_b_b_ul2.safetensors` encoder); falls back to ACE-Step 1.5 |
 | Sprite sheets (pose edits) | ComfyUI + an image model (Qwen-Image) + **BiRefNet** (`birefnet.safetensors` → `models/background_removal/`, for the built-in `LoadBackgroundRemovalModel`/`RemoveBackground` nodes); the graph emits one transparent PNG per frame and the sheet/atlas/`.tres` are packed **client-side** (so alpha survives — KJNodes `ImageGrid` would flatten it) |
 | Tiles & textures | ComfyUI + an image model (Qwen-Image); icon packs optionally use **BiRefNet** for transparent cells; no extra nodes for textures, tilesets or terrain |
-| VFX flipbook | ComfyUI + a WAN 2.x video model + **BiRefNet** for transparent frames (disable Transparency to skip it) |
+| VFX flipbook | ComfyUI + a WAN 2.x **text-to-video** model (`wan2.1_t2v_1.3B_bf16.safetensors` works; the graph rejects i2v and MiniMax H3) + **BiRefNet** for transparent frames (disable Transparency to skip it) |
 | PBR material packs | ComfyUI + the image model + the built-in depth/normal preprocessors (`DSINE-NormalMapPreprocessor`, `MiDaS-DepthMapPreprocessor`); fully local, no cloud account or credits |
 | Sprite sheets (**Video / WAN 2.2**) | ComfyUI + **city96/ComfyUI-GGUF** + `WAN2.2-I2V-A14B` lightx2v 4-step GGUF (high + low noise) in `models/unet/`, `umt5_xxl_fp8_e4m3fn_scaled.safetensors` + `Wan2.1_VAE.safetensors`, and the image model above for the keyframe |
 | Music editor — timeline, DSP stems, mixdown | nothing extra (client-side only) |
@@ -313,7 +313,9 @@ builds `models/diffusion_models/` is called `models/unet/`). Quantized `*_int8_c
 in the same repos.
 
 File names in **Settings → Models** must match what you install — the dropdowns list the
-files your server actually has, and the app picks up common variants automatically.
+files your server actually has, and the app picks up common variants automatically. Each
+section only shows files its pipeline can load (image → Qwen/SDXL, video → Wan/MiniMax H3,
+music → MiniMax/ACE-Step, and so on); incompatible files stay hidden from that dropdown.
 
 ### Image generation — Qwen-Image
 
@@ -327,6 +329,10 @@ Lighter alternative ([Comfy-Org/Qwen-Image-2.1](https://huggingface.co/Comfy-Org
 used on low-VRAM installs): `qwen_image_2.1_int8_convrot.safetensors` →
 `models/diffusion_models/`, `qwen3vl_8b_w4a8.safetensors` → `models/text_encoders/`,
 `qwen_image_2.1_vae_bf16.safetensors` → `models/vae/`.
+
+Both stacks ship as **image model presets** — switch between them from the Image, Tiles &
+Textures or PBR Material controls, or add your own in Settings → Models. Presets only swap the
+Qwen-Image UNET/CLIP/VAE; SDXL or Flux checkpoints need a different pipeline.
 
 Turbo mode (optional): put `Qwen-Image-Lightning-8steps-V2.0-bf16.safetensors` in
 `models/loras/` ([lightx2v/Qwen-Image-Lightning](https://huggingface.co/lightx2v/Qwen-Image-Lightning/resolve/main/Qwen-Image-Lightning-8steps-V2.0-bf16.safetensors))
@@ -356,7 +362,7 @@ low-strength whole-image pass instead of a face-only mask.
 |---|---|---|
 | `wan2.1_t2v_1.3B_bf16.safetensors` | `models/diffusion_models/` | [Comfy-Org/Wan_2.1_ComfyUI_repackaged](https://huggingface.co/Comfy-Org/Wan_2.1_ComfyUI_repackaged/resolve/main/split_files/diffusion_models/wan2.1_t2v_1.3B_bf16.safetensors) |
 | `umt5_xxl_fp8_e4m3fn_scaled.safetensors` | `models/text_encoders/` | [Comfy-Org/Wan_2.1_ComfyUI_repackaged](https://huggingface.co/Comfy-Org/Wan_2.1_ComfyUI_repackaged/resolve/main/split_files/text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors) |
-| `wan_2.1_vae.safetensors` | `models/vae/` | [Comfy-Org/Wan_2.1_ComfyUI_repackaged](https://huggingface.co/Comfy-Org/Wan_2.1_ComfyUI_repackaged/resolve/main/split_files/vae/wan_2.1_vae.safetensors) |
+| `Wan2.1_VAE.safetensors` | `models/vae/` | [comfyanonymous/Wan2.1_comfyui](https://huggingface.co/comfyanonymous/Wan2.1_comfyui/resolve/main/vae/Wan2.1_VAE.safetensors) |
 
 Bigger resolutions need the 14B variants (`wan2.1_t2v_14B_*`) from the same repo.
 
@@ -646,7 +652,9 @@ its own docker volume:
 | Route | Purpose |
 |---|---|
 | `GET /api/health` | Studio API + ComfyUI reachability |
-| `POST /api/generate` | generate image / edit / video / music / sfx (blocks until done, or `wait=false` + poll). Per-mode knobs live in `settings` (e.g. `settings.upscale: "auto"` detail-upscales images when 4x-UltraSharp is installed; `settings.batchCount: 4` renders a batch in one job) |
+| `GET /api/capabilities` / `GET /api/workflows` | discovery payload: every mode, aliases (`pbr` → `material`), model group, inputs, output kind and defaults |
+| `POST /api/generate` | generate image / edit / video / music / sfx / texture / flipbook / material (blocks until done, or `wait=false` + poll). Per-mode knobs live in `settings` (e.g. `settings.upscale: "auto"` detail-upscales images when 4x-UltraSharp is installed; `settings.batchCount: 4` renders a batch in one job). Game-asset modes take `settings.kind` (`texture`/`tileset`/`icon`/`terrain`), `settings.grid`, `settings.transparent`, `settings.frames`, `settings.maps`, `settings.tiling` |
+| `GET/POST /api/texture` | texture capability/defaults; POST is shorthand for `mode: "texture"` |
 | `POST /api/generate` (modes `3d` / `skin` / `meshupscale`) | 3D flows — image→GLB, picture→skinned GLB, UltraShape mesh refine. Always block (5–45 min, `timeoutSec` up to 60min); `3d` takes `imageBase64`, `skin`/`meshupscale` take `imageBase64` + `mesh: {filename, subfolder?, type?}` (or `meshBase64`) |
 | `GET /api/job/:promptId` | status of one graph generation (optional `?wait=true`) |
 | `GET /api/models` | model files per mode + the defaults the API would use |
@@ -679,7 +687,8 @@ cd mcp && npm install
 ```
 
 Tools: `generate_image` (with optional `upscale`), `edit_image`, `generate_video`,
-`generate_music`, `generate_sfx`, `generate_3d`, `skin_mesh`, `upscale_mesh`,
+`generate_music`, `generate_sfx`, `generate_texture`, `generate_flipbook`,
+`generate_material`, `generate_3d`, `skin_mesh`, `upscale_mesh`, `get_capabilities`,
 `get_models`, `get_history`, `get_queue`, `get_job` (with `wait`), `cancel`,
 `get_status`.
 
@@ -708,8 +717,8 @@ Tools: `generate_image` (with optional `upscale`), `edit_image`, `generate_video
   ```
 
 - **Full ComfyUI coverage** — the Studio API/MCP intentionally cover the common
-  generative modes (image / edit / video / music / sfx) plus reads. If you need *everything*
-  a ComfyUI server can do (3D, stems, custom node graphs), talk to ComfyUI directly:
+  generative modes (image / edit / video / music / sfx / game assets) plus reads. If you need *everything*
+  a ComfyUI server can do (stems, custom node graphs), talk to ComfyUI directly:
   `POST /prompt` with any workflow executes it — that is the complete, unlimited
   surface, and the Studio is a friendly layer on top of it.
 

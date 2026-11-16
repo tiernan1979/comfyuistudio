@@ -49,6 +49,15 @@ export function applyServerConfig(set, config, { force = false } = {}) {
     if (config.active && typeof config.active === 'object') {
       patch.active = { ...s.active, ...config.active }
     }
+    // A deployment config written before image presets has only the flat
+    // image group. Without this, the browser's default image preset (index 0)
+    // would keep winning and ignore the config's custom UNET/CLIP/VAE. The
+    // flat group is the source of truth until the config gains presets.
+    const hasImagePresets = Array.isArray(config.presets?.image) && config.presets.image.length > 0
+    const hasImageActive = config.active?.image !== undefined
+    if (config.models?.image && !hasImagePresets && !hasImageActive) {
+      patch.active = { ...(patch.active || s.active), image: null }
+    }
     // Per-mode generation settings — server wins per key.
     for (const k of SETTING_GROUPS) {
       if (config[k]) patch[k] = { ...s[k], ...config[k] }

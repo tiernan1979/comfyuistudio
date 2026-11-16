@@ -24,5 +24,6 @@ export {
 } from './assets.js'
 export { runGenerateMesh, glbHasTextures, glbTriCount, runMeshUpscale } from './mesh.js'
 export { runRigMesh, runRigImported, runRigServerFile } from './rig.js'
+export { runGameExport } from './export.js'
 export { stripGlbTextures, runPaintSkin } from './paint.js'
 export { runTripo } from './tripo.js'

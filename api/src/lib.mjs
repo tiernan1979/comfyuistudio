@@ -10,15 +10,59 @@ import {
   buildVideoWorkflow,
   buildMusicWorkflow,
   buildAutoSplitWorkflow,
+  buildTextureWorkflow,
+  buildFlipbookWorkflow,
+  buildMaterialWorkflow,
   AUTOSPLIT_LABEL_PRESETS,
+  MATERIAL_MAP_KEYS,
   isMiniMaxH3,
   isAceStepModel,
   isStableAudioModel,
 } from '../../src/lib/workflows.js'
 import { buildPartPrompt, PARTS_SLOTS, PARTS_NEG } from '../../src/lib/parts.js'
-import { resolveAceStepModels, resolveStableAudioModels } from '../../src/lib/comfyui.js'
+import {
+  resolveAceStepModels,
+  resolveStableAudioModels,
+  resolveWanVideoModels,
+} from '../../src/lib/comfyui.js'
 
-export const MODES = ['image', 'edit', 'video', 'music', 'sfx', 'split', 'parts', '3d', 'skin', 'meshupscale']
+// Re-exported so server.js can validate material map names without a second
+// import path into the frontend builders.
+export { MATERIAL_MAP_KEYS }
+
+export const MODES = [
+  'image',
+  'edit',
+  'video',
+  'music',
+  'sfx',
+  'texture',
+  'flipbook',
+  'material',
+  'split',
+  'parts',
+  '3d',
+  'skin',
+  'meshupscale',
+]
+
+// Game-asset modes reuse an existing model stack. Keeping the alias here (not
+// a duplicate DEFAULT_MODELS group) means config.json, presets and model
+// overrides all follow the stack the UI already saved.
+export const MODEL_MODE_ALIASES = {
+  texture: 'image',
+  flipbook: 'video',
+  material: 'image',
+}
+
+// Public aliases accepted by /api/generate. `pbr` was the name in early
+// clients; `material` is the canonical mode.
+export const MODE_ALIASES = { pbr: 'material' }
+
+export function canonicalMode(mode) {
+  const key = String(mode || '').toLowerCase()
+  return MODE_ALIASES[key] || key
+}
 
 // Character-part slot keys (name, default size, prompt phrase) for API clients.
 export const PART_SLOTS = PARTS_SLOTS
@@ -52,7 +96,7 @@ export const DEFAULT_MODELS = {
   video: {
     unet: 'wan2.1_t2v_1.3B_bf16.safetensors',
     clip: 'umt5_xxl_fp8_e4m3fn_scaled.safetensors',
-    vae: 'wan_2.1_vae.safetensors',
+    vae: 'Wan2.1_VAE.safetensors',
     lora: '', // optional H3 turbo LoRA (4–8 steps)
   },
   // ACE-Step 1.5 turbo AIO is the default music engine — MiniMax Music 3
@@ -125,6 +169,49 @@ export const DEFAULT_SETTINGS = {
   music: { duration: 300, seed: -1, steps: 30, cfgScale: 1.7, quality: '320k' },
   // SFX: short exact-length ACE render, WAV for game engines.
   sfx: { duration: 6, seed: -1, quality: 'wav' },
+  // Game assets — all local, all reuse the image or video model stack.
+  // Texture sheets (tileset / icon / terrain) are sliced client-side; the API
+  // returns the whole sheet plus its grid metadata.
+  texture: {
+    kind: 'texture',
+    seamless: true,
+    grid: 2,
+    size: 1024,
+    seed: -1,
+    steps: 20,
+    cfg: 4,
+    batchCount: 1,
+    transparent: true,
+  },
+  // VFX flipbook: WAN text-to-video frames saved individually. The browser
+  // packs them into a sprite sheet; the API returns one URL per frame.
+  flipbook: {
+    frames: 17,
+    fps: 12,
+    resolution: 512,
+    transparent: true,
+    seed: -1,
+    steps: 20,
+    cfg: 6,
+  },
+  // Local PBR derivation: one base-colour render plus normal/height/roughness
+  // and a uniform metalness mask. No cloud node and no extra model files.
+  material: {
+    size: '1:1 (1024x1024)',
+    maps: {
+      basecolor: true,
+      normal: true,
+      roughness: true,
+      metalness: true,
+      height: true,
+    },
+    tiling: 'both',
+    steps: 20,
+    cfg: 4,
+    seed: 42,
+    metallic: 0,
+    roughness: 50,
+  },
   // 2D part splitting (ComfyUI-AutoSplit-Orchestrator + SAM 3). `labels` is a
   // newline list; anatomical presets come from AUTOSPLIT_LABEL_PRESETS.
   split: {
@@ -185,6 +272,66 @@ export const DEFAULT_SETTINGS = {
     ultrashapeNumChunks: 8000,
     ultrashapeNumLatents: 16384,
   },
+}
+
+// Discovery metadata for /api/capabilities and /api/workflows. Kept beside the
+// defaults so a client can learn the modes, their model stack, inputs and
+// per-mode settings without probing each endpoint.
+const MODE_INFO = {
+  image: { label: 'Image', group: 'image', output: 'image' },
+  edit: { label: 'Image Edit', group: 'image', output: 'image', inputs: ['imageBase64'] },
+  video: { label: 'Video', group: 'video', output: 'video' },
+  music: { label: 'Music', group: 'audio', output: 'audio' },
+  sfx: { label: 'SFX', group: 'audio', output: 'sfx' },
+  texture: {
+    label: 'Tiles & Textures',
+    group: 'game-assets',
+    output: 'image',
+    description: 'Seamless material, tileset, icon/UI pack or terrain autotile sheet',
+  },
+  flipbook: {
+    label: 'VFX Flipbook',
+    group: 'game-assets',
+    output: 'image-frames',
+    description: 'WAN effect loop saved as individual PNG frames',
+  },
+  material: {
+    label: 'PBR Material',
+    group: 'game-assets',
+    output: 'image-maps',
+    aliases: ['pbr'],
+    description: 'Local base colour plus normal, roughness, metalness and height maps',
+  },
+  split: { label: 'Split Parts', group: 'image', output: 'parts', inputs: ['imageBase64'] },
+  parts: { label: 'Character Parts', group: 'image', output: 'image' },
+  '3d': { label: '3D Mesh', group: '3d', output: '3d', inputs: ['imageBase64'] },
+  skin: { label: 'Skin Mesh', group: '3d', output: '3d', inputs: ['imageBase64', 'mesh'] },
+  meshupscale: {
+    label: 'Upscale Mesh',
+    group: '3d',
+    output: '3d',
+    inputs: ['imageBase64', 'mesh'],
+  },
+}
+
+export function apiCapabilities() {
+  return {
+    version: 1,
+    modes: MODES.map((mode) => {
+      const info = MODE_INFO[mode] || {}
+      return {
+        mode,
+        ...info,
+        aliases: info.aliases || [],
+        modelGroup: MODEL_MODE_ALIASES[mode] || mode,
+        promptRequired: !FLOW_MODES.includes(mode) && !PROMPT_OPTIONAL_MODES.has(mode),
+        wait: !FLOW_MODES.includes(mode),
+        settings: Object.keys(DEFAULT_SETTINGS[mode] || {}),
+        defaults: DEFAULT_SETTINGS[mode] || {},
+      }
+    }),
+    materialMaps: MATERIAL_MAP_KEYS,
+  }
 }
 
 // Preference order when the exact default file isn't on the server —
@@ -288,10 +435,18 @@ export function pickModel(list, want, prefs) {
 // (loud failure, like the app's assertModelsAvailable); defaults fall back
 // through MODEL_PREFS so a renamed file doesn't hard-fail the API.
 export function resolveModels(lists, mode, overrides = {}) {
-  const base = DEFAULT_MODELS[mode]
+  const canonical = MODE_ALIASES[mode] || mode
+  const modelMode = MODEL_MODE_ALIASES[canonical] || canonical
+  // Flipbooks need a genuine Wan text-to-video model: the generic video
+  // resolver can pick an i2v GGUF or MiniMax H3, neither of which the flipbook
+  // graph can run. Resolve the T2V family explicitly.
+  if (canonical === 'flipbook') {
+    return resolveWanVideoModels(lists, overrides, { requireT2V: true })
+  }
+  const base = DEFAULT_MODELS[modelMode]
   if (!base) throw new Error(`Unknown mode "${mode}"`)
-  const prefs = MODEL_PREFS[mode] || {}
-  const h3Video = mode === 'video' && isMiniMaxH3(overrides.unet || base.unet)
+  const prefs = MODEL_PREFS[modelMode] || {}
+  const h3Video = modelMode === 'video' && isMiniMaxH3(overrides.unet || base.unet)
   const out = {}
   for (const group of Object.keys(base)) {
     if (group === 'lora') {
@@ -313,14 +468,14 @@ export function resolveModels(lists, mode, overrides = {}) {
     // This must run BEFORE the override check: a config preset that selects
     // an ACE unet still carries the flat MiniMax clip/vae in its override
     // map, and those files won't exist on an ACE-only server.
-    if (AUDIO_MODES.has(mode) && group !== 'unet' && out.unet && isAceStepModel(out.unet)) {
+    if (AUDIO_MODES.has(modelMode) && group !== 'unet' && out.unet && isAceStepModel(out.unet)) {
       out[group] = base[group]
       continue
     }
     // Stable Audio 3: the checkpoint carries the audio VAE (no separate vae
     // file) — skip that group. The `clip` is the T5Gemma encoder and resolves
     // normally below.
-    if (AUDIO_MODES.has(mode) && group === 'vae' && out.unet && isStableAudioModel(out.unet)) {
+    if (AUDIO_MODES.has(modelMode) && group === 'vae' && out.unet && isStableAudioModel(out.unet)) {
       out.vae = ''
       continue
     }
@@ -330,7 +485,7 @@ export function resolveModels(lists, mode, overrides = {}) {
       // (UNETLoader). An explicit override selects the engine, so accept it
       // from either loader list — the ACE resolver below picks it up again.
       const groups =
-        AUDIO_MODES.has(mode) && group === 'unet'
+        AUDIO_MODES.has(modelMode) && group === 'unet'
           ? ['unet', 'checkpoint']
           : [group]
       const hit = groups
@@ -357,7 +512,7 @@ export function resolveModels(lists, mode, overrides = {}) {
     // which folder it sits in: for SFX, Stable Audio 3 (checkpoints) must
     // beat ACE (unet) even though ACE appears in the unet list.
     const arr =
-      AUDIO_MODES.has(mode) && group === 'unet'
+      AUDIO_MODES.has(modelMode) && group === 'unet'
         ? [
             ...(Array.isArray(lists?.unet) ? lists.unet : []),
             ...(Array.isArray(lists?.checkpoint) ? lists.checkpoint : []),
@@ -383,7 +538,7 @@ export function resolveModels(lists, mode, overrides = {}) {
   // Stable Audio 3 (SFX): attach the checkpoint + T5Gemma encoder the builder
   // needs. The `unet` field holds the checkpoint name; resolveStableAudioModels
   // maps it (and corrects the clip) against the server's file lists.
-  if (AUDIO_MODES.has(mode) && isStableAudioModel(out.unet)) {
+  if (AUDIO_MODES.has(modelMode) && isStableAudioModel(out.unet)) {
     const stable = resolveStableAudioModels(lists, { unet: out.unet, clip: out.clip })
     out.stable = stable
     out.clip = stable.clip
@@ -393,7 +548,7 @@ export function resolveModels(lists, mode, overrides = {}) {
   }
   // ACE-Step music: attach the resolved asset set (AIO checkpoint or split
   // encoders) the workflow builder needs; split also corrects clip/vae.
-  if (AUDIO_MODES.has(mode) && isAceStepModel(out.unet)) {
+  if (AUDIO_MODES.has(modelMode) && isAceStepModel(out.unet)) {
     const ace = resolveAceStepModels(lists, out)
     if (ace.kind === 'split') {
       out.clip = ace.clip2
@@ -404,7 +559,7 @@ export function resolveModels(lists, mode, overrides = {}) {
   }
   // MiniMax H3 video additionally needs the H3 audio VAE (AV latent decode).
   // Not a settings group — resolve it straight from the server's VAE list.
-  if (mode === 'video' && isMiniMaxH3(out.unet)) {
+  if (modelMode === 'video' && isMiniMaxH3(out.unet)) {
     const vaes = Array.isArray(lists?.vae) ? lists.vae : []
     const want = typeof overrides.vaeAudio === 'string' ? overrides.vaeAudio : ''
     const audio = want
@@ -427,7 +582,17 @@ export function resolveModels(lists, mode, overrides = {}) {
 export function pickModelOverrides(mode, bodyModels) {
   if (!bodyModels || typeof bodyModels !== 'object') return {}
   const nested = bodyModels[mode]
-  return nested && typeof nested === 'object' ? nested : bodyModels
+  if (nested && typeof nested === 'object') return nested
+  // A nested map for a different mode (e.g. { image: {...} } while generating
+  // a texture) is not a flat override set. Treating it as flat would silently
+  // put an object into `unet` and queue an invalid graph.
+  const modeKeys = new Set([
+    ...MODES,
+    ...Object.keys(MODEL_MODE_ALIASES),
+    ...Object.keys(MODE_ALIASES),
+  ])
+  if (Object.keys(bodyModels).some((key) => modeKeys.has(key))) return {}
+  return bodyModels
 }
 
 // ---------------------------------------------------------------------------
@@ -440,7 +605,16 @@ export function pickModelOverrides(mode, bodyModels) {
 // Request-body `models` / `settings` still win — config is the baseline.
 // ---------------------------------------------------------------------------
 
-const CONFIG_MODES = new Set(['image', 'edit', 'video', 'music', 'sfx'])
+const CONFIG_MODES = new Set([
+  'image',
+  'edit',
+  'video',
+  'music',
+  'sfx',
+  'texture',
+  'flipbook',
+  'material',
+])
 const CONFIG_MODEL_GROUPS = new Set(['unet', 'clip', 'clip1', 'clip2', 'vae', 'vaeAudio', 'lora'])
 // Flat per-mode generation settings (steps, cfg, duration, quality…). The
 // model-ish keys are excluded: unet/clip/vae live under models, and upscale
@@ -451,6 +625,19 @@ const CONFIG_SETTING_KEYS = {
   video: new Set(['resolution', 'frames', 'fps', 'seed', 'steps', 'cfg']),
   music: new Set(['duration', 'seed', 'steps', 'cfgScale', 'quality']),
   sfx: new Set(['duration', 'seed', 'quality']),
+  texture: new Set([
+    'kind',
+    'seamless',
+    'grid',
+    'size',
+    'seed',
+    'steps',
+    'cfg',
+    'batchCount',
+    'transparent',
+  ]),
+  flipbook: new Set(['frames', 'fps', 'resolution', 'transparent', 'seed', 'steps', 'cfg']),
+  material: new Set(['size', 'tiling', 'steps', 'cfg', 'seed', 'metallic', 'roughness']),
 }
 
 function sanitizeConfigModels(raw) {
@@ -561,9 +748,10 @@ export async function loadRuntimeConfig(configPath, { ttlMs = 3000 } = {}) {
 // the preset's unet/clip/vae/lora win over the flat models[mode] group.
 // Only model-group keys are returned (name/engine/UI metadata is dropped).
 export function configModelOverrides(config, mode) {
-  const flat = config?.models?.[mode]
-  const presets = config?.presets?.[mode]
-  const idx = config?.active?.[mode]
+  const modelMode = MODEL_MODE_ALIASES[mode] || mode
+  const flat = config?.models?.[modelMode]
+  const presets = config?.presets?.[modelMode]
+  const idx = config?.active?.[modelMode]
   const preset = idx === null || idx === undefined ? null : presets?.[idx]
   const src = preset ? { ...(flat || {}), ...preset } : flat
   if (!src || typeof src !== 'object') return {}
@@ -701,6 +889,50 @@ export function workflowFor(mode, { prompt, negativePrompt = '', lyrics = '', se
       sfx: true,
       models,
     })
+  }
+  if (mode === 'texture') {
+    return buildTextureWorkflow({
+      prompt,
+      negativePrompt,
+      kind: s.kind,
+      seamless: s.seamless !== false,
+      grid: s.grid,
+      size: s.size,
+      seed: s.seed,
+      steps: s.steps,
+      cfg: s.cfg,
+      batchSize: s.batchCount || 1,
+      transparent: s.transparent !== false,
+      models,
+    })
+  }
+  if (mode === 'flipbook') {
+    return buildFlipbookWorkflow({
+      prompt,
+      negativePrompt,
+      frames: s.frames,
+      resolution: s.resolution,
+      seed: s.seed,
+      steps: s.steps,
+      cfg: s.cfg,
+      transparent: s.transparent !== false,
+      models,
+    })
+  }
+  if (mode === 'material') {
+    return buildMaterialWorkflow({
+      prompt,
+      negativePrompt,
+      size: s.size,
+      maps: s.maps,
+      tiling: s.tiling,
+      steps: s.steps,
+      cfg: s.cfg,
+      seed: s.seed,
+      metallic: s.metallic,
+      roughness: s.roughness,
+      models,
+    }).workflow
   }
   if (mode === 'split') {
     return buildAutoSplitWorkflow({

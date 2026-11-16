@@ -27,13 +27,14 @@ const EMPTY_THREE_D_LISTS = {
   ultrashapeCkpts: [],
 }
 
-const draftFor = (state, mode) => ({
-  unet: '',
-  clip: '',
-  vae: '',
-  lora: '',
-  ...(state.presets?.[mode]?.[state.active?.[mode]] || state.models?.[mode] || {}),
-})
+const draftFor = (state, mode) => {
+  const src = state.presets?.[mode]?.[state.active?.[mode]] || state.models?.[mode] || {}
+  // `name` belongs to the preset row, not the editable model fields. Keeping
+  // it in the draft made “Add Preset” reuse the old name and Save undo a
+  // rename made with the pencil button.
+  const { name, ...fields } = src
+  return { unet: '', clip: '', vae: '', lora: '', ...fields }
+}
 
 // Owns every editable copy shown by the settings modal: the modal never writes
 // to the store until Save, so a half-finished edit (or a failed push to
@@ -78,6 +79,7 @@ export default function useSettingsModal() {
   const [tab, setTab] = useState('server')
   const [localUrl, setLocalUrl] = useState(serverUrl)
   const [localModels, setLocalModels] = useState(() => JSON.parse(JSON.stringify(models)))
+  const [imageDraft, setImageDraft] = useState(() => draftFor(useStore.getState(), 'image'))
   const [editDraft, setEditDraft] = useState(() => draftFor(useStore.getState(), 'music'))
   const [videoDraft, setVideoDraft] = useState(() => draftFor(useStore.getState(), 'video'))
   const [sfxDraft, setSfxDraft] = useState(() => draftFor(useStore.getState(), 'sfx'))
@@ -291,11 +293,12 @@ export default function useSettingsModal() {
   // fields never show a different preset's files than the ticked row.
   useEffect(() => {
     const st = useStore.getState()
+    setImageDraft(draftFor(st, 'image'))
     setEditDraft(draftFor(st, 'music'))
     setVideoDraft(draftFor(st, 'video'))
     setSfxDraft(draftFor(st, 'sfx'))
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active?.music, active?.video, active?.sfx, presets])
+  }, [active?.image, active?.music, active?.video, active?.sfx, presets])
 
   // Esc closes the modal (same as the X button in the header).
   useEffect(() => {
@@ -355,7 +358,7 @@ export default function useSettingsModal() {
       }
     }
     setServerUrl(localUrl)
-    setModels('image', localModels.image)
+    setModels('image', { ...(localModels.image || {}), ...imageDraft })
     if (localModels.pixel) setModels('pixel', localModels.pixel)
     // Video/music/SFX fields edit their own drafts (not localModels), so
     // merge the drafts into the flat group too. Without this a model picked
@@ -368,6 +371,9 @@ export default function useSettingsModal() {
     if (localModels.character) setModels('character', localModels.character)
     // Write the edited model files back into the selected preset so the picker
     // and generation both see the change.
+    if (active?.image != null && presets?.image?.[active.image]) {
+      updatePreset('image', active.image, { ...imageDraft })
+    }
     if (active?.music != null && presets?.music?.[active.music]) {
       updatePreset('music', active.music, { ...editDraft })
     }
@@ -424,6 +430,8 @@ export default function useSettingsModal() {
     listsError,
     localModels,
     setLocalModels,
+    imageDraft,
+    setImageDraft,
     editDraft,
     setEditDraft,
     videoDraft,

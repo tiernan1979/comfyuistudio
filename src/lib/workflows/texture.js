@@ -5,8 +5,54 @@
 import { buildImageWorkflow } from './image.js'
 
 export const TEXTURE_NEGATIVE =
-  'blurry, photo of a room, perspective, horizon, vignette, border, frame, text, watermark, ' +
-  'signature, uneven lighting, tiling seams'
+  'blurry, photo of a room, perspective, horizon, vignette, gradient lighting, spotlight, ' +
+  'lighter border, darker center, outer border, frame, margin, uneven lighting, text, watermark, ' +
+  'signature'
+
+// A user prompt like "dirt block tile sheet, 4 variants" fights the seamless
+// texture graph: the image model draws a framed sheet/display board instead of
+// one continuous surface. Scrub that boilerplate for the single-texture mode
+// (sheet words are meaningful for tileset/terrain/icon and stay there).
+const PROMPT_BOILERPLATE = [
+  /^(?:a\s+)?(?:seamless\s+)?(?:tileable\s+)?(?:game\s+)?(?:texture|material)\s+of\s+/i,
+  /\b(?:seamless|tileable|tiling)\b/gi,
+  /\b(?:top[-\s]?down|orthographic)\b/gi,
+  /\b(?:edge[-\s]?to[-\s]?edge|full[-\s]?frame)\b/gi,
+  /\bno (?:perspective|border|borders|frame|shadow|shadows|scene)\b/gi,
+  /\bflat even lighting\b/gi,
+  /\bhigh detail\b/gi,
+  /\bgame[-\s]?ready (?:material|texture|asset)\b/gi,
+]
+
+const SHEET_WORDS =
+  /\b(?:tile[-\s]?sheet|tileset|sprite[-\s]?sheet|contact[-\s]?sheet|sheet|variants?|grid|cells?|multiple (?:tiles|variants)|\d+\s*(?:variants?|tiles?|cells?))\b/gi
+
+function cleanPrompt(text, kind) {
+  let out = String(text || '').trim()
+  for (const re of PROMPT_BOILERPLATE) out = out.replace(re, ' ')
+  if (kind === 'texture') out = out.replace(SHEET_WORDS, ' ')
+  return out
+    .replace(/\s*,\s*(?=,|$)/g, '')
+    .replace(/\s+([,;])/g, '$1')
+    .replace(/^[\s,;]+|[\s,;]+$/g, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim()
+}
+
+// The single-texture graph is the only one that must not show a frame or a
+// lighting gradient; sheets/intentional cells need different negatives.
+export function textureNegative(kind = 'texture') {
+  if (kind === 'icon') {
+    return `${TEXTURE_NEGATIVE}, drop shadow, bevel, labels, mixed art styles, closed frame`
+  }
+  if (kind === 'tileset' || kind === 'terrain') {
+    return `${TEXTURE_NEGATIVE}, grid lines, labels, mixed art styles, different scales, outer board`
+  }
+  return (
+    `${TEXTURE_NEGATIVE}, tile sheet, grid, cells, variants, display board, contact sheet, ` +
+    'multiple panels, centered object, tiling seams'
+  )
+}
 
 const clampSide = (n) => Math.max(512, Math.min(1024, Math.round((Number(n) || 1024) / 64) * 64))
 const clampGrid = (n) => Math.max(2, Math.min(4, Math.round(n) || 2))
@@ -15,14 +61,15 @@ const clampGrid = (n) => Math.max(2, Math.min(4, Math.round(n) || 2))
 // 1/N of the image. The icon variant deliberately uses a flat background so
 // BiRefNet can produce a clean alpha channel.
 export function textureAssetPrompt(text, { kind = 'texture', seamless = true, grid = 2 } = {}) {
-  const base = String(text || '').trim()
-  if (!base) return ''
+  const raw = String(text || '').trim()
+  if (!raw) return ''
+  const base = cleanPrompt(raw, kind) || raw
   const cells = clampGrid(grid)
   if (kind === 'tileset') {
     return (
       `game tileset sheet of ${base}, top-down orthographic view, exactly ${cells}x${cells} equal ` +
-      'square tiles, each tile fills its cell edge to edge, no gaps, no borders, no labels, ' +
-      'flat even lighting, consistent scale, seamless game art'
+      'square tiles, each tile fills its cell edge to edge, no gaps, no outer border, no margin, ' +
+      'no labels, flat even lighting, uniform brightness, consistent scale, seamless game art'
     )
   }
   if (kind === 'icon') {
@@ -36,14 +83,16 @@ export function textureAssetPrompt(text, { kind = 'texture', seamless = true, gr
     return (
       `game terrain autotile sheet of ${base}, top-down orthographic view, exactly ${cells}x${cells} ` +
       'equal tiles showing edge and corner transitions between the main terrain and its neighbour, ' +
-      'each tile fills its cell edge to edge, seamless tile edges, no gaps, no borders, no labels, ' +
-      'flat even lighting, consistent scale'
+      'each tile fills its cell edge to edge, seamless tile edges, no gaps, no outer border, no margin, ' +
+      'no labels, flat even lighting, uniform brightness, consistent scale'
     )
   }
   const tiling = seamless ? 'seamless tileable game texture of ' : 'game texture of '
   return (
-    `${tiling}${base}, top-down orthographic, edge-to-edge pattern, ` +
-    'no perspective, no border, flat even lighting, high detail, game-ready material'
+    `${tiling}${base}, one continuous material filling the entire square from edge to edge, ` +
+    'no tile sheet, no grid, no cells, no variants, no centered object, no board, no frame, ' +
+    'no border, no vignette, uniform brightness and density corner to corner, flat even lighting, ' +
+    'top-down orthographic, high detail, game-ready material'
   )
 }
 
@@ -71,7 +120,7 @@ export function buildTextureWorkflow({
   const side = clampSide(size)
   const workflow = buildImageWorkflow({
     prompt: textureAssetPrompt(prompt, { kind, seamless, grid }),
-    negativePrompt: negativePrompt?.trim() || TEXTURE_NEGATIVE,
+    negativePrompt: negativePrompt?.trim() || textureNegative(kind),
     width: side,
     height: side,
     seed,

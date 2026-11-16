@@ -24,7 +24,7 @@ import {
 } from '../lib/comfyui'
 import { buildImageWorkflow, snap8 } from '../lib/workflows'
 import { PARTS_SLOTS, PARTS_NEG, PART_DIRECTIONS, buildPartPrompt, partDirectionPhrase } from '../lib/parts'
-import { rewritePrompt, resolveLlmConfig, pickDefaultModel, PROVIDERS } from '../lib/llm'
+import { rewritePrompt, resolveLlmConfig, pickDefaultModel, PROVIDERS, sanitizeRewrite } from '../lib/llm'
 
 const viewUrl = (base, filename, subfolder) =>
   `${base}/view?filename=${encodeURIComponent(filename)}&subfolder=${encodeURIComponent(
@@ -105,12 +105,15 @@ export default function PartsPanel() {
         `View: ${partDirectionPhrase(direction)}\n` +
         `Output size: ${snap8(settings.width)}x${snap8(settings.height)} px (cut out on white)\n` +
         (settings.base ? `Current description: ${settings.base}` : 'No description yet — invent a fitting one.')
-      const out = await rewritePrompt(cfg, {
+      let out = await rewritePrompt(cfg, {
         text: settings.base || `a ${slot.label.toLowerCase()} for a game character`,
         styleLabel: 'stylized clay game asset',
         mode: 'parts',
         context,
       })
+      // Keep the asset description free of scene/photo/camera language even
+      // when a small local model ignores the system prompt.
+      out = sanitizeRewrite('parts', out, settings.base || '')
       setSettings({ base: out.prompt, negative: out.negative || settings.negative })
     } catch (err) {
       setError(`AI failed: ${err.message}`)

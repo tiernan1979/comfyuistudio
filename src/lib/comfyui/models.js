@@ -194,8 +194,64 @@ function configuredAsset(list, name, matches) {
   return name && list.includes(name) && test(name) ? name : ''
 }
 
-export function resolveH3VideoModels(lists, selected = {}) {
+// Resolve the Wan text-to-video stack against the server's file lists. Saved
+// presets can carry the Comfy-Org VAE name (`wan_2.1_vae.safetensors`) while
+// the server has comfyanonymous' `Wan2.1_VAE.safetensors` (or vice versa);
+// an exact-name preflight would reject a perfectly runnable stack. A
+// configured file is kept only when it exists and matches the family,
+// otherwise the first matching family file is used.
+const WAN_CLIP_RE = /umt5/i
+const WAN_VAE_RE = /wan.*vae/i
+const WAN_UNET_RE = /wan.*(?:t2v|ti2v|i2v)|wan2\./i
+
+export function resolveWanVideoModels(lists, selected = {}, { requireT2V = false } = {}) {
+  const unets = Array.isArray(lists?.unet) ? lists.unet : []
   const clips = Array.isArray(lists?.clip) ? lists.clip : []
+  const vaes = Array.isArray(lists?.vae) ? lists.vae : []
+  const wanted = String(selected.unet || '')
+  // The flipbook graph loads its model through UNETLoader and needs a real
+  // text-to-video checkpoint. GGUF experts and MiniMax H3 are different
+  // pipelines; an i2v model needs a source image the flipbook does not have.
+  const usable = unets.filter((m) => !/\.gguf$/i.test(m) && !/minimax|hailuo|h3/i.test(m))
+  const candidates = requireT2V
+    ? usable.filter((m) => /wan.*(?:t2v|ti2v)/i.test(m))
+    : usable
+
+  const unet =
+    (wanted && candidates.includes(wanted) ? wanted : '') ||
+    candidates.find((m) => WAN_UNET_RE.test(m)) ||
+    candidates[0] ||
+    ''
+  const clip =
+    (selected.clip && clips.includes(selected.clip) && WAN_CLIP_RE.test(selected.clip)
+      ? selected.clip
+      : '') || clips.find((m) => WAN_CLIP_RE.test(m)) || ''
+  const vae =
+    (selected.vae && vaes.includes(selected.vae) && WAN_VAE_RE.test(selected.vae)
+      ? selected.vae
+      : '') || vaes.find((m) => WAN_VAE_RE.test(m)) || ''
+
+  const missing = []
+  if (!unet) {
+    missing.push(
+      requireT2V
+        ? 'a Wan text-to-video diffusion model (wan2.1_t2v_1.3B_bf16.safetensors)'
+        : 'a Wan diffusion model (wan2.1_t2v_1.3B_bf16.safetensors)',
+    )
+  }
+  if (!clip) missing.push('the umt5 text encoder (umt5_xxl_fp8_e4m3fn_scaled.safetensors)')
+  if (!vae) missing.push('a Wan VAE (Wan2.1_VAE.safetensors)')
+  if (missing.length) {
+    throw new Error(
+      `Wan video needs ${missing.join(', ')} on the ComfyUI server. ` +
+        `Have — diffusion models: ${unets.join(', ') || 'none'}; ` +
+        `text encoders: ${clips.join(', ') || 'none'}; VAEs: ${vaes.join(', ') || 'none'}.`
+    )
+  }
+  return { ...selected, unet, clip, vae }
+}
+
+export function resolveH3VideoModels(lists, selected = {}) {  const clips = Array.isArray(lists?.clip) ? lists.clip : []
   const vaes = Array.isArray(lists?.vae) ? lists.vae : []
   const clip =
     configuredAsset(clips, selected.clip, H3_CLIP_RE) ||

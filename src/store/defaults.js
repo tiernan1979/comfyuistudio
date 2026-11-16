@@ -30,7 +30,7 @@ export const DEFAULT_MODELS = {
   video: {
     unet: 'wan2.1_t2v_1.3B_bf16.safetensors',
     clip: 'umt5_xxl_fp8_e4m3fn_scaled.safetensors',
-    vae: 'wan_2.1_vae.safetensors',
+    vae: 'Wan2.1_VAE.safetensors',
     lora: '', // optional H3 turbo LoRA (Settings → Models → Video)
   },
   edit: {
@@ -128,6 +128,7 @@ export const DEFAULT_TEXTURE_SETTINGS = {
   cfg: 4,
   batchCount: 1,
   transparent: true, // icon sheets: cut the background with BiRefNet
+  fixSeams: true, // crop the border + clone a clean band over the centre seam
 }
 
 // VFX flipbooks: WAN renders a short effect loop; the server saves transparent
@@ -195,12 +196,32 @@ export const DEFAULT_PARTS_SETTINGS = {
 // flat group; `active` picks which one generation uses (null = the flat
 // group, i.e. the old single-model behaviour).
 export const DEFAULT_PRESETS = {
+  // Image presets stay inside the Qwen-Image family: the image builder loads
+  // CLIPLoader type 'qwen_image', so an SDXL/Flux checkpoint needs a different
+  // graph rather than just different filenames. The 2.1 entries are the
+  // documented low-VRAM alternative (README → Image generation).
+  image: [
+    {
+      name: 'Qwen-Image',
+      unet: DEFAULT_MODELS.image.unet,
+      clip: DEFAULT_MODELS.image.clip,
+      vae: DEFAULT_MODELS.image.vae,
+      lora: '',
+    },
+    {
+      name: 'Qwen-Image 2.1 (low VRAM)',
+      unet: 'qwen_image_2.1_int8_convrot.safetensors',
+      clip: 'qwen3vl_8b_w4a8.safetensors',
+      vae: 'qwen_image_2.1_vae_bf16.safetensors',
+      lora: '',
+    },
+  ],
   video: [
     {
       name: 'Wan 2.1 t2v 1.3B',
       unet: 'wan2.1_t2v_1.3B_bf16.safetensors',
       clip: 'umt5_xxl_fp8_e4m3fn_scaled.safetensors',
-      vae: 'wan_2.1_vae.safetensors',
+      vae: 'Wan2.1_VAE.safetensors',
       lora: '',
     },
   ],
@@ -233,7 +254,7 @@ export const DEFAULT_PRESETS = {
   ],
 }
 
-export const DEFAULT_ACTIVE = { video: 0, music: 0, sfx: 0 }
+export const DEFAULT_ACTIVE = { image: 0, video: 0, music: 0, sfx: 0 }
 
 // Per-tab prompt memory. Every mode shares the same key set so switching
 // tabs never loses text; new game-asset modes start empty.

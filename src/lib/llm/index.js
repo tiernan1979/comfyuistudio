@@ -4,6 +4,7 @@
 // arrangement (lyric-map repair) · request (HTTP transport).
 export { PROVIDERS, MODEL_SUGGESTIONS, LLM_ENDPOINT_FALLBACKS, pickDefaultModel, resolveLlmConfig, fetchLlmModels, fetchLlmLoaded, classifyLlmModels } from './config.js'
 export { buildRewriteSystem } from './prompts.js'
+export { sanitizeRewrite } from './guard.js'
 export { parseRewrite, parseLyricSections, parseVocalShare } from './parse.js'
 export {
   PLANNER_SECONDS_PER_SECTION,

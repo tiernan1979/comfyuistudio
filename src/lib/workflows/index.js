@@ -2,7 +2,7 @@
 // this file; workflows.js re-exports them so existing imports keep working.
 export { snap8, ASPECT_RATIOS, VIDEO_RESOLUTIONS } from './common.js'
 export { buildImageWorkflow, buildEditWorkflow } from './image.js'
-export { TEXTURE_NEGATIVE, textureAssetPrompt, buildTextureWorkflow } from './texture.js'
+export { TEXTURE_NEGATIVE, textureNegative, textureAssetPrompt, buildTextureWorkflow } from './texture.js'
 export { FLIPBOOK_FRAMES, FLIPBOOK_NEGATIVE, flipbookPrompt, buildFlipbookWorkflow } from './flipbook.js'
 export {
   MATERIAL_MAP_KEYS,
@@ -51,6 +51,16 @@ export {
   buildAceStepWorkflow,
 } from './acestep.js'
 export { STABLE_AUDIO_MAX_SECONDS, buildStableAudioWorkflow } from './stable-audio.js'
+export {
+  GAME_EXPORT_PRESETS,
+  GAME_EXPORT_FORMATS,
+  GAME_EXPORT_LODS,
+  GAME_EXPORT_NODES,
+  gameExportPreset,
+  lodFaceCounts,
+  collisionFaceCount,
+  buildGameExportWorkflow,
+} from './gameExport.js'
 export {
   H3_VIDEO_RE,
   H3_MAX_SEGMENTS,

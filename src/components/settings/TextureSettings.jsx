@@ -1,4 +1,6 @@
 import useStore from '../../store/useStore'
+import { Image as ImageIcon } from 'lucide-react'
+import PresetPicker from './PresetPicker'
 import { ChoiceGrid, Field, Hint, Slider, Toggle } from './controls'
 
 const SIZES = [512, 768, 1024]
@@ -14,11 +16,28 @@ export default function TextureSettings() {
   const settings = useStore((s) => s.textureSettings)
   const set = useStore((s) => s.setTextureSettings)
   const generating = useStore((s) => s.generating)
+  const prompt = useStore((s) => s.prompt)
+  const presets = useStore((s) => s.presets?.image || [])
+  const active = useStore((s) => s.active?.image)
+  const setActivePreset = useStore((s) => s.setActivePreset)
   const seedMax = 2 ** 48
   const isSheet = settings.kind !== 'texture'
+  const sheetIntent =
+    settings.kind === 'texture' &&
+    /\b(tile\s*sheet|tileset|sprite\s*sheet|contact\s*sheet|variants?|multiple tiles)\b/i.test(prompt)
 
   return (
     <div className="space-y-4">
+      <PresetPicker
+        label="Image model"
+        presets={presets}
+        active={active}
+        onSelect={(i) => setActivePreset('image', i)}
+        disabled={generating}
+        icon={ImageIcon}
+        hint="Textures use the shared image stack; edit presets in Settings → Models."
+      />
+
       <Field label="Asset type">
         <ChoiceGrid
           options={KINDS}
@@ -34,8 +53,14 @@ export default function TextureSettings() {
               ? 'A grid of icons on a flat background; transparency cuts the background locally.'
               : settings.kind === 'terrain'
                 ? 'A grid of edge/corner transition tiles for autotiling.'
-                : 'One edge-to-edge material; the viewer previews it repeated 2×2 / 3×3.'}
+                : 'One continuous material. Use “Tileset sheet” when you want several variants.'}
         </Hint>
+        {sheetIntent && (
+          <p className="mt-1 text-[10px] leading-snug text-amber-400/90">
+            Your prompt mentions a sheet or variants. Switch Asset type to “Tileset sheet” for
+            multiple tiles — Seamless texture renders one surface and strips sheet wording.
+          </p>
+        )}
       </Field>
 
       {isSheet ? (
@@ -50,13 +75,22 @@ export default function TextureSettings() {
           />
         </Field>
       ) : (
-        <Toggle
-          label="Seamless prompt"
-          value={settings.seamless}
-          onChange={(seamless) => set({ seamless })}
-          disabled={generating}
-          hint="Adds explicit tileable wording. Off is useful for decals and one-off surfaces."
-        />
+        <>
+          <Toggle
+            label="Seamless prompt"
+            value={settings.seamless}
+            onChange={(seamless) => set({ seamless })}
+            disabled={generating}
+            hint="Adds explicit tileable wording. Off is useful for decals and one-off surfaces."
+          />
+          <Toggle
+            label="Auto-fix seams"
+            value={settings.fixSeams !== false}
+            onChange={(fixSeams) => set({ fixSeams })}
+            disabled={generating}
+            hint="Crops the outer border, offsets the image, and clones a clean band over the centre seam so a 2×2 repeat lines up."
+          />
+        </>
       )}
 
       {settings.kind === 'icon' && (

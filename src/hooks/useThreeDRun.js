@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { getViewUrl, downloadFileAs, saveBlobAs } from '../lib/comfyui'
 import {
   runGenerateMesh,
+  runGameExport,
   runRigMesh,
   runRigImported,
   runRigServerFile,
@@ -40,6 +41,7 @@ export default function useThreeDRun({
   const [serverMesh, setServerMesh] = useState('')
   const [usBusy, setUsBusy] = useState(false)
   const [paintBusy, setPaintBusy] = useState(false)
+  const [exportBusy, setExportBusy] = useState(false)
   const mvRef = useRef(null)
   const [preview, setPreview] = useState(null) // { url, name }
   const createdUrlRef = useRef(null)
@@ -407,6 +409,31 @@ export default function useThreeDRun({
     if (rigged) await record3dHistory(rigged, `Rigged model${srcLabel}`)
   })
 
+  // Game-ready export: clean + decimate the current mesh into LODs and an
+  // optional collision proxy. Runs on the MeshTools nodes, so the source is
+  // uploaded to input/3d first; results stay in run.exports for download.
+  const handleGameExport = guard({ exports: [] })(async () => {
+    const localFile = idle.idleMesh?.file || importedMesh?.file
+    const glbResult = (run.results || []).find(isGlb)
+    const entry = run.mesh || glbResult
+    if (!localFile && !entry) throw new Error('Generate or import a mesh first.')
+    setExportBusy(true)
+    try {
+      const files = await runGameExport(
+        base,
+        {
+          meshFile: localFile,
+          meshEntry: localFile ? undefined : entry,
+          cfg: threeD,
+        },
+        (s) => setRun({ status: s }),
+      )
+      setRun({ stage: 'done', status: '', error: null, exports: files })
+    } finally {
+      setExportBusy(false)
+    }
+  })
+
   const download = async (r) => {
     try {
       if (r.blob) {
@@ -444,6 +471,7 @@ export default function useThreeDRun({
     setServerMesh,
     usBusy,
     paintBusy,
+    exportBusy,
     preview,
     mvRef,
     ...animations,
@@ -453,6 +481,7 @@ export default function useThreeDRun({
     handleRig,
     handlePaint,
     handleMeshUpscale,
+    handleGameExport,
     download,
     downloadMesh,
   }
