@@ -4,7 +4,7 @@
 // This is intentionally module-local: it is runtime state, not a persisted
 // user setting.
 
-const IMAGE_MODES = new Set(['image', 'edit', 'parts', 'sprite', 'texture', 'material'])
+const IMAGE_MODES = new Set(['image', 'h3image', 'edit', 'parts', 'sprite', 'texture', 'material'])
 const VIDEO_MODES = new Set(['video', 'flipbook'])
 
 const LABELS = {

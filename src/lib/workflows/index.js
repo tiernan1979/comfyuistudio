@@ -2,6 +2,14 @@
 // this file; workflows.js re-exports them so existing imports keep working.
 export { snap8, ASPECT_RATIOS, VIDEO_RESOLUTIONS } from './common.js'
 export { buildImageWorkflow, buildEditWorkflow } from './image.js'
+export {
+  H3_IMAGE_NODES,
+  H3_IMAGE_SIZES,
+  isH3ImageModel,
+  isH3ImageClip,
+  isH3ImageVae,
+  buildH3ImageWorkflow,
+} from './h3image.js'
 export { TEXTURE_NEGATIVE, textureNegative, textureAssetPrompt, buildTextureWorkflow } from './texture.js'
 export { FLIPBOOK_FRAMES, FLIPBOOK_NEGATIVE, flipbookPrompt, buildFlipbookWorkflow } from './flipbook.js'
 export {

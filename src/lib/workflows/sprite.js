@@ -271,6 +271,7 @@ export function buildSpriteWorkflow({
   cfg = 4,
   editSteps = 20,
   editCfg = 2.5,
+  negativePrompt = '',
   models = {},
 }) {
   const actualSeed = seed === -1 ? Math.floor(Math.random() * 2 ** 48) : seed
@@ -305,7 +306,9 @@ export function buildSpriteWorkflow({
   const baseNeg =
     'multiple characters, duplicate, cropped, out of frame, extra limbs, extra arms, ' +
     'text, watermark, signature, busy background, scenery'
-  const negativeFor = (expr) => `${baseNeg}, ${expressionNegative(expr)}`
+  const extraNeg = String(negativePrompt || '').trim()
+  const negativeFor = (expr) =>
+    [baseNeg, expressionNegative(expr), extraNeg].filter(Boolean).join(', ')
 
   const wf = {
     // Loaders (shared)

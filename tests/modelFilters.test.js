@@ -12,6 +12,7 @@ const unets = [
   'acestep_v1.5_xl_turbo_bf16.safetensors',
   'minimax_h3_fl2va_pruned_int4_convrot.safetensors',
   'minimax_h3_fl2va_pruned_int8_convrot.safetensors',
+  'minimax_h3_image_pruned_w4a8.safetensors',
   'minimax_music3_dit_int8_convrot.safetensors',
   'pixal3d_int8_convrot.safetensors',
   'qwen_image_2.1_int8_convrot.safetensors',
@@ -22,6 +23,7 @@ const unets = [
 
 const clips = [
   'minimax_music3_text_encoder_pruned_int8_convrot.safetensors',
+  'qwen3.5_9b_w4a8_gptq.safetensors',
   'qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors',
   'qwen3vl_8b_w4a8.safetensors',
   'qwen_0.6b_ace15.safetensors',
@@ -34,6 +36,7 @@ const vaes = [
   'Wan2.1_VAE.safetensors',
   'ace_1.5_vae.safetensors',
   'minimax_h3_audio_vae_fp32.safetensors',
+  'minimax_h3_image_vae_fp16.safetensors',
   'minimax_h3_video_vae_fp16.safetensors',
   'minimax_music3_dav.safetensors',
   'qwen_image_2.1_vae_bf16.safetensors',
@@ -64,10 +67,20 @@ const ggufs = [
 
 const pick = (section, slot, list) => filterModelOptions(section, slot, list)
 
-test('image filters keep Qwen-Image files and hide other pipelines', () => {
-  assert.deepEqual(pick('image', 'unet', unets), ['qwen_image_2.1_int8_convrot.safetensors'])
-  assert.deepEqual(pick('image', 'clip', clips), ['qwen3vl_8b_w4a8.safetensors'])
-  assert.deepEqual(pick('image', 'vae', vaes), ['qwen_image_2.1_vae_bf16.safetensors'])
+test('image filters keep both Qwen-Image and MiniMax H3 Image stacks', () => {
+  assert.deepEqual(pick('image', 'unet', unets), [
+    'minimax_h3_image_pruned_w4a8.safetensors',
+    'qwen_image_2.1_int8_convrot.safetensors',
+  ])
+  assert.deepEqual(pick('image', 'clip', clips), [
+    'qwen3.5_9b_w4a8_gptq.safetensors',
+    'qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors',
+    'qwen3vl_8b_w4a8.safetensors',
+  ])
+  assert.deepEqual(pick('image', 'vae', vaes), [
+    'minimax_h3_image_vae_fp16.safetensors',
+    'qwen_image_2.1_vae_bf16.safetensors',
+  ])
   assert.deepEqual(pick('image', 'lora', loras), [])
 })
 
@@ -82,6 +95,18 @@ test('edit accepts Qwen-Image and Qwen-Image-Edit but not other engines', () => 
   assert.deepEqual(pick('edit', 'unet', unets), [
     'qwen_image_2.1_int8_convrot.safetensors',
     'qwen_image_edit_fp8_e4m3fn.safetensors',
+  ])
+})
+
+test('MiniMax H3 Image only lists its own stack', () => {
+  assert.deepEqual(pick('h3image', 'unet', unets), [
+    'minimax_h3_image_pruned_w4a8.safetensors',
+  ])
+  assert.deepEqual(pick('h3image', 'clip', clips), [
+    'qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors',
+  ])
+  assert.deepEqual(pick('h3image', 'vae', vaes), [
+    'minimax_h3_image_vae_fp16.safetensors',
   ])
 })
 

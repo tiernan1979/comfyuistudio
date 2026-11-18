@@ -22,6 +22,7 @@ import {
 import {
   buildEditWorkflow,
   buildFlipbookWorkflow,
+  buildH3ImageWorkflow,
   buildImageWorkflow,
   buildMaterialWorkflow,
   buildMusicWorkflow,
@@ -32,6 +33,11 @@ import {
   isAceStepModel,
   isMiniMaxH3,
   isStableAudioModel,
+  isH3ImageModel,
+  isH3ImageClip,
+  isH3ImageVae,
+  ASPECT_RATIOS,
+  H3_IMAGE_NODES,
   MATERIAL_NODES,
 } from '../../lib/workflows'
 import {
@@ -46,6 +52,7 @@ import {
   VIDEO_SHEET_MAX_CELLS,
 } from '../../lib/character'
 import useStore, { resolveActiveModels, resolvePresetModels } from '../../store/useStore'
+import { DEFAULT_MODELS } from '../../store/defaults.js'
 import { applyCustomWorkflow } from '../../lib/customWorkflow'
 import { DEFAULT_STYLE, enhancePrompt, STYLES } from '../../lib/enhance'
 
@@ -73,6 +80,19 @@ async function resolveEditModels(base, state) {  let models = state.models
   return models
 }
 
+// Image presets can select either Qwen-Image or MiniMax H3 Image. Textures,
+// PBR, Sprites and Image Edit still build Qwen graphs, so an H3 selection needs
+// a Qwen fallback there. Prefer the first non-H3 image preset, then the flat
+// group, then the shipped Qwen default.
+function resolveQwenImageModels(state) {
+  const flat = state.models?.image || {}
+  const preset = (state.presets?.image || []).find(
+    (p) => p?.unet && !isH3ImageModel(p.unet)
+  )
+  const candidate = preset ? { ...flat, ...preset } : { ...flat }
+  return isH3ImageModel(candidate.unet) ? { ...DEFAULT_MODELS.image } : candidate
+}
+
 function buildMusicModels(state, active) {
   return {
     unet: 'minimax_music3_dit_int8_convrot.safetensors',
@@ -98,8 +118,27 @@ export async function prepareRun(base, state) {
   let models = state.models
   // The image stack also feeds Image Edit, Sprites and the local game-asset
   // modes, so resolve the active image preset once instead of reading the
-  // flat group (which can hold a stale default).
+  // flat group (which can hold a stale default). H3 image presets are only
+  // valid for Image mode; the Qwen-dependent modes below use the fallback.
   const imageModels = resolveActiveModels(state, 'image')
+  const imageIsH3 = isH3ImageModel(imageModels.unet)
+  const stillImageModels = imageIsH3 ? resolveQwenImageModels(state) : imageModels
+  const h3ImageFallback = resolveActiveModels(state, 'h3image')
+  // A hand-built image preset may pair the H3 UNET with Qwen's encoder/VAE
+  // (the dropdowns used to hide H3). Correct the stack at run time so the
+  // selected H3 UNET actually works without editing the preset first.
+  const imageEngineModels = imageIsH3
+    ? {
+        unet: imageModels.unet,
+        clip: isH3ImageClip(imageModels.clip) ? imageModels.clip : h3ImageFallback.clip,
+        vae: isH3ImageVae(imageModels.vae) ? imageModels.vae : h3ImageFallback.vae,
+      }
+    : imageModels
+  const presetModels = resolvePresetModels({ ...state, models })
+  const preflightModels = {
+    ...presetModels,
+    image: state.mode === 'image' && imageIsH3 ? imageEngineModels : stillImageModels,
+  }
   // The Style dropdown is a generation setting. Non-default styles are also
   // applied at queue time so picking one before typing still takes effect.
   // The default photoreal style stays opt-in via Enhance — it is the default
@@ -131,6 +170,31 @@ export async function prepareRun(base, state) {
   // music, SFX) override the flat group, but the flat group can still hold a
   // stale default (e.g. the old Wan 2.1 file). Preflighting it alone rejected
   // runs whose selected preset was installed — "keeps looking for wan2.1…".
+  if (state.mode === 'h3image') {
+    // H3 Image is a separate 16MP pipeline. The conditioning node only
+    // exists on ComfyUI 0.45+ — fail early with an update hint instead of
+    // queueing a graph the server can't execute.
+    const { missing, unreachable } = await checkNodes(base, H3_IMAGE_NODES)
+    if (unreachable) {
+      throw new Error('Could not reach ComfyUI to verify the H3 image nodes — check the server URL.')
+    }
+    if (missing.length) {
+      throw new Error(
+        'MiniMax H3 Image needs the MiniMaxH3ImageConditioning node (ComfyUI 0.45+). ' +
+          'Update ComfyUI, restart it, then try again.'
+      )
+    }
+    const h3 = state.h3imageSettings || {}
+    return {
+      workflow: buildH3ImageWorkflow({
+        prompt: styledPrompt,
+        size: h3.size,
+        seed: h3.seed,
+        models: resolveActiveModels(state, 'h3image'),
+      }),
+    }
+  }
+
   if (state.mode === 'material') {
     // Local PBR: the base colour uses the image stack; normal/height come
     // from local preprocessors and roughness/metalness are derived in-graph.
@@ -144,7 +208,7 @@ export async function prepareRun(base, state) {
           'Update ComfyUI / install its controlnet preprocessors, then try again.'
       )
     }
-    await assertModelsAvailable(base, 'image', resolvePresetModels({ ...state, models }))
+    await assertModelsAvailable(base, 'image', preflightModels)
     const material = state.materialSettings || {}
     const { workflow } = buildMaterialWorkflow({
       prompt: styledPrompt,
@@ -156,7 +220,7 @@ export async function prepareRun(base, state) {
       seed: material.seed,
       metallic: material.metallic,
       roughness: material.roughness,
-      models: imageModels,
+      models: stillImageModels,
     })
     return { workflow }
   }
@@ -164,9 +228,10 @@ export async function prepareRun(base, state) {
   const preflightMode = state.mode === 'flipbook' ? 'video' : state.mode
   // Flipbooks resolve their own Wan T2V stack below: the selected video preset
   // is often MiniMax H3, and preflighting it alone rejected runs even when the
-  // dedicated Wan T2V checkpoint was installed.
-  if (state.mode !== 'flipbook') {
-    await assertModelsAvailable(base, preflightMode, resolvePresetModels({ ...state, models }))
+  // dedicated Wan T2V checkpoint was installed. Image mode also skips this
+  // check for H3 presets because its branch preflights the corrected H3 stack.
+  if (state.mode !== 'flipbook' && !(state.mode === 'image' && imageIsH3)) {
+    await assertModelsAvailable(base, preflightMode, preflightModels)
   }
 
   if (state.mode === 'edit') {
@@ -193,8 +258,8 @@ export async function prepareRun(base, state) {
         denoise: state.editSettings.denoise ?? 1,
         models: {
           unet: models.edit?.unet || 'qwen_image_edit_fp8_e4m3fn.safetensors',
-          clip: imageModels.clip,
-          vae: imageModels.vae,
+          clip: stillImageModels.clip,
+          vae: stillImageModels.vae,
         },
       }),
     }
@@ -252,7 +317,7 @@ export async function prepareRun(base, state) {
         cfg: ts.cfg,
         batchSize: ts.batchCount || 1,
         transparent: ts.transparent !== false,
-        models: imageModels,
+        models: stillImageModels,
       }),
     }
   }
@@ -311,19 +376,49 @@ export async function prepareRun(base, state) {
   }
 
   if (state.mode === 'image') {
-    const imgCustom = state.imageSettings.sizeMode === 'custom'
+    const img = state.imageSettings
+    if (imageIsH3) {
+      // H3 Image is selectable as an image preset now. It has its own
+      // conditioning node and fixed distilled schedule, so it cannot use the
+      // Qwen graph even though it appears in the same preset picker.
+      const { missing, unreachable } = await checkNodes(base, H3_IMAGE_NODES)
+      if (unreachable) {
+        throw new Error('Could not reach ComfyUI to verify the H3 image nodes — check the server URL.')
+      }
+      if (missing.length) {
+        throw new Error(
+          'MiniMax H3 Image needs the MiniMaxH3ImageConditioning node (ComfyUI 0.45+). ' +
+            'Update ComfyUI, restart it, then try again.'
+        )
+      }
+      await assertModelsAvailable(base, 'image', preflightModels)
+      const dims =
+        img.sizeMode === 'custom'
+          ? { width: img.width, height: img.height }
+          : ASPECT_RATIOS[img.aspectRatio] || ASPECT_RATIOS['1:1']
+      return {
+        workflow: buildH3ImageWorkflow({
+          prompt: styledPrompt,
+          width: dims.width,
+          height: dims.height,
+          seed: img.seed,
+          models: imageEngineModels,
+        }),
+      }
+    }
+    const imgCustom = img.sizeMode === 'custom'
     return {
       workflow: buildImageWorkflow({
         prompt: styledPrompt,
         negativePrompt: styledNegative,
-        aspectRatio: state.imageSettings.aspectRatio,
-        width: imgCustom ? state.imageSettings.width : undefined,
-        height: imgCustom ? state.imageSettings.height : undefined,
-        seed: state.imageSettings.seed,
-        steps: state.imageSettings.steps,
-        cfg: state.imageSettings.cfg,
-        turboMode: state.imageSettings.turboMode,
-        batchSize: state.imageSettings.batchCount || 1,
+        aspectRatio: img.aspectRatio,
+        width: imgCustom ? img.width : undefined,
+        height: imgCustom ? img.height : undefined,
+        seed: img.seed,
+        steps: img.steps,
+        cfg: img.cfg,
+        turboMode: img.turboMode,
+        batchSize: img.batchCount || 1,
         models: imageModels,
       }),
     }
@@ -453,7 +548,7 @@ export async function prepareRun(base, state) {
       // (a half-installed server would otherwise die mid-chain, after
       // the keyframe has already been paid for).
       await freeLoadedModels(base)
-      await assertModelsAvailable(base, 'sprite', models)
+      await assertModelsAvailable(base, 'sprite', preflightModels)
       const character = { ...CHARACTER_MODEL_DEFAULTS, ...(state.models.character || {}) }
       await assertCharacterModels(base, character)
       const { missing, unreachable } = await checkNodes(base, CHARACTER_NODES)
@@ -484,7 +579,7 @@ export async function prepareRun(base, state) {
           done: 0,
           sp,
           subject: state.prompt,
-          imageModels,
+          imageModels: stillImageModels,
           character,
           seed,
           // A single-animation sheet starts the video from that action's
@@ -532,7 +627,8 @@ export async function prepareRun(base, state) {
         seed: sp.seed,
         steps: sp.steps,
         cfg: sp.cfg,
-        models: imageModels,
+        negativePrompt: styledNegative,
+        models: stillImageModels,
       }),
     }
   }

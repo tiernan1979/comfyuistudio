@@ -11,12 +11,14 @@ const TEXT_NODES = new Set([
   'TextEncodeQwenImageEdit',
   'TextEncodeAceStepAudio1.5',
   'MiniMaxMusic3TextEncode',
+  'MiniMaxH3ImageConditioning',
   'PatinaMaterialNode',
 ])
 
 // First matching rule wins, so the most distinctive classes come first.
 const MODE_RULES = [
   ['3D', ['MeshToolsLoad', 'SaveGLB', 'Preview3D', 'Get3DComponents', 'TripoImageToModelNode', 'UniRigApplyAnimation', 'UltraShapeLoadModel', 'MIALoadModel', 'Load3DAdvanced']],
+  ['H3 Image', ['MiniMaxH3ImageConditioning']],
   ['Material', ['PatinaMaterialNode', 'PatinaMaterialExtractNode', 'PatinaPBRMapsNode']],
   ['Sprite', ['MediaPipeFaceLandmarker', 'LoadMediaPipeFaceLandmarker']],
   ['Split', ['AutoSplitOrchestratorSAM3']],

@@ -4,6 +4,8 @@ export function createSettingsActions(set) {
   return {
     setImageSettings: (settings) =>
       set((s) => ({ imageSettings: { ...s.imageSettings, ...settings } })),
+    setH3ImageSettings: (settings) =>
+      set((s) => ({ h3imageSettings: { ...s.h3imageSettings, ...settings } })),
     setPixelSettings: (settings) =>
       set((s) => ({ pixelSettings: { ...s.pixelSettings, ...settings } })),
     setVideoSettings: (settings) =>

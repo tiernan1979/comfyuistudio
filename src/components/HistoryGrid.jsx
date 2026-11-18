@@ -24,7 +24,7 @@ export default function HistoryGrid() {
     <div className="grid grid-cols-2 gap-1.5">
       {history.map((entry, i) => {
         // stills (and 'edit' results) can be dragged into the 3D box
-        const canDrag = (entry.type === 'image' || entry.type === 'edit') && !!entry.data
+        const canDrag = (entry.type === 'image' || entry.type === 'h3image' || entry.type === 'edit') && !!entry.data
         return (
         <motion.div
           key={entry.id}

@@ -159,7 +159,10 @@ export function createHistoryActions(set, get) {
       const isSfx = entry.type === 'sfx'
       const isSprite = entry.type === 'sprite'
       const isAsset =
-        entry.type === 'texture' || entry.type === 'flipbook' || entry.type === 'material'
+        entry.type === 'texture' ||
+        entry.type === 'flipbook' ||
+        entry.type === 'material' ||
+        entry.type === 'h3image'
       const isAudio = isMusic || isSfx
       const mode = isVideo
         ? 'video'

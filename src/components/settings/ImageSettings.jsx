@@ -1,7 +1,7 @@
 import clsx from 'clsx'
 import { Image as ImageIcon } from 'lucide-react'
 import useStore from '../../store/useStore'
-import { ASPECT_RATIOS } from '../../lib/workflows'
+import { ASPECT_RATIOS, isH3ImageModel } from '../../lib/workflows'
 import PresetPicker from './PresetPicker'
 import { Slider, Toggle, NumberField, Field, ChoiceGrid, Hint, choiceClass } from './controls'
 
@@ -20,6 +20,11 @@ export default function ImageSettings() {
   const presets = useStore((s) => s.presets?.image || [])
   const active = useStore((s) => s.active?.image)
   const setActivePreset = useStore((s) => s.setActivePreset)
+  const activePreset = presets[active]
+  // The preset picker now mixes Qwen-Image and MiniMax H3 Image. H3 runs a
+  // fixed distilled schedule and its own conditioning graph, so the Qwen-only
+  // sliders/turbo/batch controls are hidden while it is selected.
+  const h3 = isH3ImageModel(activePreset?.unet)
 
   const custom = settings.sizeMode === 'custom'
   const seedMax = 2 ** 48
@@ -33,7 +38,11 @@ export default function ImageSettings() {
         onSelect={(i) => setActivePreset('image', i)}
         disabled={generating}
         icon={ImageIcon}
-        hint="Shared by Image, Textures and PBR. Add or edit presets in Settings → Models."
+        hint={
+          h3
+            ? 'MiniMax H3 Image preset: fixed 6 steps, CFG 1, no negative prompt. Size uses a 32px grid; batch is 1 per run.'
+            : 'Shared by Image, Textures and PBR. Add or edit presets in Settings → Models.'
+        }
       />
 
       <Field label="Size">
@@ -114,7 +123,7 @@ export default function ImageSettings() {
         onChange={(v) => set({ steps: v })}
         min={1}
         max={50}
-        disabled={generating}
+        disabled={generating || h3}
       />
 
       <Slider
@@ -124,7 +133,7 @@ export default function ImageSettings() {
         min={1}
         max={20}
         step={0.5}
-        disabled={generating}
+        disabled={generating || h3}
       />
 
       <Slider
@@ -140,7 +149,7 @@ export default function ImageSettings() {
         label="Turbo Mode (8 steps, LoRA)"
         value={settings.turboMode}
         onChange={(v) => set({ turboMode: v })}
-        disabled={generating}
+        disabled={generating || h3}
       />
 
       <Field label="Batch">
@@ -150,16 +159,17 @@ export default function ImageSettings() {
               key={n}
               type="button"
               onClick={() => set({ batchCount: n })}
-              disabled={generating}
-              className={choiceClass((settings.batchCount || 1) === n, generating)}
+              disabled={generating || h3}
+              className={choiceClass((settings.batchCount || 1) === n, generating || h3)}
             >
               {n}
             </button>
           ))}
         </div>
         <Hint>
-          Renders every image in one job and shows them as a contact sheet. Each result lands in
-          history separately.
+          {h3
+            ? 'MiniMax H3 Image renders one image per run — batch is disabled for this preset.'
+            : 'Renders every image in one job and shows them as a contact sheet. Each result lands in history separately.'}
         </Hint>
       </Field>
     </div>

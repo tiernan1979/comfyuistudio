@@ -91,7 +91,9 @@ export default function GenerateButton() {
               <Zap size={16} />
               {mode === 'music'
                 ? 'Generate Music'
-                : mode === 'sfx'
+                : mode === 'h3image'
+                  ? 'Generate H3 Image'
+                  : mode === 'sfx'
                   ? 'Generate SFX'
                   : mode === 'sprite'
                     ? 'Generate Sprites'

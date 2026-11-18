@@ -4,7 +4,7 @@ import { Sparkles, ChevronDown, ChevronUp, Wand2, Bot, Loader2, Globe, BookmarkP
 import useStore from '../store/useStore'
 import { STYLES, enhancePrompt } from '../lib/enhance'
 import { rewritePrompt, resolveLlmConfig, PROVIDERS, pickDefaultModel, padInstrumentalSections, trimVocalSections, trimSectionBudget, parseVocalShare, detectMusicStyle, defaultVocalShare, detectArtistRefs, stripArtistRefs, injectSignatureSounds, suggestDurationFromLyrics, ensureOutroLead, collapseConsecutiveWordless, sectionCeiling, sanitizeRewrite } from '../lib/llm'
-import { STABLE_AUDIO_MAX_SECONDS } from '../lib/workflows'
+import { STABLE_AUDIO_MAX_SECONDS, isH3ImageModel } from '../lib/workflows'
 import { searchText } from '../lib/search'
 import Dropdown from './Dropdown'
 import { EXAMPLES, SFX_EXAMPLES, TEXTURE_EXAMPLES, FLIPBOOK_EXAMPLES, MATERIAL_EXAMPLES, PLACEHOLDERS, buildSelectionContext } from './prompt/context'
@@ -16,6 +16,10 @@ export default function PromptInput() {
   const setNegativePrompt = useStore((s) => s.setNegativePrompt)
   const generating = useStore((s) => s.generating)
   const mode = useStore((s) => s.mode)
+  const activeImageUnet = useStore(
+    (s) => s.presets?.image?.[s.active?.image]?.unet || s.models?.image?.unet,
+  )
+  const h3Image = mode === 'image' && isH3ImageModel(activeImageUnet)
   const style = useStore((s) => s.style)
   const setStyle = useStore((s) => s.setStyle)
   const llmProvider = useStore((s) => s.llmProvider)
@@ -242,7 +246,7 @@ export default function PromptInput() {
       }
       // Image / video / edit: the AI now writes a negative too. Prefer its
       // take-ruining list; only fall back to the style preset when it gave none.
-      if (mode === 'image' || mode === 'video' || mode === 'edit' || mode === 'custom') {
+      if ((mode === 'image' && !h3Image) || mode === 'video' || mode === 'edit' || mode === 'custom') {
         if (!negativePrompt.trim()) {
           if (out.negative) setNegativePrompt(out.negative)
           else if (STYLES[style]?.negative) setNegativePrompt(STYLES[style].negative)
@@ -275,7 +279,7 @@ export default function PromptInput() {
   return (
     <div className="space-y-2">
       <div className="flex items-center gap-2 flex-wrap">
-        {mode !== 'edit' && mode !== 'music' && mode !== 'sfx' && mode !== 'sprite' && mode !== 'pixel' && mode !== 'material' && (
+        {mode !== 'edit' && mode !== 'music' && mode !== 'sfx' && mode !== 'sprite' && mode !== 'pixel' && mode !== 'material' && mode !== 'h3image' && !h3Image && (
           <>
             <span className="text-xs text-text-muted shrink-0">Style</span>
             <div className="flex-1 min-w-36">
@@ -294,7 +298,7 @@ export default function PromptInput() {
               {/* Enhance appends image-style quality tags — meaningless for
                   music and sound-effect captions, so the offline button stays
                   hidden there (the AI button below writes proper prompts). */}
-              {mode !== 'music' && mode !== 'sfx' && mode !== 'sprite' && mode !== 'pixel' && mode !== 'material' && (
+              {mode !== 'music' && mode !== 'sfx' && mode !== 'sprite' && mode !== 'pixel' && mode !== 'material' && mode !== 'h3image' && !h3Image && (
                 <motion.button
                   whileHover={{ scale: 1.05 }}
                   whileTap={{ scale: 0.95 }}
@@ -419,7 +423,7 @@ export default function PromptInput() {
       {/* Music hides the negative-prompt field entirely (the model has no
           negative conditioning). SFX keeps it OPEN by default — the AI fills
           it in and Stable Audio actually conditions on it. */}
-      {mode !== 'music' && (
+      {mode !== 'music' && mode !== 'h3image' && !h3Image && (
         <motion.button
           onClick={() => setShowNegative(!showNegative)}
           className="flex items-center gap-1 text-xs text-text-muted hover:text-text-secondary transition-colors"
@@ -429,7 +433,7 @@ export default function PromptInput() {
         </motion.button>
       )}
 
-      {showNegative && mode !== 'music' && mode !== 'material' && (
+      {showNegative && mode !== 'music' && mode !== 'h3image' && !h3Image && (
         <motion.textarea
           initial={{ opacity: 0, height: 0 }}
           animate={{ opacity: 1, height: 'auto' }}

@@ -3,6 +3,8 @@ import { FolderSearch, HardDrive, RefreshCw } from 'lucide-react'
 import ModelPresets from './ModelPresets'
 import { SectionTitle, Note, ModelField } from './fields'
 import { filterModelOptions } from '../../lib/modelFilters'
+import { isH3ImageClip, isH3ImageModel, isH3ImageVae } from '../../lib/workflows'
+import { DEFAULT_MODELS } from '../../store/defaults.js'
 
 function Divider() {
   return <hr className="border-border" />
@@ -42,6 +44,32 @@ export default function ModelsSection({
   const imageModel = imageDraft || {}
   const count = (key) => (modelLists[key] || []).length
 
+  // H3 and Qwen use different text encoders and VAEs even though both now
+  // appear in the image dropdowns. Switch the companion files when the UNET
+  // family changes so a preset can't be saved as a mismatched half-stack.
+  const setImageUnet = (unet) => {
+    const firstH3 = (slot) =>
+      filterModelOptions('h3image', slot, modelLists[slot] || [])[0]
+    const firstQwen = (slot, isH3) =>
+      filterModelOptions('image', slot, modelLists[slot] || []).find((n) => !isH3(n))
+    setImageDraft((draft) => {
+      const next = { ...draft, unet }
+      if (isH3ImageModel(unet)) {
+        if (!isH3ImageClip(next.clip)) {
+          next.clip = firstH3('clip') || DEFAULT_MODELS.h3image.clip
+        }
+        if (!isH3ImageVae(next.vae)) {
+          next.vae = firstH3('vae') || DEFAULT_MODELS.h3image.vae
+        }
+        next.lora = ''
+      } else if (isH3ImageClip(next.clip) || isH3ImageVae(next.vae)) {
+        next.clip = firstQwen('clip', isH3ImageClip) || DEFAULT_MODELS.image.clip
+        next.vae = firstQwen('vae', isH3ImageVae) || DEFAULT_MODELS.image.vae
+      }
+      return next
+    })
+  }
+
   return (
     <>
       <div className="rounded-lg border border-border bg-bg-card px-3 py-2.5">
@@ -72,18 +100,18 @@ export default function ModelsSection({
       </div>
 
       <Note>
-        Model dropdowns are filtered per pipeline: image sections only list Qwen or SDXL files, video only Wan /
-        MiniMax H3, music only MiniMax Music / ACE-Step, and so on. An existing value that is not in the filtered
-        list is flagged so it can be replaced.
+        Model dropdowns are filtered per pipeline: image sections list Qwen-Image and MiniMax H3 Image files,
+        video only Wan / MiniMax H3 video, music only MiniMax Music / ACE-Step, and so on. An existing value that
+        is not in the filtered list is flagged so it can be replaced.
       </Note>
 
       <div className="space-y-3">
         <SectionTitle icon={HardDrive} title="Image Models (Qwen-Image)" />
         <Note>
-          The image stack also drives Image Edit, Sprites and the local game-asset modes. Presets are
-          for Qwen-Image variants — the builder loads <span className="font-mono">CLIPLoader</span>{' '}
-          type <span className="font-mono">qwen_image</span>, so SDXL or Flux checkpoints need a
-          different pipeline rather than just different filenames.
+          Image presets can use Qwen-Image or MiniMax H3 Image. Selecting an H3 UNET automatically
+          swaps the text encoder and VAE to the matching H3 stack. H3 runs its own conditioning
+          graph; Textures, PBR, Sprites and Image Edit still use the Qwen fallback. SDXL or Flux
+          checkpoints need a different pipeline rather than just different filenames.
         </Note>
         <ModelPresets mode="image" editDraft={imageModel} setEditDraft={setImageDraft} />
         <PipelineModelField
@@ -91,7 +119,7 @@ export default function ModelsSection({
           slot="unet"
           label="Diffusion Model (UNET)"
           value={imageModel.unet || ''}
-          onChange={(v) => setImageDraft((d) => ({ ...d, unet: v }))}
+          onChange={setImageUnet}
           list={modelLists.unet}
           placeholder="qwen_image_fp8_e4m3fn.safetensors"
         />
@@ -121,6 +149,44 @@ export default function ModelsSection({
           onChange={(v) => setImageDraft((d) => ({ ...d, lora: v }))}
           list={modelLists.lora}
           placeholder="Qwen-Image-Lightning-8steps-V1.0.safetensors"
+        />
+      </div>
+
+      <Divider />
+
+      <div className="space-y-3">
+        <SectionTitle icon={HardDrive} title="MiniMax H3 Image Models" tone="text-cyan-400" />
+        <Note>
+          A separate 16MP text-to-image stack. It needs the{' '}
+          <span className="font-mono">MiniMaxH3ImageConditioning</span> node (ComfyUI 0.45+),
+          the H3 32B text encoder (not the Qwen3.5 prompt expander) and H3's image VAE.
+        </Note>
+        <PipelineModelField
+          section="h3image"
+          slot="unet"
+          label="Diffusion Model (UNET)"
+          value={localModels.h3image?.unet || ''}
+          onChange={(v) => editModel('h3image', { unet: v })}
+          list={modelLists.unet}
+          placeholder="minimax_h3_image_pruned_w4a8.safetensors"
+        />
+        <PipelineModelField
+          section="h3image"
+          slot="clip"
+          label="Text Encoder (H3 32B)"
+          value={localModels.h3image?.clip || ''}
+          onChange={(v) => editModel('h3image', { clip: v })}
+          list={modelLists.clip}
+          placeholder="qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors"
+        />
+        <PipelineModelField
+          section="h3image"
+          slot="vae"
+          label="Image VAE"
+          value={localModels.h3image?.vae || ''}
+          onChange={(v) => editModel('h3image', { vae: v })}
+          list={modelLists.vae}
+          placeholder="minimax_h3_image_vae_fp16.safetensors"
         />
       </div>
 

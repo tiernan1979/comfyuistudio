@@ -69,6 +69,26 @@ test('migrate turns a saved flat image stack into an active preset', () => {
   assert.ok(s.presets.image.some((p) => /2\.1/.test(p.unet)))
 })
 
+test('migrate repairs an H3-named image preset that still holds Qwen files', () => {
+  const s = migrate({
+    presets: {
+      image: [
+        {
+          name: 'Minimax H3 Image',
+          unet: 'qwen_image_2.1_int8_convrot.safetensors',
+          clip: 'qwen3vl_8b_w4a8.safetensors',
+          vae: 'qwen_image_2.1_vae_bf16.safetensors',
+        },
+      ],
+    },
+    active: { ...DEFAULT_ACTIVE, image: 0 },
+  })
+  assert.equal(s.presets.image[0].unet, DEFAULT_MODELS.h3image.unet)
+  assert.equal(s.presets.image[0].clip, DEFAULT_MODELS.h3image.clip)
+  assert.equal(s.presets.image[0].vae, DEFAULT_MODELS.h3image.vae)
+  assert.equal(s.active.image, 0)
+})
+
 test('preflight resolves the active image preset over the flat group', () => {
   const resolved = resolvePresetModels({
     models: { image: { unet: 'flat.safetensors', clip: 'flat-clip.safetensors' } },

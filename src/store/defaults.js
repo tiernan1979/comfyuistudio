@@ -48,6 +48,14 @@ export const DEFAULT_MODELS = {
     clip: 't5gemma_b_b_ul2.safetensors',
     vae: '',
   },
+  // MiniMax H3 Image — a dedicated 16MP text-to-image stack. The text
+  // encoder is the H3 32B model (not the smaller Qwen3.5 prompt expander),
+  // and the VAE is H3's image VAE (not the video/audio pair).
+  h3image: {
+    unet: 'minimax_h3_image_pruned_w4a8.safetensors',
+    clip: 'qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors',
+    vae: 'minimax_h3_image_vae_fp16.safetensors',
+  },
   // WAN 2.2 i2v stack for the Sprites video engine (two A14B lightx2v 4-step
   // Q4 experts + umt5 + Wan 2.1 VAE). Names mirror the reference pipeline's
   // downloads; see Settings → Models → Character video.
@@ -143,6 +151,13 @@ export const DEFAULT_FLIPBOOK_SETTINGS = {
   cfg: 6,
 }
 
+// MiniMax H3 Image settings. The model is distilled to a fixed 6-step
+// schedule at CFG 1, so only size and seed are exposed here.
+export const DEFAULT_H3_IMAGE_SETTINGS = {
+  size: 2048,
+  seed: -1,
+}
+
 // PBR material packs: a local base-color render plus derived normal, height,
 // roughness and metalness maps. No cloud node and no extra model files.
 export const DEFAULT_MATERIAL_SETTINGS = {
@@ -196,10 +211,11 @@ export const DEFAULT_PARTS_SETTINGS = {
 // flat group; `active` picks which one generation uses (null = the flat
 // group, i.e. the old single-model behaviour).
 export const DEFAULT_PRESETS = {
-  // Image presets stay inside the Qwen-Image family: the image builder loads
-  // CLIPLoader type 'qwen_image', so an SDXL/Flux checkpoint needs a different
-  // graph rather than just different filenames. The 2.1 entries are the
-  // documented low-VRAM alternative (README → Image generation).
+  // Image presets cover the Qwen-Image stacks. MiniMax H3 Image can be added
+  // as a preset too: selecting its UNET routes Image mode to the H3 graph and
+  // auto-switches the H3 encoder/VAE. An SDXL/Flux checkpoint still needs a
+  // different pipeline rather than just different filenames. The 2.1 entries
+  // are the documented low-VRAM alternative (README → Image generation).
   image: [
     {
       name: 'Qwen-Image',
@@ -260,6 +276,7 @@ export const DEFAULT_ACTIVE = { image: 0, video: 0, music: 0, sfx: 0 }
 // tabs never loses text; new game-asset modes start empty.
 const PROMPT_MODES = [
   'image',
+  'h3image',
   'pixel',
   'video',
   'edit',
@@ -283,6 +300,7 @@ export const DEFAULT_LYRICS = STRUCTURE_TAGS
 // Per-mode generation settings that config.json can override.
 export const SETTING_GROUPS = [
   'imageSettings',
+  'h3imageSettings',
   'pixelSettings',
   'videoSettings',
   'editSettings',

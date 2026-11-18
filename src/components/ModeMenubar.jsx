@@ -17,6 +17,7 @@ import {
   Palette,
   Scissors,
   Shirt,
+  Sparkles,
   Wand2,
 } from 'lucide-react'
 import clsx from 'clsx'
@@ -33,6 +34,7 @@ const MENUS = [
     icon: Image,
     modes: [
       { key: 'image', label: 'Image', icon: Image },
+      { key: 'h3image', label: 'H3 Image', icon: Sparkles },
       { key: 'edit', label: 'Image Edit', icon: Wand2 },
       { key: 'pixel', label: 'Pixel Art', icon: Grid3X3 },
     ],
@@ -71,6 +73,7 @@ const MENUS = [
 
 const MENU_FOR_MODE = {
   image: 'image',
+  h3image: 'image',
   edit: 'image',
   pixel: 'image',
   custom: 'image',

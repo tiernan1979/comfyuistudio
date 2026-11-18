@@ -6,6 +6,7 @@ import {
   DEFAULT_MODELS,
   DEFAULT_SPRITE_SETTINGS,
   DEFAULT_IMAGE_SETTINGS,
+  DEFAULT_H3_IMAGE_SETTINGS,
   DEFAULT_PIXEL_SETTINGS,
   DEFAULT_TEXTURE_SETTINGS,
   DEFAULT_FLIPBOOK_SETTINGS,
@@ -49,7 +50,7 @@ const useStore = create(
       queueRemaining: 0,
 
       // Mode
-      mode: 'image', // 'image' | 'video' | 'edit' | 'music' | 'sfx' | 'sprite' | 'texture' | 'flipbook' | 'material' | '3d'
+      mode: 'image', // 'image' | 'h3image' | 'video' | 'edit' | 'music' | 'sfx' | 'sprite' | 'texture' | 'flipbook' | 'material' | '3d'
 
       // Generation state
       generating: false,
@@ -105,6 +106,8 @@ const useStore = create(
 
       // Image settings (see DEFAULT_IMAGE_SETTINGS).
       imageSettings: { ...DEFAULT_IMAGE_SETTINGS },
+      // MiniMax H3 Image (see DEFAULT_H3_IMAGE_SETTINGS).
+      h3imageSettings: { ...DEFAULT_H3_IMAGE_SETTINGS },
       // Pixel-art settings (SDXL + Pixel Art XL; see DEFAULT_PIXEL_SETTINGS).
       pixelSettings: { ...DEFAULT_PIXEL_SETTINGS },
       // Game-asset modes (see defaults.js for each group's fields).

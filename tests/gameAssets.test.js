@@ -7,6 +7,14 @@ import {
   textureNegative,
 } from '../src/lib/workflows/texture.js'
 import { buildFlipbookWorkflow, flipbookPrompt } from '../src/lib/workflows/flipbook.js'
+import {
+  buildH3ImageWorkflow,
+  H3_IMAGE_NODES,
+  H3_IMAGE_SIZES,
+  isH3ImageModel,
+  isH3ImageClip,
+  isH3ImageVae,
+} from '../src/lib/workflows/h3image.js'
 import { buildMaterialWorkflow, MATERIAL_NODES, materialPrompt } from '../src/lib/workflows/material.js'
 import { describeQueuePrompt } from '../src/lib/comfyui/queueLabel.js'
 import { resolveWanVideoModels } from '../src/lib/comfyui/models.js'
@@ -24,6 +32,64 @@ const videoModels = {
 
 const node = (workflow, cls) =>
   Object.values(workflow).find((n) => n.class_type === cls)
+
+test('MiniMax H3 Image graph uses its own stack and a fixed 6-step schedule', () => {
+  const wf = buildH3ImageWorkflow({
+    prompt: 'a small clay dragon on a desk',
+    size: 1024,
+    seed: 7,
+    models: {
+      unet: 'minimax_h3_image_pruned_w4a8.safetensors',
+      clip: 'qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors',
+      vae: 'minimax_h3_image_vae_fp16.safetensors',
+    },
+  })
+  assert.equal(node(wf, 'UNETLoader').inputs.unet_name, 'minimax_h3_image_pruned_w4a8.safetensors')
+  assert.equal(node(wf, 'CLIPLoader').inputs.type, 'minimax')
+  assert.equal(node(wf, 'VAELoader').inputs.vae_name, 'minimax_h3_image_vae_fp16.safetensors')
+  const conditioning = node(wf, 'MiniMaxH3ImageConditioning')
+  assert.equal(conditioning.inputs.width, 1024)
+  assert.equal(conditioning.inputs.height, 1024)
+  assert.equal(conditioning.inputs.prompt, 'a small clay dragon on a desk')
+  const sampler = node(wf, 'KSampler')
+  assert.equal(sampler.inputs.steps, 6)
+  assert.equal(sampler.inputs.cfg, 1)
+  assert.equal(sampler.inputs.sampler_name, 'euler')
+  assert.equal(sampler.inputs.scheduler, 'simple')
+  assert.deepEqual(node(wf, 'ConditioningZeroOut').inputs.conditioning, ['6', 0])
+  assert.equal(node(wf, 'SaveImage').inputs.filename_prefix, 'h3image/image')
+})
+
+test('H3 image nodes and sizes are declared for the UI', () => {
+  assert.deepEqual(H3_IMAGE_NODES, ['MiniMaxH3ImageConditioning'])
+  assert.deepEqual(H3_IMAGE_SIZES, [1024, 2048, 3072, 4096])
+})
+
+test('H3 image accepts independent width and height on a 32px grid', () => {
+  const wf = buildH3ImageWorkflow({
+    prompt: 'wide mountain valley',
+    width: 1328,
+    height: 928,
+    seed: 1,
+    models: {
+      unet: 'minimax_h3_image_pruned_w4a8.safetensors',
+      clip: 'qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors',
+      vae: 'minimax_h3_image_vae_fp16.safetensors',
+    },
+  })
+  const conditioning = node(wf, 'MiniMaxH3ImageConditioning')
+  assert.equal(conditioning.inputs.width, 1344)
+  assert.equal(conditioning.inputs.height, 928)
+})
+
+test('H3 image model helpers identify the MiniMax stack', () => {
+  assert.equal(isH3ImageModel('minimax_h3_image_pruned_w4a8.safetensors'), true)
+  assert.equal(isH3ImageModel('qwen_image_2.1_int8_convrot.safetensors'), false)
+  assert.equal(isH3ImageClip('qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors'), true)
+  assert.equal(isH3ImageClip('qwen3vl_8b_w4a8.safetensors'), false)
+  assert.equal(isH3ImageVae('minimax_h3_image_vae_fp16.safetensors'), true)
+  assert.equal(isH3ImageVae('minimax_h3_video_vae_fp16.safetensors'), false)
+})
 
 test('texture prompt frames a tileable material', () => {
   const text = textureAssetPrompt('mossy stone wall', { kind: 'texture', seamless: true })

@@ -45,6 +45,51 @@ export const PARTS_SLOTS = {
   upperLeg: { label: 'Upper leg', w: 512, h: 640, dir: 'front', phrase: 'a single upper leg including the knee, isolated on plain background' },
   lowerLeg: { label: 'Lower leg', w: 512, h: 640, dir: 'front', phrase: 'a single lower leg (calf), isolated on plain background' },
   boots: { label: 'Boots', w: 512, h: 512, dir: 'front', phrase: 'a pair of boots, isolated on plain background' },
+  // Full-body rig reference for autorig_slicer.py — the exact orthographic
+  // spread-eagle T-pose the limb slicer parses. Keep arms horizontal and legs
+  // spread so the slicer's connected-component classifier can isolate head /
+  // torso / arm_left / arm_right / leg_left / leg_right cleanly.
+  rig: {
+    label: 'Rig (T-pose)',
+    w: 512,
+    h: 768,
+    dir: 'front',
+    phrase:
+      'full body character, strict orthographic front view, spread-eagle T-pose, ' +
+      'arms stretched straight out horizontally at shoulder height, legs spread apart and straight, ' +
+      'feet flat, palms facing the camera, symmetric, centred',
+  },
+  // Side-view (profile) rig — gameplay-facing art for a side-scrolling world.
+  rig_side: {
+    label: 'Rig (side)',
+    w: 512,
+    h: 768,
+    dir: 'front',
+    phrase:
+      'full body character, strict orthographic SIDE view profile facing right, standing upright, ' +
+      'arms hanging relaxed close to the body, legs in a natural stance, feet flat on the ground, ' +
+      'entire figure visible, symmetric profile, centred',
+  },
+  // Quadruped/beast rig — four-legged creatures, never a humanoid T-pose.
+  rig_beast: {
+    label: 'Rig (beast)',
+    w: 640,
+    h: 512,
+    dir: 'front',
+    phrase:
+      'full creature, strict orthographic SIDE view, natural four-legged standing stance with all ' +
+      'legs or limbs resting on the ground, head up, entire creature visible from nose to tail, centred',
+  },
+  // Flyers / floaters / blobs — just a clean, symmetric full silhouette.
+  rig_float: {
+    label: 'Rig (float)',
+    w: 512,
+    h: 768,
+    dir: 'front',
+    phrase:
+      'full creature, front view, entire silhouette visible, symmetric, centred, ' +
+      'wings fully spread if it has wings, nothing cropped',
+  },
   cape: { label: 'Cape', w: 512, h: 640, dir: 'front', phrase: 'a cape or cloak, isolated on plain background' },
   // Weapons read best from the side unless the user picks another view.
   weapon: { label: 'Weapon', w: 640, h: 512, dir: 'side', phrase: 'a single medieval weapon, isolated on plain background' },
@@ -54,6 +99,15 @@ export const PARTS_SLOTS = {
 export const PARTS_NEG =
   'multiple subjects, duplicate, text, watermark, signature, shadow, scenery, busy background, ' +
   'gradient background, cropped, out of frame, extra limbs'
+
+// Negative prompt tailored for the T-pose rig slot: bans every failure mode
+// that breaks the slicer's connected-component analysis (limbs crossing the
+// torso, foreshortening, limbs hidden behind the body, non-orthographic angles).
+export const TPOSE_NEG =
+  PARTS_NEG +
+  ', crossed arms, crossed legs, arms at sides, arms hanging down, foreshortening, ' +
+  'perspective, three-quarter view, side view, leaning, twisted torso, hands on hips, ' +
+  'limbs overlapping the torso, arm covering torso, limb hidden behind body'
 
 // slot + user style + orientation → the full prompt the image model sees.
 // `direction` falls back to the slot's natural view (weapons side-on).

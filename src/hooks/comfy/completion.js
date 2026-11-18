@@ -197,7 +197,7 @@ export function createCompletionHandler({ timerRef }) {
             if (urls.length) {
               state.setOutputImage(urls[0])
               state.setBatchImages(urls)
-              const type = state.mode === 'edit' ? 'edit' : 'image'
+              const type = state.mode === 'h3image' ? 'h3image' : state.mode === 'edit' ? 'edit' : 'image'
               for (let i = 0; i < urls.length; i += 1) {
                 state.addToHistory({
                   // First image keeps the prompt id (matches ComfyUI);

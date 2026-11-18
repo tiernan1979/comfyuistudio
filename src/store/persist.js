@@ -7,6 +7,7 @@ import {
   DEFAULT_PRESETS,
   DEFAULT_SPRITE_SETTINGS,
   DEFAULT_IMAGE_SETTINGS,
+  DEFAULT_H3_IMAGE_SETTINGS,
   DEFAULT_PIXEL_SETTINGS,
   DEFAULT_TEXTURE_SETTINGS,
   DEFAULT_FLIPBOOK_SETTINGS,
@@ -18,7 +19,7 @@ import {
 import { AUTOSPLIT_LABEL_PRESETS } from '../lib/workflows.js'
 
 export const STORAGE_KEY = 'comfyui-studio-storage'
-export const STORAGE_VERSION = 16
+export const STORAGE_VERSION = 18
 
 // v0/v1 stored a flat llmUrl/llmModel (Ollama era: port 11434 + "name:tag"
 // ids). Fold them into the v2 per-provider config.
@@ -48,6 +49,10 @@ export const STORAGE_VERSION = 16
 // v16 adds image-model presets. Older saves get their current flat image stack
 // copied into a "current" preset so upgrading does not change which files the
 // image/texture/material modes load.
+// v17 adds the MiniMax H3 Image settings/model group.
+// v18 lets image presets use MiniMax H3 Image and repairs an old H3-named
+// preset that still points at the Qwen stack (the H3 files used to be hidden
+// from the image dropdowns).
 export function migrate(persisted) {
   const s = { ...persisted }
 
@@ -102,6 +107,15 @@ export function migrate(persisted) {
       ...(DEFAULT_PRESETS.image || []).filter((p) => p.unet !== current.unet),
     ]
   }
+  if (Array.isArray(presetGroups.image)) {
+    const h3 = DEFAULT_MODELS.h3image
+    presetGroups.image = presetGroups.image.map((p) => {
+      const name = String(p?.name || '')
+      const unet = String(p?.unet || '')
+      if (!/minimax.*h3.*image/i.test(name) || /minimax.*h3.*image/i.test(unet)) return p
+      return { ...p, unet: h3.unet, clip: h3.clip, vae: h3.vae, lora: '' }
+    })
+  }
   // v5: Stable Audio 3 moved out of the Music engine list into its own
   // SFX mode. Drop any stable_audio engine preset an earlier build
   // seeded into `music`, and make sure the SFX presets exist.
@@ -134,6 +148,7 @@ export function migrate(persisted) {
   // v7: custom image size + the split/parts settings (nested objects are
   // replaced wholesale by the shallow persist merge).
   s.imageSettings = { ...(DEFAULT_IMAGE_SETTINGS || {}), ...(s.imageSettings || {}) }
+  s.h3imageSettings = { ...DEFAULT_H3_IMAGE_SETTINGS, ...(s.h3imageSettings || {}) }
   s.pixelSettings = { ...DEFAULT_PIXEL_SETTINGS, ...(s.pixelSettings || {}) }
   s.textureSettings = { ...DEFAULT_TEXTURE_SETTINGS, ...(s.textureSettings || {}) }
   s.flipbookSettings = { ...DEFAULT_FLIPBOOK_SETTINGS, ...(s.flipbookSettings || {}) }
@@ -190,6 +205,7 @@ export function partialize(state) {
     customSettings: state.customSettings,
     threeD: state.threeD,
     imageSettings: state.imageSettings,
+    h3imageSettings: state.h3imageSettings,
     pixelSettings: state.pixelSettings,
     videoSettings: state.videoSettings,
     editSettings: state.editSettings,

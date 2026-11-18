@@ -369,6 +369,7 @@ export default function useSettingsModal() {
     if (localModels.music) setModels('music', { ...(localModels.music || {}), ...editDraft })
     if (localModels.sfx) setModels('sfx', { ...(localModels.sfx || {}), ...sfxDraft })
     if (localModels.character) setModels('character', localModels.character)
+    if (localModels.h3image) setModels('h3image', localModels.h3image)
     // Write the edited model files back into the selected preset so the picker
     // and generation both see the change.
     if (active?.image != null && presets?.image?.[active.image]) {

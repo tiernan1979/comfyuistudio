@@ -7,6 +7,7 @@ Static frontend (React + Vite) served by nginx; every external request (ComfyUI,
 ## Features
 
 - **Image generation** — Qwen-Image (or the lighter Qwen-Image-2.1) workflows with aspect ratio, steps, CFG, turbo mode, seed control
+- **MiniMax H3 Image** — MiniMax's 16MP text-to-image stack with the H3 32B text encoder and image VAE. Use the dedicated **H3 Image** tab or select an H3 image preset in Image mode; the UNET auto-switches the H3 encoder/VAE. The distilled checkpoint runs at a fixed 6 steps / CFG 1 with no negative prompt, and size can be 1024²–4096² (needs ComfyUI 0.45+ for `MiniMaxH3ImageConditioning`)
 - **Pixel Art mode** — a separate **Pixel Art** entry in the mode menu for 2D game terrain and sprites. Uses an SDXL checkpoint + **Pixel Art XL** LoRA (not the Qwen image stack), renders square 512–1280² batches, and feeds the viewer's grid button for a 32×32 seamless-ish ground tile. The mode menu groups tabs into Image / Video / Music / Game Assets so the top bar stays compact
 - **Game asset generators** — under **Game Assets**:
   - **Tiles & Textures** — seamless materials, 2×2–4×4 tileset sheets, transparent **icon / UI packs** (BiRefNet background cut) and **terrain auto-tile** transition sheets, with repeat preview, grid overlay and one-click cell cropping
@@ -250,6 +251,7 @@ All other settings (ComfyUI URL, models, providers, SearXNG URL) can also be cha
 |---|---|
 | **Hardware** | A **16 GB GPU** (RTX 4060 Ti / 5060 Ti class) + ~16 GB RAM covers every feature below — see [Hardware & VRAM](#hardware--vram) |
 | Image generation | ComfyUI + Qwen-Image models (see [Models](#models)) |
+| MiniMax H3 Image | ComfyUI ≥ 0.45 + `minimax_h3_image_*.safetensors` + `qwen3vl_32b_minimax_h3_*.safetensors` + `minimax_h3_image_vae_fp16.safetensors` |
 | Edit mode | ComfyUI + `qwen_image_edit_*.safetensors` (see [Models](#models)) |
 | Video generation | ComfyUI + Wan 2.1 or MiniMax H3 models |
 | Music generation | ComfyUI + MiniMax Music 3 or ACE-Step 1.5 models |
@@ -314,8 +316,9 @@ in the same repos.
 
 File names in **Settings → Models** must match what you install — the dropdowns list the
 files your server actually has, and the app picks up common variants automatically. Each
-section only shows files its pipeline can load (image → Qwen/SDXL, video → Wan/MiniMax H3,
-music → MiniMax/ACE-Step, and so on); incompatible files stay hidden from that dropdown.
+section only shows files its pipeline can load (image → Qwen-Image/MiniMax H3 Image, pixel art →
+SDXL, video → Wan/MiniMax H3 video, music → MiniMax/ACE-Step, and so on); incompatible files stay
+hidden from that dropdown.
 
 ### Image generation — Qwen-Image
 
@@ -330,9 +333,11 @@ used on low-VRAM installs): `qwen_image_2.1_int8_convrot.safetensors` →
 `models/diffusion_models/`, `qwen3vl_8b_w4a8.safetensors` → `models/text_encoders/`,
 `qwen_image_2.1_vae_bf16.safetensors` → `models/vae/`.
 
-Both stacks ship as **image model presets** — switch between them from the Image, Tiles &
-Textures or PBR Material controls, or add your own in Settings → Models. Presets only swap the
-Qwen-Image UNET/CLIP/VAE; SDXL or Flux checkpoints need a different pipeline.
+Both Qwen stacks ship as **image model presets** — switch between them from the Image, Tiles &
+Textures or PBR Material controls, or add your own in Settings → Models. Image presets can also
+select **MiniMax H3 Image**; choosing its the UNET auto-switches the text encoder and VAE to the H3
+stack and runs the H3 conditioning graph. Textures, PBR, Sprites and Image Edit use the Qwen
+fallback when an H3 preset is active. SDXL or Flux checkpoints still need a different pipeline.
 
 Turbo mode (optional): put `Qwen-Image-Lightning-8steps-V2.0-bf16.safetensors` in
 `models/loras/` ([lightx2v/Qwen-Image-Lightning](https://huggingface.co/lightx2v/Qwen-Image-Lightning/resolve/main/Qwen-Image-Lightning-8steps-V2.0-bf16.safetensors))

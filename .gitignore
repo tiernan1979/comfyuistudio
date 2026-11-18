@@ -6,3 +6,7 @@ dist/
 .DS_Store
 /AGENTS.md
 /stargate-promo/
+/comfyui_output
+autorig_slicer.py
+generate_roster.py
+__pycache__

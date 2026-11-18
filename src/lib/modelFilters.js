@@ -16,13 +16,22 @@ const only = (match, exclude) => (name) => {
 }
 
 const FILTERS = {
-  // Qwen-Image text-to-image stack. Qwen-Image-Edit has its own section
-  // because the plain image graph cannot supply its reference conditioning.
+  // Image models cover both text-to-image families: Qwen-Image and MiniMax
+  // H3 Image. Qwen-Image-Edit has its own section because the plain image
+  // graph cannot supply its reference conditioning.
   image: {
-    unet: only(/qwen.*image/i, /edit/i),
-    clip: only(/qwen.*(?:vl|2\.5)/i, /minimax|h3|ace|music/i),
-    vae: only(/qwen.*vae/i, /trellis|minimax|ace/i),
+    unet: only(/qwen.*image|minimax.*h3.*image/i, /edit/i),
+    clip: only(/qwen.*(?:vl|2\.5|3[._]5)/i, /ace|music/i),
+    vae: only(/qwen.*vae|minimax.*h3.*image.*vae/i, /trellis|minimax.*(?:audio|video)|ace/i),
     lora: only(/qwen|lightning/i, /pixel|sdxl|offset/i),
+  },
+  // MiniMax H3 Image — a dedicated 16MP text-to-image stack separate from
+  // Qwen. The text encoder is the H3 32B model, not the Qwen3.5 prompt
+  // expander, and the VAE is H3's image VAE.
+  h3image: {
+    unet: only(/minimax.*h3.*image/i),
+    clip: only(/qwen3vl_32b_minimax_h3/i),
+    vae: only(/minimax.*h3.*image.*vae/i),
   },
   // SDXL checkpoint + Pixel Art XL LoRA.
   pixel: {
@@ -37,7 +46,7 @@ const FILTERS = {
   // Wan / MiniMax H3 video. GGUF experts are i2v-only and live in the Sprites
   // section instead; LongCat needs a graph this build does not implement.
   video: {
-    unet: only(isSupportedVideoModel, /gguf|music|audio/i),
+    unet: only(isSupportedVideoModel, /gguf|music|audio|h3.*image/i),
     clip: only(/umt5|(?:qwen|vl).*h\d|h\d.*(?:qwen|vl)/i, /music|ace/i),
     vae: only(/wan.*vae|(?:minimax|h\d).*video.*vae/i, /audio|music|ace/i),
     vaeAudio: only(/(?:minimax|h\d).*audio.*vae/i),
